@@ -1,25 +1,18 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:math';
-import 'package:flutter/semantics.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'package:permission_handler/permission_handler.dart';
 import 'beacon_model.dart';
-import 'dart:convert'; // Necesario para JSON
-import 'package:shared_preferences/shared_preferences.dart';
-
-
-
-
+import 'database.dart'; // Importante para la persistencia real
+import 'procesador_senal.dart'; // Para el filtrado de señales
 
 class PantallaConfiguracion extends StatefulWidget {
-  // Estos son los "tomacorrientes" que vamos a crear:
   final int pisoId;
   final String rutaImagen;
+  
 
-  // Actualizamos el constructor para que pida estos datos obligatoriamente
   const PantallaConfiguracion({
     super.key, 
     required this.pisoId, 
@@ -31,62 +24,43 @@ class PantallaConfiguracion extends StatefulWidget {
 }
 
 class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
+  final ProcesadorSenal _procesador = ProcesadorSenal();
   Map<String, BeaconMarcado> _beaconsEnElMapa = {};
   List<ScanResult> _dispositivosCercanos = [];
   ScanResult? _seleccionado;
   bool _escaneando = false;
-  File? _planoImagen;
   Offset? _posicionUsuario;
 
-  // 1. INICIALIZACIÓN: Carga los datos apenas abre la pantalla
   @override
   void initState() {
     super.initState();
-    _cargarBeaconsGuardados();
+    _cargarDatosIniciales();
   }
 
-  // 2. PERSISTENCIA: Guardar en el almacenamiento interno
-  Future<void> _guardarBeacons() async {
-    final prefs = await SharedPreferences.getInstance();
-    // Convertimos el mapa a una cadena de texto JSON
-    String datos = jsonEncode(_beaconsEnElMapa.map((key, value) => MapEntry(key, value.toJson())));
-    await prefs.setString('beacons_guardados', datos);
+  // Carga los beacons desde la DB. La imagen ya viene por el constructor.
+  Future<void> _cargarDatosIniciales() async {
+    final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
+    setState(() {
+      _beaconsEnElMapa = { for (var b in beacons) b.mac : b };
+    });
   }
 
-  // 3. PERSISTENCIA: Cargar desde el almacenamiento interno
-  Future<void> _cargarBeaconsGuardados() async {
-    final prefs = await SharedPreferences.getInstance();
-    String? datos = prefs.getString('beacons_guardados');
-    if (datos != null) {
-      Map<String, dynamic> decoded = jsonDecode(datos);
-      setState(() {
-        _beaconsEnElMapa = decoded.map((key, value) => 
-          MapEntry(key, BeaconMarcado.fromJson(value)));
-      });
-    }
+  // Cada vez que agregamos o quitamos algo, actualizamos SQLite
+  Future<void> _sincronizarDB() async {
+    await DatabaseHelper.instance.guardarBeacons(widget.pisoId, _beaconsEnElMapa.values.toList());
   }
 
-  // 4. GESTIÓN: Borrar un beacon específico
-  void _borrarBeacon(String mac) {
+  void _borrarBeacon(String mac) async {
     setState(() {
       _beaconsEnElMapa.remove(mac);
     });
-    _guardarBeacons(); // Guardamos el cambio (el mapa ahora tiene uno menos)
+    await _sincronizarDB();
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Beacon eliminado correctamente"))
+      const SnackBar(content: Text("Beacon eliminado"))
     );
   }
 
-  // Lógica de carga de imagen
-  Future<void> _cargarPlano() async {
-    final selector = ImagePicker();
-    final imagen = await selector.pickImage(source: ImageSource.gallery);
-    if (imagen != null) {
-      setState(() => _planoImagen = File(imagen.path));
-    }
-  }
-
-  // Lógica de Bluetooth
   void _conmutarEscaner() async {
     if (_escaneando) {
       await FlutterBluePlus.stopScan();
@@ -103,28 +77,34 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         if (!mounted) return;
         setState(() {
           _dispositivosCercanos = resultados;
-          _actualizarSenalesYPosicion(resultados);
+          _actualizarSenales(resultados);
         });
       });
     }
   }
 
-  void _actualizarSenalesYPosicion(List<ScanResult> resultados) {
-    for (var res in resultados) {
-      String mac = res.device.remoteId.str;
-      if (_beaconsEnElMapa.containsKey(mac)) {
-        _beaconsEnElMapa[mac]!.agregarLectura(res.rssi.toDouble());
-      }
+  void _actualizarSenales(List<ScanResult> resultados) {
+  for (var res in resultados) {
+    String mac = res.device.remoteId.str;
+    
+    // Aquí ocurre la magia: el procesador decide si la lectura es válida
+    double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
+
+    if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
+      setState(() {
+        // Guardamos el promedio suavizado en lugar del RSSI bruto
+        _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave;
+      });
     }
-    _calcularPosicion();
   }
+  _calcularPosicion();
+}
 
   void _calcularPosicion() {
     var activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > -95).toList();
     if (activos.length < 2) return;
 
     double sumaX = 0, sumaY = 0, sumaPesos = 0;
-
     for (var b in activos) {
       double peso = pow(10, (b.rssiFiltrado + 100) / 20).toDouble();
       sumaX += b.posicion.dx * peso;
@@ -139,13 +119,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
-  void _ubicarEnMapa(TapDownDetails det) {
-    if (_seleccionado == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Seleccioná un beacon de la lista abajo para ubicarlo"))
-      );
-      return;
-    }
+  void _ubicarEnMapa(TapDownDetails det) async {
+    if (_seleccionado == null) return;
     
     String mac = _seleccionado!.device.remoteId.str;
     setState(() {
@@ -156,19 +131,15 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       );
       _seleccionado = null; 
     });
-    _guardarBeacons(); // Guardamos automáticamente al ubicar uno nuevo
+    await _sincronizarDB();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('BlindRoute GPS Interno'),
+        title: const Text('Configuración de Piso'),
         backgroundColor: Colors.teal[800],
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(icon: const Icon(Icons.add_photo_alternate), onPressed: _cargarPlano),
-        ],
       ),
       body: Column(
         children: [
@@ -184,23 +155,26 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               ),
               child: Stack(
                 children: [
-                  if (_planoImagen != null) 
-                    Image.file(_planoImagen!, fit: BoxFit.fill, width: double.infinity, height: 400),
+                  // La imagen ahora es persistente porque la cargamos de la ruta guardada
+                  Image.file(
+                    File(widget.rutaImagen), 
+                    fit: BoxFit.fill, 
+                    width: double.infinity, 
+                    height: 400,
+                    errorBuilder: (context, error, stackTrace) => const Center(
+                      child: Text("Plano no encontrado"),
+                    ),
+                  ),
                   
-                  if (_planoImagen == null)
-                    const Center(child: Text("Tocá el ícono de imagen arriba para cargar el plano")),
-
-                  // Puntos de los Beacons fijos
                   ..._beaconsEnElMapa.values.map((b) => Positioned(
                     left: b.posicion.dx - 10,
                     top: b.posicion.dy - 10,
                     child: GestureDetector(
-                      onLongPress: () => _borrarBeacon(b.mac), // Toque largo para borrar
+                      onLongPress: () => _borrarBeacon(b.mac),
                       child: const Icon(Icons.radio_button_checked, color: Colors.red, size: 20),
                     ),
                   )),
 
-                  // Punto azul del usuario
                   if (_posicionUsuario != null)
                     Positioned(
                       left: _posicionUsuario!.dx - 15,
@@ -211,29 +185,25 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               ),
             ),
           ),
-
+          // ... resto del UI de la lista de dispositivos (se mantiene igual)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10),
             child: ElevatedButton.icon(
               onPressed: _conmutarEscaner,
               icon: Icon(_escaneando ? Icons.stop : Icons.play_arrow),
-              label: Text(_escaneando ? 'Detener Rastreo' : 'Iniciar Rastreo en Tiempo Real'),
+              label: Text(_escaneando ? 'Detener' : 'Probar Rastreo'),
             ),
           ),
-
           const Divider(),
-          
           Expanded(
             child: ListView.builder(
               itemCount: _dispositivosCercanos.length,
               itemBuilder: (context, i) {
                 var d = _dispositivosCercanos[i];
-                bool isSelected = _seleccionado == d;
                 return ListTile(
-                  dense: true,
-                  tileColor: isSelected ? Colors.teal[50] : null,
-                  title: Text(d.device.advName.isEmpty ? "Dispositivo oculto" : d.device.advName),
-                  subtitle: Text("MAC: ${d.device.remoteId.str} | RSSI: ${d.rssi} dBm"),
+                  tileColor: _seleccionado == d ? Colors.teal[50] : null,
+                  title: Text(d.device.advName.isEmpty ? "Desconocido" : d.device.advName),
+                  subtitle: Text("${d.device.remoteId.str} | ${d.rssi} dBm"),
                   onTap: () => setState(() => _seleccionado = d),
                 );
               },

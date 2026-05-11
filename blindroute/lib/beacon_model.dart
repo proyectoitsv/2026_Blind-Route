@@ -4,16 +4,23 @@ class BeaconMarcado {
   Offset posicion;
   final String nombre;
   final String mac;
-  List<double> _ventanaLecturas = [];
-  static const int _tamanoFiltro = 25;
+  
+  // CAMBIO AQUÍ: Ahora es una variable normal que se puede actualizar
+  double rssiFiltrado; 
 
-  BeaconMarcado({required this.posicion, required this.nombre, required this.mac});
+  BeaconMarcado({
+    required this.posicion, 
+    required this.nombre, 
+    required this.mac,
+    this.rssiFiltrado = -100.0, // Valor inicial por defecto
+  });
 
   Map<String, dynamic> toJson() => {
     'dx': posicion.dx,
     'dy': posicion.dy,
     'nombre': nombre,
     'mac': mac,
+    'rssiFiltrado': rssiFiltrado, // Guardamos también el último RSSI
   };
 
   factory BeaconMarcado.fromJson(Map<String, dynamic> json) {
@@ -21,16 +28,16 @@ class BeaconMarcado {
       posicion: Offset(json['dx'], json['dy']),
       nombre: json['nombre'],
       mac: json['mac'],
+      rssiFiltrado: json['rssiFiltrado'] ?? -100.0,
     );
   }
 
-  double get rssiFiltrado {
-    if (_ventanaLecturas.isEmpty) return -100.0;
-    return _ventanaLecturas.reduce((a, b) => a + b) / _ventanaLecturas.length;
-  }
-
+  // Borramos el getter viejo y la lista interna porque ahora
+  // el ProcesadorSenal maneja el historial de forma general.
+  
   void agregarLectura(double nuevaLectura) {
-    _ventanaLecturas.add(nuevaLectura);
-    if (_ventanaLecturas.length > _tamanoFiltro) _ventanaLecturas.removeAt(0);
+    // Si todavía usás esta función en algún lado, 
+    // simplemente actualizamos la variable directa.
+    rssiFiltrado = nuevaLectura;
   }
 }
