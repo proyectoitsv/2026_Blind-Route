@@ -3,9 +3,6 @@ import 'package:path/path.dart';
 import 'beacon_model.dart';
 import 'package:flutter/material.dart';
 import 'dart:async';
-import 'package:flutter/semantics.dart';
-
-
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -27,7 +24,13 @@ class DatabaseHelper {
       path,
       version: 1,
       onCreate: _createDB,
+      onConfigure: _onConfigure,
     );
+  }
+
+  // Esto es para que el borrado automático funcione bien
+  Future _onConfigure(Database db) async {
+    await db.execute('PRAGMA foreign_keys = ON');
   }
 
   Future _createDB(Database db, int version) async {
@@ -39,7 +42,7 @@ class DatabaseHelper {
       )
     ''');
 
-    // Tabla de Pisos
+    // Tabla de Pisos (Corregido edificio_id)
     await db.execute('''
       CREATE TABLE pisos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +53,7 @@ class DatabaseHelper {
       )
     ''');
 
-    // Tabla de Beacons
+    // Tabla de Beacons (Corregido piso_id)
     await db.execute('''
       CREATE TABLE beacons (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +96,6 @@ class DatabaseHelper {
   // --- Funciones para Beacons ---
   Future<void> guardarBeacons(int pisoId, List<BeaconMarcado> beacons) async {
     final db = await instance.database;
-    // Borramos los viejos de este piso y cargamos los nuevos (para actualizar)
     await db.delete('beacons', where: 'piso_id = ?', whereArgs: [pisoId]);
     for (var b in beacons) {
       await db.insert('beacons', {
@@ -117,20 +119,39 @@ class DatabaseHelper {
     )).toList();
   }
 
+  // Esta es la función que te daba error en el Modo Automático
   Future<Map<String, dynamic>?> obtenerInfoPorBeacon(String mac) async {
-  final db = await instance.database;
-  
-  // Buscamos el beacon y traemos la info del piso al que pertenece
-  final result = await db.rawQuery('''
-    SELECT pisos.id, pisos.ruta_imagen, edificios.nombre as edificio_nombre, pisos.nombre_piso
-    FROM beacons
-    INNER JOIN pisos ON beacons.piso_id = pisos.id
-    INNER JOIN edificios ON pisos.edificio_id = edificios.id
-    WHERE beacons.mac = ?
-    LIMIT 1
-  ''', [mac]);
+    final db = await instance.database;
+    
+    final result = await db.rawQuery('''
+      SELECT pisos.id, pisos.ruta_imagen, edificios.nombre as edificio_nombre, pisos.nombre_piso
+      FROM beacons
+      INNER JOIN pisos ON beacons.piso_id = pisos.id
+      INNER JOIN edificios ON pisos.edificio_id = edificios.id
+      WHERE beacons.mac = ?
+      LIMIT 1
+    ''', [mac]);
 
-  if (result.isNotEmpty) return result.first;
-  return null;
-}
+    if (result.isNotEmpty) return result.first;
+    return null;
+  }
+
+  // --- Funciones de Borrado Definitivo ---
+  Future<void> eliminarEdificioCompleto(int edificioId) async {
+    final db = await instance.database;
+    await db.transaction((txn) async {
+      await txn.rawDelete('''
+        DELETE FROM beacons 
+        WHERE piso_id IN (SELECT id FROM pisos WHERE edificio_id = ?)
+      ''', [edificioId]);
+      await txn.delete('pisos', where: 'edificio_id = ?', whereArgs: [edificioId]);
+      await txn.delete('edificios', where: 'id = ?', whereArgs: [edificioId]);
+    });
+  }
+
+  Future<int> eliminarPiso(int id) async {
+    final db = await instance.database;
+    await db.delete('beacons', where: 'piso_id = ?', whereArgs: [id]);
+    return await db.delete('pisos', where: 'id = ?', whereArgs: [id]);
+  }
 }

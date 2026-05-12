@@ -5,7 +5,7 @@ class ProcesadorSenal {
   final Map<String, List<int>> _historiales = {};
   
   // Parámetros de configuración
-  final int ventanaPromedio = 10; // Cantidad de lecturas para el promedio
+  final int ventanaPromedio = 25; // Cantidad de lecturas para el promedio
   final int umbralSaltoBrusco = 15; // Diferencia máxima en dBm permitida
 
   /// Procesa una nueva lectura y devuelve el RSSI suavizado o null si es ruido

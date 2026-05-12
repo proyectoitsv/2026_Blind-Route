@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'database.dart';
-import 'pantalla_config.dart';
+import 'pantalla_naveg.dart';
 
 class ModoAutomatico extends StatefulWidget {
   const ModoAutomatico({super.key});
@@ -35,11 +35,11 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
 
           if (!mounted) return;
           
-          // Saltamos directamente al mapa con los datos cargados
+          // Saltamos directamente al mapa en modo navegación (solo lectura)
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
-              builder: (context) => PantallaConfiguracion(
+              builder: (context) => PantallaNavegacion(
                 pisoId: info['id'],
                 rutaImagen: info['ruta_imagen'],
               ),
