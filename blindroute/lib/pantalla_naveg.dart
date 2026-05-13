@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'dart:math';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_compass/flutter_compass.dart';
 import 'database.dart';
 import 'beacon_model.dart';
 import 'zona_model.dart';
@@ -10,11 +11,12 @@ import 'procesador_senal.dart';
 import 'mapa_widget.dart';
 import 'pathfinder.dart';
 import 'bluetooth_helper.dart';
+import 'orientacion_service.dart';
 
 class PantallaNavegacion extends StatefulWidget {
   final int pisoId;
   final String rutaImagen;
-  final ProcesadorSenal? procesadorCompartido; // NUEVO: procesador de ModoAutomatico
+  final ProcesadorSenal? procesadorCompartido;
 
   const PantallaNavegacion({
     super.key,
@@ -28,15 +30,15 @@ class PantallaNavegacion extends StatefulWidget {
 }
 
 class _PantallaNavegacionState extends State<PantallaNavegacion> {
-  // Usar el procesador compartido si viene de ModoAutomatico, o crear uno nuevo
   late final ProcesadorSenal _procesador;
   final ResolvedorCaminos _resolvedor = ResolvedorCaminos();
+  final OrientacionService _orientacion = OrientacionService();
 
   Map<String, BeaconMarcado> _beaconsEnElMapa = {};
   List<ZonaNoTransitable> _zonas = [];
   List<LugarInteres> _lugares = [];
 
-  // Estabilizacion de posicion
+  // Posicion
   Offset? _posicionEMA;
   static const double _alphaEMA = 0.12;
   Offset? _posicionConfirmada;
@@ -54,24 +56,25 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   LugarInteres? _destinoSeleccionado;
   List<Offset>? _rutaActual;
   String _estadoRuta = '';
-
-  // Histeresis de ruta
   Offset? _ultimaPosicionRuta;
   static const double _umbralRecalcularRuta = 0.05;
 
-  // Parametros de trilateracion
+  // Orientacion
+  StreamSubscription<CompassEvent>? _compassSubscription;
+  bool _compassDisponible = false;
+
+  // Trilateracion
   static const int _minBeaconsActivos = 3;
   static const int _maxBeaconsParaCalcular = 5;
   static const double _umbralRSSI = -88;
   static const double _exponentePeso = 2.5;
 
   Timer? _timeoutTimer;
-  int _contadorLecturas = 0; // NUEVO: contador de lecturas recibidas
+  int _contadorLecturas = 0;
 
   @override
   void initState() {
     super.initState();
-    // Usar procesador compartido si existe (viene de ModoAutomatico)
     _procesador = widget.procesadorCompartido ?? ProcesadorSenal();
     _inicializar();
   }
@@ -79,8 +82,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   @override
   void dispose() {
     _timeoutTimer?.cancel();
-    // Solo detenemos el scan si NO venimos de ModoAutomatico
-    // (si venimos de ModoAutomatico, el scan ya estaba activo y debe seguir)
+    _compassSubscription?.cancel();
+    _orientacion.limpiar();
     if (widget.procesadorCompartido == null) {
       BluetoothHelper.detenerScanSeguro();
     }
@@ -89,7 +92,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
   Future<void> _inicializar() async {
     try {
-      // 1. Cargar datos de DB
       final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
       final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
       final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(widget.pisoId);
@@ -102,8 +104,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       });
 
       _resolvedor.inicializar(_zonas);
+      await _iniciarBrujula();
 
-      // 2. Si venimos de ModoAutomatico con scan activo, solo nos suscribimos
       if (widget.procesadorCompartido != null && FlutterBluePlus.isScanningNow) {
         if (mounted) {
           setState(() {
@@ -115,7 +117,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         return;
       }
 
-      // 3. Si no hay scan activo, iniciar uno nuevo
       final ok = await BluetoothHelper.verificarPrecondiciones(context);
       if (!ok) {
         if (mounted) {
@@ -132,8 +133,27 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
   }
 
+  Future<void> _iniciarBrujula() async {
+    try {
+      _compassDisponible = await FlutterCompass.events != null;
+      if (!_compassDisponible) return;
+
+      _compassSubscription = FlutterCompass.events!.listen(
+        (CompassEvent event) {
+          if (mounted && event.heading != null) {
+            _orientacion.actualizarHeadingBrujula(event.heading!);
+          }
+        },
+        onError: (e) {
+          _compassDisponible = false;
+        },
+      );
+    } catch (e) {
+      _compassDisponible = false;
+    }
+  }
+
   void _suscribirAScan() {
-    // Suscribirse al scan ya activo sin iniciar uno nuevo
     BluetoothHelper.iniciarScanSeguro(
       onResultados: (resultados) => _actualizarSenales(resultados),
       onError: (e) {
@@ -185,15 +205,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
   void _actualizarSenales(List<ScanResult> resultados) {
     if (!mounted) return;
-
     _contadorLecturas++;
 
-    // Reiniciar RSSI de todos los beacons
     for (var beacon in _beaconsEnElMapa.values) {
       beacon.rssiFiltrado = -100.0;
     }
 
-    // Procesar resultados
     int beaconsDetectados = 0;
     for (var res in resultados) {
       try {
@@ -208,7 +225,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       }
     }
 
-    // Log para debug: mostrar cuántos beacons detectamos
     if (_contadorLecturas % 10 == 0 && mounted) {
       final activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > _umbralRSSI).length;
       setState(() => _estadoScan = 'Beacons detectados: $activos / ${_beaconsEnElMapa.length}');
@@ -246,7 +262,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
       final nuevaPosicionRaw = Offset(sumaX / sumaPesos, sumaY / sumaPesos);
 
-      // Nivel 1: EMA
       final nuevaPosicionEMA = _posicionEMA == null
           ? nuevaPosicionRaw
           : Offset(
@@ -255,7 +270,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
             );
       _posicionEMA = nuevaPosicionEMA;
 
-      // Nivel 2: Confirmacion
       if (_posicionConfirmada == null) {
         _posicionConfirmada = nuevaPosicionEMA;
         _contadorEstabilidad = _lecturasParaConfirmar;
@@ -276,7 +290,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         }
       }
 
-      // Nivel 3: Centroid
       if (_posicionConfirmada != null) {
         _historialPosiciones.add(_posicionConfirmada!);
         if (_historialPosiciones.length > _ventanaCentroid) {
@@ -290,6 +303,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         }
         final nuevaPosicionFinal = Offset(cx / _historialPosiciones.length, cy / _historialPosiciones.length);
 
+        // NUEVO: Actualizar orientacion por movimiento (modo bolsillo)
+        _orientacion.actualizarPosicion(nuevaPosicionFinal);
+
         if (mounted) {
           setState(() {
             _posicionFinal = nuevaPosicionFinal;
@@ -298,7 +314,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         }
       }
 
-      // Recalcular ruta
       if (_destinoSeleccionado != null && _posicionFinal != null) {
         final debeRecalcular = _ultimaPosicionRuta == null ||
             (_posicionFinal! - _ultimaPosicionRuta!).distance > _umbralRecalcularRuta;
@@ -309,7 +324,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         }
       }
     } catch (e) {
-      // Ignorar errores de calculo
+      // Ignorar
     }
   }
 
@@ -407,6 +422,104 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
   }
 
+  // Widget de brujula / orientacion
+  Widget _buildOrientacion() {
+    final heading = _orientacion.heading;
+    if (heading == null) {
+      return const SizedBox.shrink();
+    }
+
+    final direccion = OrientacionService.direccionCardinal(heading);
+    final icono = OrientacionService.iconoDireccion(heading);
+    final modo = _orientacion.usandoMovimiento;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: modo ? Colors.orange[100] : Colors.indigo[100],
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: modo ? Colors.orange[300]! : Colors.indigo[300]!,
+          width: 1,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedRotation(
+            turns: -heading / 360,
+            duration: const Duration(milliseconds: 250),
+            child: Icon(icono, color: modo ? Colors.orange[800] : Colors.indigo[800], size: 20),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            direccion,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: modo ? Colors.orange[800] : Colors.indigo[800],
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            '${heading.toStringAsFixed(0)} grados',
+            style: TextStyle(fontSize: 12, color: modo ? Colors.orange[600] : Colors.indigo[600]),
+          ),
+          if (modo)
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: Icon(Icons.directions_walk, size: 14, color: Colors.orange[600]),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // Widget de indicacion de giro
+  Widget _buildIndicacionGiro() {
+    final heading = _orientacion.heading;
+    if (heading == null || _posicionFinal == null || _destinoSeleccionado == null) {
+      return const SizedBox.shrink();
+    }
+
+    final indicacion = OrientacionService.calcularIndicacion(
+      headingUsuario: heading,
+      posicionUsuario: _posicionFinal!,
+      posicionDestino: _destinoSeleccionado!.posicion,
+    );
+
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.green[700],
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            indicacion.giroNecesario > 0 ? Icons.turn_right : Icons.turn_left,
+            color: Colors.white,
+            size: 28,
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Text(
+              indicacion.instruccion,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -425,53 +538,65 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       ),
       body: Column(
         children: [
+          // Barra de destino + orientacion
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             color: Colors.indigo[50],
-            child: Row(
+            child: Column(
               children: [
-                Expanded(
-                  child: _destinoSeleccionado != null
-                      ? Row(
-                          children: [
-                            const Icon(Icons.place, color: Colors.purple),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Destino: ${_destinoSeleccionado!.nombre}',
-                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _destinoSeleccionado != null
+                          ? Row(
+                              children: [
+                                const Icon(Icons.place, color: Colors.purple),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Destino: ${_destinoSeleccionado!.nombre}',
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                      ),
+                                      if (_estadoRuta.isNotEmpty)
+                                        Text(
+                                          _estadoRuta,
+                                          style: TextStyle(fontSize: 12, color: Colors.indigo[700]),
+                                        ),
+                                    ],
                                   ),
-                                  if (_estadoRuta.isNotEmpty)
-                                    Text(
-                                      _estadoRuta,
-                                      style: TextStyle(fontSize: 12, color: Colors.indigo[700]),
-                                    ),
-                                ],
-                              ),
+                                ),
+                              ],
+                            )
+                          : const Text(
+                              'Selecciona un destino para comenzar',
+                              style: TextStyle(fontSize: 16),
                             ),
-                          ],
-                        )
-                      : const Text(
-                          'Selecciona un destino para comenzar',
-                          style: TextStyle(fontSize: 16),
-                        ),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: _seleccionarDestino,
+                      icon: Icon(_destinoSeleccionado != null ? Icons.edit : Icons.navigation),
+                      label: Text(_destinoSeleccionado != null ? 'Cambiar' : 'Destino'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.indigo,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  ],
                 ),
-                ElevatedButton.icon(
-                  onPressed: _seleccionarDestino,
-                  icon: Icon(_destinoSeleccionado != null ? Icons.edit : Icons.navigation),
-                  label: Text(_destinoSeleccionado != null ? 'Cambiar' : 'Destino'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.indigo,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
+                const SizedBox(height: 8),
+                // Orientacion (brujula o movimiento)
+                _buildOrientacion(),
               ],
             ),
           ),
 
+          // Indicacion de giro
+          if (_destinoSeleccionado != null) _buildIndicacionGiro(),
+
+          // Mapa
           Expanded(
             child: InteractiveViewer(
               child: MapaWidget(
@@ -486,6 +611,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
             ),
           ),
 
+          // Estado inferior
           Padding(
             padding: const EdgeInsets.all(12),
             child: Column(
