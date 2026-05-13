@@ -3,18 +3,20 @@ import 'dart:io';
 import 'dart:async';
 import 'beacon_model.dart';
 import 'zona_model.dart';
+import 'poi_model.dart';
 
-/// Painter que dibuja los polígonos de zonas no transitables.
-/// Recibe coordenadas normalizadas (0.0–1.0) y las escala al tamano del canvas.
+/// Painter que dibuja los polígonos de zonas no transitables y la ruta.
 class _ZonasPainter extends CustomPainter {
   final List<ZonaNoTransitable> zonas;
-  final List<Offset> verticesEnCurso; // vértices del polígono que se está dibujando
-  final Size tamanoImagen; // tamano real de la imagen renderizada dentro del contain
+  final List<Offset> verticesEnCurso;
+  final Size tamanoImagen;
+  final List<Offset>? ruta; // NUEVO: camino calculado
 
   _ZonasPainter({
     required this.zonas,
     required this.verticesEnCurso,
     required this.tamanoImagen,
+    this.ruta,
   });
 
   Offset _desnormalizar(Offset normalizado) {
@@ -26,6 +28,25 @@ class _ZonasPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // --- Dibujar ruta calculada ---
+    if (ruta != null && ruta!.length >= 2) {
+      final paintRuta = Paint()
+        ..color = Colors.green
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4.0
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+
+      final path = Path();
+      final primero = _desnormalizar(ruta!.first);
+      path.moveTo(primero.dx, primero.dy);
+      for (int i = 1; i < ruta!.length; i++) {
+        final p = _desnormalizar(ruta![i]);
+        path.lineTo(p.dx, p.dy);
+      }
+      canvas.drawPath(path, paintRuta);
+    }
+
     final paintRelleno = Paint()
       ..color = Colors.red.withOpacity(0.30)
       ..style = PaintingStyle.fill;
@@ -71,7 +92,6 @@ class _ZonasPainter extends CustomPainter {
       }
       canvas.drawPath(path, paintEnCurso);
 
-      // Puntos en cada vértice para que el admin vea lo que va marcando
       for (final v in verticesEnCurso) {
         final p = _desnormalizar(v);
         canvas.drawCircle(p, 5, paintPunto);
@@ -83,50 +103,49 @@ class _ZonasPainter extends CustomPainter {
   bool shouldRepaint(_ZonasPainter old) =>
       old.zonas != zonas ||
       old.verticesEnCurso != verticesEnCurso ||
-      old.tamanoImagen != tamanoImagen;
+      old.tamanoImagen != tamanoImagen ||
+      old.ruta != ruta;
 }
 
 /// Widget del mapa reutilizable para configuración y navegación.
-///
-/// - [modoEdicion]: si true, habilita tap para colocar beacons y dibujar zonas.
-/// - [onTapMapa]: callback con coordenada NORMALIZADA cuando el admin toca el mapa.
-/// - [onTapBeacon]: callback cuando se hace long-press sobre un beacon (para borrar).
-/// - [verticesEnCurso]: vértices del polígono que se está construyendo actualmente.
 class MapaWidget extends StatelessWidget {
   final String rutaImagen;
   final Map<String, BeaconMarcado> beacons;
   final List<ZonaNoTransitable> zonas;
-  final Offset? posicionUsuario; // normalizada
+  final List<LugarInteres> lugares; // NUEVO
+  final Offset? posicionUsuario;
   final bool modoEdicion;
   final void Function(Offset normalizado)? onTapMapa;
   final void Function(String mac)? onTapBeacon;
+  final void Function(LugarInteres lugar)? onTapLugar;
+  final void Function(ZonaNoTransitable zona)? onTapZona; // NUEVO: borrar zona
   final List<Offset> verticesEnCurso;
+  final List<Offset>? ruta;
 
   const MapaWidget({
     super.key,
     required this.rutaImagen,
     required this.beacons,
     required this.zonas,
+    this.lugares = const [], // NUEVO
     this.posicionUsuario,
     this.modoEdicion = false,
     this.onTapMapa,
     this.onTapBeacon,
+    this.onTapLugar,
+    this.onTapZona, // NUEVO
     this.verticesEnCurso = const [],
+    this.ruta,
   });
 
-  /// Calcula el tamano real que ocupa la imagen con BoxFit.contain
-  /// dentro de un contenedor de tamano [contenedor], dado el tamano
-  /// original de la imagen [imagen].
   static Size calcularTamanoContenido(Size contenedor, Size imagen) {
     final ratioContenedor = contenedor.width / contenedor.height;
     final ratioImagen = imagen.width / imagen.height;
     if (ratioImagen > ratioContenedor) {
-      // La imagen está limitada por el ancho
       final ancho = contenedor.width;
       final alto = ancho / ratioImagen;
       return Size(ancho, alto);
     } else {
-      // La imagen está limitada por el alto
       final alto = contenedor.height;
       final ancho = alto * ratioImagen;
       return Size(ancho, alto);
@@ -142,17 +161,15 @@ class MapaWidget extends StatelessWidget {
         return FutureBuilder<Size>(
           future: _obtenerTamanoImagen(rutaImagen),
           builder: (context, snapshot) {
-            // Mientras carga, mostramos la imagen directamente (se ajusta cuando llega el tamano)
             final tamanoImagen = snapshot.data ?? contenedor;
             final tamanoRenderizado = calcularTamanoContenido(contenedor, tamanoImagen);
 
-            // Offset del área de imagen dentro del contenedor (centrada por contain)
             final offsetX = (contenedor.width - tamanoRenderizado.width) / 2;
             final offsetY = (contenedor.height - tamanoRenderizado.height) / 2;
 
             Widget mapa = Stack(
               children: [
-                // Imagen con contain para no deformar
+                // Imagen del plano
                 Positioned.fill(
                   child: Image.file(
                     File(rutaImagen),
@@ -162,17 +179,37 @@ class MapaWidget extends StatelessWidget {
                   ),
                 ),
 
-                // Polígonos de zonas (dibujados sobre la imagen, alineados a ella)
+                // Polígonos de zonas + ruta (con GestureDetector para borrar en modo edición)
                 Positioned(
                   left: offsetX,
                   top: offsetY,
                   width: tamanoRenderizado.width,
                   height: tamanoRenderizado.height,
-                  child: CustomPaint(
-                    painter: _ZonasPainter(
-                      zonas: zonas,
-                      verticesEnCurso: verticesEnCurso,
-                      tamanoImagen: tamanoRenderizado,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTapUp: modoEdicion && onTapZona != null
+                        ? (details) {
+                            final local = details.localPosition;
+                            final dx = local.dx / tamanoRenderizado.width;
+                            final dy = local.dy / tamanoRenderizado.height;
+                            final puntoTocado = Offset(dx, dy);
+                            // Buscar si el toque cayó dentro de alguna zona existente
+                            for (final zona in zonas) {
+                              if (zona.vertices.length >= 3 &&
+                                  _puntoEnPoligono(puntoTocado, zona.vertices)) {
+                                onTapZona!(zona);
+                                return;
+                              }
+                            }
+                          }
+                        : null,
+                    child: CustomPaint(
+                      painter: _ZonasPainter(
+                        zonas: zonas,
+                        verticesEnCurso: verticesEnCurso,
+                        tamanoImagen: tamanoRenderizado,
+                        ruta: ruta,
+                      ),
                     ),
                   ),
                 ),
@@ -197,6 +234,44 @@ class MapaWidget extends StatelessWidget {
                   );
                 }),
 
+                // LUGARES DE INTERÉS (POIs)
+                ...lugares.map((lugar) {
+                  final px = offsetX + lugar.posicion.dx * tamanoRenderizado.width - 14;
+                  final py = offsetY + lugar.posicion.dy * tamanoRenderizado.height - 28;
+                  return Positioned(
+                    left: px,
+                    top: py,
+                    child: GestureDetector(
+                      onTap: onTapLugar != null ? () => onTapLugar!(lugar) : null,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.place,
+                            color: modoEdicion ? Colors.purple : Colors.purple[700],
+                            size: 28,
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.85),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              lugar.nombre,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: modoEdicion ? Colors.purple[800] : Colors.purple[900],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+
                 // Ícono del usuario
                 if (posicionUsuario != null)
                   AnimatedPositioned(
@@ -213,12 +288,10 @@ class MapaWidget extends StatelessWidget {
               ],
             );
 
-            // En modo edición, capturamos taps y los convertimos a coordenadas normalizadas
             if (modoEdicion && onTapMapa != null) {
               mapa = GestureDetector(
                 onTapDown: (det) {
                   final local = det.localPosition;
-                  // Solo procesamos si el toque cayó dentro del área de la imagen
                   final dx = (local.dx - offsetX) / tamanoRenderizado.width;
                   final dy = (local.dy - offsetY) / tamanoRenderizado.height;
                   if (dx >= 0 && dx <= 1 && dy >= 0 && dy <= 1) {
@@ -248,5 +321,21 @@ class MapaWidget extends StatelessWidget {
       }),
     );
     return completer.future;
+  }
+
+  /// Ray-casting: determina si un punto está dentro de un polígono
+  static bool _puntoEnPoligono(Offset punto, List<Offset> vertices) {
+    bool dentro = false;
+    int j = vertices.length - 1;
+    for (int i = 0; i < vertices.length; i++) {
+      final vi = vertices[i];
+      final vj = vertices[j];
+      if (((vi.dy > punto.dy) != (vj.dy > punto.dy)) &&
+          (punto.dx < (vj.dx - vi.dx) * (punto.dy - vi.dy) / (vj.dy - vi.dy) + vi.dx)) {
+        dentro = !dentro;
+      }
+      j = i;
+    }
+    return dentro;
   }
 }

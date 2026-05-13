@@ -1,7 +1,7 @@
 /// Estado del filtro de Kalman por beacon
 class _EstadoKalman {
-  double estimacion;      // Valor estimado actual
-  double varianzaError;   // Incertidumbre de la estimación
+  double estimacion;
+  double varianzaError;
 
   _EstadoKalman(this.estimacion, this.varianzaError);
 }
@@ -10,42 +10,57 @@ class ProcesadorSenal {
   // Filtro de Kalman por MAC
   final Map<String, _EstadoKalman> _kalman = {};
 
-  // Promedio móvil como segunda pasada (ventana reducida, Kalman ya suaviza bastante)
+  // Promedio móvil
   final Map<String, List<double>> _historiales = {};
-  final int ventanaPromedio = 8;
+  final int ventanaPromedio = 15; // Aumentado para más estabilidad
 
-  // Parámetros del filtro de Kalman
-  // R: ruido de medición (mayor = más desconfianza en cada lectura nueva → más suave)
-  // Q: ruido de proceso (mayor = el sistema "olvida" el pasado más rápido)
-  final double _R = 3.0;
-  final double _Q = 0.3;
+  // Parámetros Kalman más conservadores
+  final double _R = 5.0;   // Más desconfianza en lecturas individuales
+  final double _Q = 0.1;   // Más memoria del pasado
 
-  /// Procesa una nueva lectura y devuelve el RSSI suavizado, o null si es ruido extremo
+  // Detección de outliers
+  final Map<String, List<int>> _lecturasCrudas = {};
+  final int _ventanaOutlier = 7;
+  final double _umbralOutlier = 10.0; // dB
+
+  /// Procesa una nueva lectura y devuelve el RSSI suavizado
   double? filtrarYPromediar(String mac, int rssiActual) {
-    // --- 1. RECHAZO DE VALORES ABSURDOS ---
-    // RSSI por encima de -20 o por debajo de -110 son claramente errores del hardware
+    // Rechazo de valores absurdos
     if (rssiActual > -20 || rssiActual < -110) return null;
 
-    // --- 2. FILTRO DE KALMAN ---
+    // Detección de outliers con mediana
+    if (!_lecturasCrudas.containsKey(mac)) {
+      _lecturasCrudas[mac] = [];
+    }
+    final crudas = _lecturasCrudas[mac]!;
+    crudas.add(rssiActual);
+    if (crudas.length > _ventanaOutlier) crudas.removeAt(0);
+
+    if (crudas.length >= 4) {
+      final mediana = _calcularMediana(crudas);
+      final desviacion = (rssiActual - mediana).abs();
+      if (desviacion > _umbralOutlier) {
+        if (_kalman.containsKey(mac)) {
+          return _kalman[mac]!.estimacion;
+        }
+        return null;
+      }
+    }
+
+    // Filtro de Kalman
     if (!_kalman.containsKey(mac)) {
       _kalman[mac] = _EstadoKalman(rssiActual.toDouble(), 1.0);
     }
 
     final k = _kalman[mac]!;
-
-    // Predicción: la señal puede haber derivado un poco (sumamos Q a la incertidumbre)
     k.varianzaError += _Q;
-
-    // Ganancia de Kalman: cuánto peso le damos a la nueva medición
     final ganancia = k.varianzaError / (k.varianzaError + _R);
-
-    // Corrección: combinamos la estimación con la medición
     k.estimacion = k.estimacion + ganancia * (rssiActual - k.estimacion);
     k.varianzaError = (1 - ganancia) * k.varianzaError;
 
     double rssiKalman = k.estimacion;
 
-    // --- 3. PROMEDIO MÓVIL como segunda pasada ---
+    // Promedio móvil
     if (!_historiales.containsKey(mac)) {
       _historiales[mac] = [];
     }
@@ -58,8 +73,16 @@ class ProcesadorSenal {
     return historial.reduce((a, b) => a + b) / historial.length;
   }
 
+  int _calcularMediana(List<int> valores) {
+    final ordenados = List<int>.from(valores)..sort();
+    final n = ordenados.length;
+    if (n % 2 == 1) return ordenados[n ~/ 2];
+    return ((ordenados[n ~/ 2 - 1] + ordenados[n ~/ 2]) / 2).round();
+  }
+
   void limpiar() {
     _kalman.clear();
     _historiales.clear();
+    _lecturasCrudas.clear();
   }
 }

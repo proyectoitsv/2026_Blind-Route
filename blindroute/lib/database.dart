@@ -2,6 +2,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'beacon_model.dart';
 import 'zona_model.dart';
+import 'poi_model.dart';
 import 'package:flutter/material.dart';
 import 'dart:convert';
 
@@ -23,7 +24,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 2, // Incrementamos versión para la migración
+      version: 3, // Incrementamos versión para la migración de POIs
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -73,9 +74,22 @@ class DatabaseHelper {
         FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
       )
     ''');
+
+    // --- NUEVA TABLA: Lugares de Interés (POI) ---
+    await db.execute('''
+      CREATE TABLE lugares_interes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        piso_id INTEGER NOT NULL,
+        nombre TEXT NOT NULL,
+        x REAL NOT NULL,
+        y REAL NOT NULL,
+        descripcion TEXT,
+        FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
+      )
+    ''');
   }
 
-  // Migración: usuarios existentes con versión 1 reciben la nueva tabla
+  // Migración para usuarios existentes
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await db.execute('''
@@ -84,6 +98,19 @@ class DatabaseHelper {
           piso_id INTEGER NOT NULL,
           nombre TEXT NOT NULL,
           vertices_json TEXT NOT NULL,
+          FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
+        )
+      ''');
+    }
+    if (oldVersion < 3) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS lugares_interes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          piso_id INTEGER NOT NULL,
+          nombre TEXT NOT NULL,
+          x REAL NOT NULL,
+          y REAL NOT NULL,
+          descripcion TEXT,
           FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
         )
       ''');
@@ -157,7 +184,6 @@ class DatabaseHelper {
 
   // --- Zonas no transitables ---
 
-  /// Guarda los vértices normalizados como JSON: [{dx, dy}, ...]
   Future<int> crearZona(ZonaNoTransitable zona) async {
     final db = await instance.database;
     final verticesJson = jsonEncode(
@@ -194,6 +220,40 @@ class DatabaseHelper {
     await db.delete('zonas_no_transitables', where: 'id = ?', whereArgs: [zonaId]);
   }
 
+  // --- LUGARES DE INTERÉS (POI) ---
+
+  Future<int> crearLugarInteres(LugarInteres lugar) async {
+    final db = await instance.database;
+    return await db.insert('lugares_interes', {
+      'piso_id': lugar.pisoId,
+      'nombre': lugar.nombre,
+      'x': lugar.posicion.dx,
+      'y': lugar.posicion.dy,
+      'descripcion': lugar.descripcion,
+    });
+  }
+
+  Future<List<LugarInteres>> obtenerLugaresPorPiso(int pisoId) async {
+    final db = await instance.database;
+    final res = await db.query(
+      'lugares_interes',
+      where: 'piso_id = ?',
+      whereArgs: [pisoId],
+    );
+    return res.map((row) => LugarInteres(
+      id: row['id'] as int,
+      pisoId: pisoId,
+      nombre: row['nombre'] as String,
+      posicion: Offset(row['x'] as double, row['y'] as double),
+      descripcion: row['descripcion'] as String?,
+    )).toList();
+  }
+
+  Future<void> eliminarLugarInteres(int id) async {
+    final db = await instance.database;
+    await db.delete('lugares_interes', where: 'id = ?', whereArgs: [id]);
+  }
+
   // --- Borrado en cascada ---
   Future<void> eliminarEdificioCompleto(int edificioId) async {
     final db = await instance.database;
@@ -206,6 +266,10 @@ class DatabaseHelper {
         DELETE FROM zonas_no_transitables 
         WHERE piso_id IN (SELECT id FROM pisos WHERE edificio_id = ?)
       ''', [edificioId]);
+      await txn.rawDelete('''
+        DELETE FROM lugares_interes 
+        WHERE piso_id IN (SELECT id FROM pisos WHERE edificio_id = ?)
+      ''', [edificioId]);
       await txn.delete('pisos', where: 'edificio_id = ?', whereArgs: [edificioId]);
       await txn.delete('edificios', where: 'id = ?', whereArgs: [edificioId]);
     });
@@ -215,6 +279,7 @@ class DatabaseHelper {
     final db = await instance.database;
     await db.delete('beacons', where: 'piso_id = ?', whereArgs: [id]);
     await db.delete('zonas_no_transitables', where: 'piso_id = ?', whereArgs: [id]);
+    await db.delete('lugares_interes', where: 'piso_id = ?', whereArgs: [id]);
     return await db.delete('pisos', where: 'id = ?', whereArgs: [id]);
   }
 }
