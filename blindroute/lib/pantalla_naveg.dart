@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'dart:math';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'database.dart';
 import 'beacon_model.dart';
 import 'zona_model.dart';
@@ -10,15 +9,18 @@ import 'poi_model.dart';
 import 'procesador_senal.dart';
 import 'mapa_widget.dart';
 import 'pathfinder.dart';
+import 'bluetooth_helper.dart';
 
 class PantallaNavegacion extends StatefulWidget {
   final int pisoId;
   final String rutaImagen;
+  final ProcesadorSenal? procesadorCompartido; // NUEVO: procesador de ModoAutomatico
 
   const PantallaNavegacion({
     super.key,
     required this.pisoId,
     required this.rutaImagen,
+    this.procesadorCompartido,
   });
 
   @override
@@ -26,7 +28,8 @@ class PantallaNavegacion extends StatefulWidget {
 }
 
 class _PantallaNavegacionState extends State<PantallaNavegacion> {
-  final ProcesadorSenal _procesador = ProcesadorSenal();
+  // Usar el procesador compartido si viene de ModoAutomatico, o crear uno nuevo
+  late final ProcesadorSenal _procesador;
   final ResolvedorCaminos _resolvedor = ResolvedorCaminos();
 
   Map<String, BeaconMarcado> _beaconsEnElMapa = {};
@@ -62,243 +65,277 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   static const double _umbralRSSI = -88;
   static const double _exponentePeso = 2.5;
 
-  // NUEVO: Suscripcion al stream de scan
-  StreamSubscription<List<ScanResult>>? _scanSubscription;
+  Timer? _timeoutTimer;
+  int _contadorLecturas = 0; // NUEVO: contador de lecturas recibidas
 
   @override
   void initState() {
     super.initState();
-    _cargarDatosYIniciarScan();
+    // Usar procesador compartido si existe (viene de ModoAutomatico)
+    _procesador = widget.procesadorCompartido ?? ProcesadorSenal();
+    _inicializar();
   }
 
   @override
   void dispose() {
-    _scanSubscription?.cancel();
-    FlutterBluePlus.stopScan();
+    _timeoutTimer?.cancel();
+    // Solo detenemos el scan si NO venimos de ModoAutomatico
+    // (si venimos de ModoAutomatico, el scan ya estaba activo y debe seguir)
+    if (widget.procesadorCompartido == null) {
+      BluetoothHelper.detenerScanSeguro();
+    }
     super.dispose();
   }
 
-  Future<void> _cargarDatosYIniciarScan() async {
-    // 1. Cargar datos de DB
-    final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
-    final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
-    final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(widget.pisoId);
-    setState(() {
-      _beaconsEnElMapa = {for (var b in beacons) b.mac: b};
-      _zonas = zonas;
-      _lugares = lugares;
-    });
+  Future<void> _inicializar() async {
+    try {
+      // 1. Cargar datos de DB
+      final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
+      final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
+      final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(widget.pisoId);
 
-    _resolvedor.inicializar(_zonas);
+      if (!mounted) return;
+      setState(() {
+        _beaconsEnElMapa = {for (var b in beacons) b.mac: b};
+        _zonas = zonas;
+        _lugares = lugares;
+      });
 
-    // 2. Esperar a que Bluetooth este encendido
-    setState(() => _estadoScan = 'Verificando Bluetooth...');
-    await _esperarBluetoothEncendido();
+      _resolvedor.inicializar(_zonas);
 
-    // 3. Iniciar scan
-    await _iniciarEscaneoPropio();
-  }
-
-  Future<void> _esperarBluetoothEncendido() async {
-    // En Android, asegurar que Bluetooth este encendido
-    if (!await FlutterBluePlus.isSupported) {
-      setState(() => _estadoScan = 'Bluetooth no soportado en este dispositivo');
-      return;
-    }
-
-    // Esperar a que el adapter este encendido
-    var state = await FlutterBluePlus.adapterState.first;
-    if (state == BluetoothAdapterState.unknown) {
-      await Future.delayed(const Duration(seconds: 1));
-      state = await FlutterBluePlus.adapterState.first;
-    }
-
-    if (state == BluetoothAdapterState.off) {
-      // Intentar encender (solo Android)
-      try {
-        await FlutterBluePlus.turnOn();
-      } catch (e) {
-        setState(() => _estadoScan = 'Por favor, encendé el Bluetooth');
+      // 2. Si venimos de ModoAutomatico con scan activo, solo nos suscribimos
+      if (widget.procesadorCompartido != null && FlutterBluePlus.isScanningNow) {
+        if (mounted) {
+          setState(() {
+            _escaneando = true;
+            _estadoScan = 'Continuando escaneo...';
+          });
+        }
+        _suscribirAScan();
         return;
       }
-    }
 
-    // Esperar confirmacion de encendido
-    await FlutterBluePlus.adapterState
-        .where((s) => s == BluetoothAdapterState.on)
-        .first
-        .timeout(const Duration(seconds: 5), onTimeout: () => BluetoothAdapterState.off);
+      // 3. Si no hay scan activo, iniciar uno nuevo
+      final ok = await BluetoothHelper.verificarPrecondiciones(context);
+      if (!ok) {
+        if (mounted) {
+          setState(() => _estadoScan = 'Bluetooth o permisos no disponibles');
+        }
+        return;
+      }
+
+      await _iniciarEscaneo();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _estadoScan = 'Error de inicializacion: $e');
+      }
+    }
   }
 
-  Future<void> _iniciarEscaneoPropio() async {
-    var permisos = await [Permission.bluetoothScan, Permission.location].request();
-    if (!permisos.values.every((s) => s.isGranted)) {
-      setState(() => _estadoScan = 'Permisos denegados');
-      return;
-    }
-
-    // Detener scan previo si existe
-    if (FlutterBluePlus.isScanningNow) {
-      await FlutterBluePlus.stopScan();
-      await Future.delayed(const Duration(milliseconds: 500));
-    }
-
-    setState(() => _escaneando = true);
-
-    // NUEVO: Suscribirse ANTES de iniciar el scan, usando onScanResults
-    _scanSubscription = FlutterBluePlus.onScanResults.listen(
-      (resultados) {
-        if (!mounted) return;
-        _actualizarSenales(resultados);
-      },
+  void _suscribirAScan() {
+    // Suscribirse al scan ya activo sin iniciar uno nuevo
+    BluetoothHelper.iniciarScanSeguro(
+      onResultados: (resultados) => _actualizarSenales(resultados),
       onError: (e) {
         if (mounted) {
           setState(() => _estadoScan = 'Error en scan: $e');
         }
       },
-    );
-
-    // NUEVO: Limpiar resultados previos
-
-    // Iniciar scan con removeIfGone para que desaparezcan beacons no detectados
-    await FlutterBluePlus.startScan(
-      continuousUpdates: true,
-      androidScanMode: AndroidScanMode.lowLatency,
       removeIfGone: const Duration(seconds: 4),
     );
 
-    setState(() => _estadoScan = 'Buscando beacons...');
-
-    // Timeout de seguridad: si no detectamos nada en 10 segundos, mostrar mensaje
-    Future.delayed(const Duration(seconds: 10), () {
+    _timeoutTimer = Timer(const Duration(seconds: 10), () {
       if (mounted && _posicionFinal == null) {
-        setState(() => _estadoScan = 'No se detectan beacons suficientes. Acercate a un beacon configurado.');
+        setState(() => _estadoScan = 'Escaneando... esperando señal estable');
+      }
+    });
+  }
+
+  Future<void> _iniciarEscaneo() async {
+    if (!mounted) return;
+    setState(() => _escaneando = true);
+
+    final scanOk = await BluetoothHelper.iniciarScanSeguro(
+      onResultados: (resultados) => _actualizarSenales(resultados),
+      onError: (e) {
+        if (mounted) {
+          setState(() => _estadoScan = 'Error en scan: $e');
+        }
+      },
+      removeIfGone: const Duration(seconds: 4),
+    );
+
+    if (!scanOk) {
+      if (mounted) {
+        setState(() => _estadoScan = 'No se pudo iniciar el escaneo');
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _estadoScan = 'Buscando beacons...');
+    }
+
+    _timeoutTimer = Timer(const Duration(seconds: 12), () {
+      if (mounted && _posicionFinal == null) {
+        setState(() => _estadoScan = 'No se detectan beacons suficientes.\nAcercate a un beacon configurado.');
       }
     });
   }
 
   void _actualizarSenales(List<ScanResult> resultados) {
-    // NUEVO: Reiniciar RSSI de todos los beacons a valor por defecto
-    // para que los que no aparecen en esta lectura no sigan con valores viejos
+    if (!mounted) return;
+
+    _contadorLecturas++;
+
+    // Reiniciar RSSI de todos los beacons
     for (var beacon in _beaconsEnElMapa.values) {
       beacon.rssiFiltrado = -100.0;
     }
 
-    // Procesar solo los resultados actuales
+    // Procesar resultados
+    int beaconsDetectados = 0;
     for (var res in resultados) {
-      String mac = res.device.remoteId.str;
-      double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
-      if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
-        _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave;
+      try {
+        String mac = res.device.remoteId.str;
+        double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
+        if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
+          _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave;
+          beaconsDetectados++;
+        }
+      } catch (e) {
+        // Ignorar
       }
+    }
+
+    // Log para debug: mostrar cuántos beacons detectamos
+    if (_contadorLecturas % 10 == 0 && mounted) {
+      final activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > _umbralRSSI).length;
+      setState(() => _estadoScan = 'Beacons detectados: $activos / ${_beaconsEnElMapa.length}');
     }
 
     _calcularPosicionRobusta();
   }
 
   void _calcularPosicionRobusta() {
-    var candidatos = _beaconsEnElMapa.values
-        .where((b) => b.rssiFiltrado > _umbralRSSI)
-        .toList();
+    if (!mounted) return;
 
-    if (candidatos.length < _minBeaconsActivos) {
-      setState(() => _estadoScan = 'Beacons detectados: ${candidatos.length} (necesitamos $_minBeaconsActivos)');
-      return;
-    }
+    try {
+      var candidatos = _beaconsEnElMapa.values
+          .where((b) => b.rssiFiltrado > _umbralRSSI)
+          .toList();
 
-    candidatos.sort((a, b) => b.rssiFiltrado.compareTo(a.rssiFiltrado));
-    final activos = candidatos.take(_maxBeaconsParaCalcular).toList();
+      if (candidatos.length < _minBeaconsActivos) {
+        if (mounted) {
+          setState(() => _estadoScan = 'Beacons cercanos: ${candidatos.length} (necesitamos $_minBeaconsActivos)');
+        }
+        return;
+      }
 
-    double sumaX = 0, sumaY = 0, sumaPesos = 0;
-    for (var b in activos) {
-      double peso = pow(10, (b.rssiFiltrado + 100) / 20 * _exponentePeso).toDouble();
-      sumaX += b.posicion.dx * peso;
-      sumaY += b.posicion.dy * peso;
-      sumaPesos += peso;
-    }
-    if (sumaPesos == 0) return;
+      candidatos.sort((a, b) => b.rssiFiltrado.compareTo(a.rssiFiltrado));
+      final activos = candidatos.take(_maxBeaconsParaCalcular).toList();
 
-    final nuevaPosicionRaw = Offset(sumaX / sumaPesos, sumaY / sumaPesos);
+      double sumaX = 0, sumaY = 0, sumaPesos = 0;
+      for (var b in activos) {
+        double peso = pow(10, (b.rssiFiltrado + 100) / 20 * _exponentePeso).toDouble();
+        sumaX += b.posicion.dx * peso;
+        sumaY += b.posicion.dy * peso;
+        sumaPesos += peso;
+      }
+      if (sumaPesos == 0) return;
 
-    // Nivel 1: EMA
-    final nuevaPosicionEMA = _posicionEMA == null
-        ? nuevaPosicionRaw
-        : Offset(
-            _alphaEMA * nuevaPosicionRaw.dx + (1 - _alphaEMA) * _posicionEMA!.dx,
-            _alphaEMA * nuevaPosicionRaw.dy + (1 - _alphaEMA) * _posicionEMA!.dy,
-          );
-    _posicionEMA = nuevaPosicionEMA;
+      final nuevaPosicionRaw = Offset(sumaX / sumaPesos, sumaY / sumaPesos);
 
-    // Nivel 2: Confirmacion por estabilidad
-    if (_posicionConfirmada == null) {
-      _posicionConfirmada = nuevaPosicionEMA;
-      _contadorEstabilidad = _lecturasParaConfirmar;
-    } else {
-      final distancia = (nuevaPosicionEMA - _posicionConfirmada!).distance;
-      if (distancia < _umbralEstabilidad) {
-        _contadorEstabilidad = min(_contadorEstabilidad + 1, _lecturasParaConfirmar + 3);
+      // Nivel 1: EMA
+      final nuevaPosicionEMA = _posicionEMA == null
+          ? nuevaPosicionRaw
+          : Offset(
+              _alphaEMA * nuevaPosicionRaw.dx + (1 - _alphaEMA) * _posicionEMA!.dx,
+              _alphaEMA * nuevaPosicionRaw.dy + (1 - _alphaEMA) * _posicionEMA!.dy,
+            );
+      _posicionEMA = nuevaPosicionEMA;
+
+      // Nivel 2: Confirmacion
+      if (_posicionConfirmada == null) {
+        _posicionConfirmada = nuevaPosicionEMA;
+        _contadorEstabilidad = _lecturasParaConfirmar;
       } else {
-        _contadorEstabilidad--;
+        final distancia = (nuevaPosicionEMA - _posicionConfirmada!).distance;
+        if (distancia < _umbralEstabilidad) {
+          _contadorEstabilidad = min(_contadorEstabilidad + 1, _lecturasParaConfirmar + 3);
+        } else {
+          _contadorEstabilidad--;
+        }
+
+        if (_contadorEstabilidad >= _lecturasParaConfirmar) {
+          _posicionConfirmada = nuevaPosicionEMA;
+        }
+        if (_contadorEstabilidad <= -5) {
+          _posicionConfirmada = nuevaPosicionEMA;
+          _contadorEstabilidad = 0;
+        }
       }
 
-      if (_contadorEstabilidad >= _lecturasParaConfirmar) {
-        _posicionConfirmada = nuevaPosicionEMA;
-      }
-      if (_contadorEstabilidad <= -5) {
-        _posicionConfirmada = nuevaPosicionEMA;
-        _contadorEstabilidad = 0;
-      }
-    }
+      // Nivel 3: Centroid
+      if (_posicionConfirmada != null) {
+        _historialPosiciones.add(_posicionConfirmada!);
+        if (_historialPosiciones.length > _ventanaCentroid) {
+          _historialPosiciones.removeAt(0);
+        }
 
-    // Nivel 3: Centroid
-    if (_posicionConfirmada != null) {
-      _historialPosiciones.add(_posicionConfirmada!);
-      if (_historialPosiciones.length > _ventanaCentroid) {
-        _historialPosiciones.removeAt(0);
+        double cx = 0, cy = 0;
+        for (var p in _historialPosiciones) {
+          cx += p.dx;
+          cy += p.dy;
+        }
+        final nuevaPosicionFinal = Offset(cx / _historialPosiciones.length, cy / _historialPosiciones.length);
+
+        if (mounted) {
+          setState(() {
+            _posicionFinal = nuevaPosicionFinal;
+            _estadoScan = 'Ubicacion estable (${activos.length} beacons)';
+          });
+        }
       }
 
-      double cx = 0, cy = 0;
-      for (var p in _historialPosiciones) {
-        cx += p.dx;
-        cy += p.dy;
+      // Recalcular ruta
+      if (_destinoSeleccionado != null && _posicionFinal != null) {
+        final debeRecalcular = _ultimaPosicionRuta == null ||
+            (_posicionFinal! - _ultimaPosicionRuta!).distance > _umbralRecalcularRuta;
+
+        if (debeRecalcular) {
+          _calcularRuta();
+          _ultimaPosicionRuta = _posicionFinal;
+        }
       }
-      final nuevaPosicionFinal = Offset(cx / _historialPosiciones.length, cy / _historialPosiciones.length);
-
-      setState(() {
-        _posicionFinal = nuevaPosicionFinal;
-        _estadoScan = 'Ubicacion estable (${activos.length} beacons)';
-      });
-    }
-
-    // Recalcular ruta con histeresis
-    if (_destinoSeleccionado != null && _posicionFinal != null) {
-      final debeRecalcular = _ultimaPosicionRuta == null ||
-          (_posicionFinal! - _ultimaPosicionRuta!).distance > _umbralRecalcularRuta;
-
-      if (debeRecalcular) {
-        _calcularRuta();
-        _ultimaPosicionRuta = _posicionFinal;
-      }
+    } catch (e) {
+      // Ignorar errores de calculo
     }
   }
 
   void _calcularRuta() {
     if (_posicionFinal == null || _destinoSeleccionado == null) return;
 
-    final camino = _resolvedor.encontrarCamino(
-      _posicionFinal!,
-      _destinoSeleccionado!.posicion,
-    );
+    try {
+      final camino = _resolvedor.encontrarCamino(
+        _posicionFinal!,
+        _destinoSeleccionado!.posicion,
+      );
 
-    setState(() {
-      _rutaActual = camino;
-      if (camino == null) {
-        _estadoRuta = 'No se encontro ruta disponible';
-      } else {
-        final distancia = _calcularDistancia(camino);
-        _estadoRuta = 'Ruta a ${_destinoSeleccionado!.nombre}: ${distancia.toStringAsFixed(1)}m';
+      if (mounted) {
+        setState(() {
+          _rutaActual = camino;
+          if (camino == null) {
+            _estadoRuta = 'No se encontro ruta disponible';
+          } else {
+            final distancia = _calcularDistancia(camino);
+            _estadoRuta = 'Ruta a ${_destinoSeleccionado!.nombre}: ${distancia.toStringAsFixed(1)}m';
+          }
+        });
       }
-    });
+    } catch (e) {
+      // Ignorar
+    }
   }
 
   double _calcularDistancia(List<Offset> camino) {
@@ -311,9 +348,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
   void _seleccionarDestino() async {
     if (_lugares.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No hay lugares de interes configurados')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No hay lugares de interes configurados')),
+        );
+      }
       return;
     }
 
@@ -346,7 +385,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       ),
     );
 
-    if (seleccion != null) {
+    if (seleccion != null && mounted) {
       setState(() {
         _destinoSeleccionado = seleccion;
         _rutaActual = null;
@@ -358,12 +397,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   }
 
   void _cancelarNavegacion() {
-    setState(() {
-      _destinoSeleccionado = null;
-      _rutaActual = null;
-      _estadoRuta = '';
-      _ultimaPosicionRuta = null;
-    });
+    if (mounted) {
+      setState(() {
+        _destinoSeleccionado = null;
+        _rutaActual = null;
+        _estadoRuta = '';
+        _ultimaPosicionRuta = null;
+      });
+    }
   }
 
   @override
@@ -384,7 +425,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       ),
       body: Column(
         children: [
-          // Barra de destino
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             color: Colors.indigo[50],
@@ -432,7 +472,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
             ),
           ),
 
-          // Mapa
           Expanded(
             child: InteractiveViewer(
               child: MapaWidget(
@@ -447,7 +486,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
             ),
           ),
 
-          // Estado inferior con info detallada
           Padding(
             padding: const EdgeInsets.all(12),
             child: Column(
@@ -462,9 +500,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       ),
                     if (_escaneando && _posicionFinal == null) const SizedBox(width: 8),
-                    Text(
-                      _estadoScan,
-                      style: TextStyle(color: Colors.indigo[700], fontSize: 14),
+                    Flexible(
+                      child: Text(
+                        _estadoScan,
+                        style: TextStyle(color: Colors.indigo[700], fontSize: 14),
+                        textAlign: TextAlign.center,
+                      ),
                     ),
                   ],
                 ),

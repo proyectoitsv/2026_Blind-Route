@@ -1,13 +1,14 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'dart:math';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'beacon_model.dart';
 import 'zona_model.dart';
 import 'poi_model.dart';
 import 'database.dart';
 import 'procesador_senal.dart';
 import 'mapa_widget.dart';
+import 'bluetooth_helper.dart';
 
 enum _ModoEdicion { beacons, zonas, lugares }
 
@@ -30,7 +31,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   Map<String, BeaconMarcado> _beaconsEnElMapa = {};
   List<ZonaNoTransitable> _zonas = [];
-  List<LugarInteres> _lugares = []; // NUEVO
+  List<LugarInteres> _lugares = [];
   List<ScanResult> _dispositivosCercanos = [];
   ScanResult? _seleccionado;
   bool _escaneando = false;
@@ -45,135 +46,217 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     _cargarDatosIniciales();
   }
 
+  @override
+  void dispose() {
+    BluetoothHelper.detenerScanSeguro();
+    super.dispose();
+  }
+
   Future<void> _cargarDatosIniciales() async {
-    final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
-    final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
-    final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(widget.pisoId);
-    setState(() {
-      _beaconsEnElMapa = {for (var b in beacons) b.mac: b};
-      _zonas = zonas;
-      _lugares = lugares;
-    });
+    try {
+      final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
+      final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
+      final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(widget.pisoId);
+      if (mounted) {
+        setState(() {
+          _beaconsEnElMapa = {for (var b in beacons) b.mac: b};
+          _zonas = zonas;
+          _lugares = lugares;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error cargando datos: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _sincronizarBeacons() async {
-    await DatabaseHelper.instance.guardarBeacons(widget.pisoId, _beaconsEnElMapa.values.toList());
+    try {
+      await DatabaseHelper.instance.guardarBeacons(widget.pisoId, _beaconsEnElMapa.values.toList());
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando beacons: $e')),
+        );
+      }
+    }
   }
 
   // -- Beacons ---------------------------------------------------------------
 
   void _borrarBeacon(String mac) async {
-    setState(() => _beaconsEnElMapa.remove(mac));
-    await _sincronizarBeacons();
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Beacon eliminado")),
-    );
+    try {
+      setState(() => _beaconsEnElMapa.remove(mac));
+      await _sincronizarBeacons();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Beacon eliminado')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error eliminando beacon: $e')),
+        );
+      }
+    }
   }
 
   void _conmutarEscaner() async {
     if (_escaneando) {
-      await FlutterBluePlus.stopScan();
-      setState(() => _escaneando = false);
+      await BluetoothHelper.detenerScanSeguro();
+      if (mounted) setState(() => _escaneando = false);
       return;
     }
-    var permisos = await [Permission.bluetoothScan, Permission.location].request();
-    if (permisos.values.every((s) => s.isGranted)) {
-      setState(() => _escaneando = true);
-      await FlutterBluePlus.startScan(continuousUpdates: true);
-      FlutterBluePlus.scanResults.listen((resultados) {
+
+    final ok = await BluetoothHelper.verificarPrecondiciones(context);
+    if (!ok) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Bluetooth o permisos no disponibles')),
+        );
+      }
+      return;
+    }
+
+    if (mounted) setState(() => _escaneando = true);
+
+    final scanOk = await BluetoothHelper.iniciarScanSeguro(
+      onResultados: (resultados) {
         if (!mounted) return;
         setState(() => _dispositivosCercanos = resultados);
         _actualizarSenales(resultados);
-      });
+      },
+      onError: (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error en scan: $e')),
+          );
+        }
+      },
+    );
+
+    if (!scanOk && mounted) {
+      setState(() => _escaneando = false);
     }
   }
 
   void _actualizarSenales(List<ScanResult> resultados) {
+    if (!mounted) return;
     for (var res in resultados) {
-      String mac = res.device.remoteId.str;
-      double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
-      if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
-        setState(() => _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave);
+      try {
+        String mac = res.device.remoteId.str;
+        double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
+        if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
+          setState(() => _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave);
+        }
+      } catch (e) {
+        // Ignorar
       }
     }
     _calcularPosicion();
   }
 
   void _calcularPosicion() {
-    var activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > -95).toList();
-    if (activos.length < 2) return;
-    double sumaX = 0, sumaY = 0, sumaPesos = 0;
-    for (var b in activos) {
-      double peso = pow(10, (b.rssiFiltrado + 100) / 20).toDouble();
-      sumaX += b.posicion.dx * peso;
-      sumaY += b.posicion.dy * peso;
-      sumaPesos += peso;
-    }
-    if (sumaPesos > 0) {
-      setState(() => _posicionUsuario = Offset(sumaX / sumaPesos, sumaY / sumaPesos));
+    try {
+      var activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > -95).toList();
+      if (activos.length < 2) return;
+      double sumaX = 0, sumaY = 0, sumaPesos = 0;
+      for (var b in activos) {
+        double peso = pow(10, (b.rssiFiltrado + 100) / 20).toDouble();
+        sumaX += b.posicion.dx * peso;
+        sumaY += b.posicion.dy * peso;
+        sumaPesos += peso;
+      }
+      if (sumaPesos > 0 && mounted) {
+        setState(() => _posicionUsuario = Offset(sumaX / sumaPesos, sumaY / sumaPesos));
+      }
+    } catch (e) {
+      // Ignorar
     }
   }
 
   // -- Zonas -----------------------------------------------------------------
 
   void _agregarVertice(Offset normalizado) {
-    setState(() => _verticesEnCurso.add(normalizado));
+    if (mounted) setState(() => _verticesEnCurso.add(normalizado));
   }
 
   void _cerrarZona() async {
     if (_verticesEnCurso.length < 3) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Necesitás al menos 3 puntos para cerrar la zona")),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Necesitas al menos 3 puntos para cerrar la zona')),
+        );
+      }
       return;
     }
 
-    // Nombre opcional - si no ingresa nada, usa un nombre por defecto
     final nombre = await _pedirNombreZona();
-    // Si cancela el dialogo (null), descartamos
     if (nombre == null) {
       _descartarZonaEnCurso();
       return;
     }
-    // Si deja vacio, usamos nombre por defecto
     final nombreFinal = nombre.isEmpty ? 'Zona prohibida' : nombre;
 
-    final zona = ZonaNoTransitable(
-      pisoId: widget.pisoId,
-      nombre: nombreFinal,
-      vertices: List.from(_verticesEnCurso),
-    );
-    final id = await DatabaseHelper.instance.crearZona(zona);
-    setState(() {
-      _zonas.add(zona.copyWith(id: id));
-      _verticesEnCurso.clear();
-    });
+    try {
+      final zona = ZonaNoTransitable(
+        pisoId: widget.pisoId,
+        nombre: nombreFinal,
+        vertices: List.from(_verticesEnCurso),
+      );
+      final id = await DatabaseHelper.instance.crearZona(zona);
+      if (mounted) {
+        setState(() {
+          _zonas.add(zona.copyWith(id: id));
+          _verticesEnCurso.clear();
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando zona: $e')),
+        );
+      }
+    }
   }
 
   void _descartarZonaEnCurso() {
-    setState(() => _verticesEnCurso.clear());
+    if (mounted) setState(() => _verticesEnCurso.clear());
   }
 
   void _borrarZona(ZonaNoTransitable zona) async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('¿Eliminar zona?'),
-        content: Text('Se eliminará "${zona.nombre}".'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Eliminar'),
-          ),
-        ],
-      ),
-    );
-    if (confirmar != true) return;
-    await DatabaseHelper.instance.eliminarZona(zona.id!);
-    setState(() => _zonas.removeWhere((z) => z.id == zona.id));
+    try {
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Eliminar zona?'),
+          content: Text('Se eliminara "${zona.nombre}".'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Eliminar'),
+            ),
+          ],
+        ),
+      );
+      if (confirmar != true) return;
+      await DatabaseHelper.instance.eliminarZona(zona.id!);
+      if (mounted) {
+        setState(() => _zonas.removeWhere((z) => z.id == zona.id));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error eliminando zona: $e')),
+        );
+      }
+    }
   }
 
   Future<String?> _pedirNombreZona() async {
@@ -185,14 +268,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         content: TextField(
           controller: controller,
           decoration: const InputDecoration(
-            hintText: 'Ej: Escaleras, Ascensor (dejá vacío para usar nombre por defecto)',
+            hintText: 'Ej: Escaleras, Ascensor (deja vacio para usar nombre por defecto)',
             border: OutlineInputBorder(),
           ),
           autofocus: true,
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, null), // Cancelar = null
+            onPressed: () => Navigator.pop(ctx, null),
             child: const Text('Cancelar'),
           ),
           ElevatedButton(
@@ -204,7 +287,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     );
   }
 
-  // -- LUGARES DE INTERÉS (POI) ----------------------------------------------
+  // -- Lugares de Interes (POI) ----------------------------------------------
 
   void _agregarLugar(Offset normalizado) async {
     final controller = TextEditingController();
@@ -213,14 +296,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     final nombre = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Nuevo Lugar de Interés'),
+        title: const Text('Nuevo Lugar de Interes'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: controller,
               decoration: const InputDecoration(
-                hintText: 'Nombre (ej: Baño, Terminal 5)',
+                hintText: 'Nombre (ej: Bano, Terminal 5)',
                 border: OutlineInputBorder(),
               ),
               autofocus: true,
@@ -229,7 +312,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
             TextField(
               controller: descController,
               decoration: const InputDecoration(
-                hintText: 'Descripción opcional',
+                hintText: 'Descripcion opcional',
                 border: OutlineInputBorder(),
               ),
             ),
@@ -239,8 +322,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
           ElevatedButton(
             onPressed: () {
-              final nombre = controller.text.trim();
-              if (nombre.isNotEmpty) Navigator.pop(ctx, nombre);
+              final n = controller.text.trim();
+              if (n.isNotEmpty) Navigator.pop(ctx, n);
             },
             child: const Text('Guardar'),
           ),
@@ -250,35 +333,55 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
     if (nombre == null || nombre.isEmpty) return;
 
-    final lugar = LugarInteres(
-      pisoId: widget.pisoId,
-      nombre: nombre,
-      posicion: normalizado,
-      descripcion: descController.text.trim().isEmpty ? null : descController.text.trim(),
-    );
-    final id = await DatabaseHelper.instance.crearLugarInteres(lugar);
-    setState(() => _lugares.add(lugar.copyWith(id: id)));
+    try {
+      final lugar = LugarInteres(
+        pisoId: widget.pisoId,
+        nombre: nombre,
+        posicion: normalizado,
+        descripcion: descController.text.trim().isEmpty ? null : descController.text.trim(),
+      );
+      final id = await DatabaseHelper.instance.crearLugarInteres(lugar);
+      if (mounted) {
+        setState(() => _lugares.add(lugar.copyWith(id: id)));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando lugar: $e')),
+        );
+      }
+    }
   }
 
   void _borrarLugar(LugarInteres lugar) async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('¿Eliminar lugar?'),
-        content: Text('Se eliminará "${lugar.nombre}".'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Eliminar'),
-          ),
-        ],
-      ),
-    );
-    if (confirmar != true) return;
-    await DatabaseHelper.instance.eliminarLugarInteres(lugar.id!);
-    setState(() => _lugares.removeWhere((l) => l.id == lugar.id));
+    try {
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Eliminar lugar?'),
+          content: Text('Se eliminara "${lugar.nombre}".'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Eliminar'),
+            ),
+          ],
+        ),
+      );
+      if (confirmar != true) return;
+      await DatabaseHelper.instance.eliminarLugarInteres(lugar.id!);
+      if (mounted) {
+        setState(() => _lugares.removeWhere((l) => l.id == lugar.id));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error eliminando lugar: $e')),
+        );
+      }
+    }
   }
 
   // -- Tap en el mapa --------------------------------------------------------
@@ -287,14 +390,16 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (_modo == _ModoEdicion.beacons) {
       if (_seleccionado == null) return;
       String mac = _seleccionado!.device.remoteId.str;
-      setState(() {
-        _beaconsEnElMapa[mac] = BeaconMarcado(
-          posicion: normalizado,
-          nombre: _seleccionado!.device.advName.isEmpty ? 'Beacon' : _seleccionado!.device.advName,
-          mac: mac,
-        );
-        _seleccionado = null;
-      });
+      if (mounted) {
+        setState(() {
+          _beaconsEnElMapa[mac] = BeaconMarcado(
+            posicion: normalizado,
+            nombre: _seleccionado!.device.advName.isEmpty ? 'Beacon' : _seleccionado!.device.advName,
+            mac: mac,
+          );
+          _seleccionado = null;
+        });
+      }
       _sincronizarBeacons();
     } else if (_modo == _ModoEdicion.zonas) {
       _agregarVertice(normalizado);
@@ -308,14 +413,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   String _hintTexto() {
     switch (_modo) {
       case _ModoEdicion.beacons:
-        return 'Seleccioná un dispositivo de la lista y tocá el mapa para ubicarlo. Long-press sobre un beacon para eliminarlo.';
+        return 'Selecciona un dispositivo de la lista y toca el mapa para ubicarlo. Long-press sobre un beacon para eliminarlo.';
       case _ModoEdicion.zonas:
         if (_verticesEnCurso.isEmpty) {
-          return 'Tocá el mapa para marcar los vértices de la zona. Necesitás al menos 3 puntos. Tocá una zona existente para borrarla.';
+          return 'Toca el mapa para marcar los vertices de la zona. Necesitas al menos 3 puntos. Toca una zona existente para borrarla.';
         }
-        return '${_verticesEnCurso.length} punto(s) marcado(s). Seguí tocando o cerrá la zona.';
+        return '${_verticesEnCurso.length} punto(s) marcado(s). Segui tocando o cerra la zona.';
       case _ModoEdicion.lugares:
-        return 'Tocá el mapa para agregar un lugar de interés. Tocá el ícono morado para eliminarlo.';
+        return 'Toca el mapa para agregar un lugar de interes. Toca el icono morado para eliminarlo.';
     }
   }
 
@@ -323,13 +428,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Configuración de Piso'),
+        title: const Text('Configuracion de Piso'),
         backgroundColor: Colors.teal[800],
         foregroundColor: Colors.white,
       ),
       body: Column(
         children: [
-          // Selector de modo (ahora con 3 opciones)
+          // Selector de modo
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 10, 10, 0),
             child: SegmentedButton<_ModoEdicion>(
@@ -352,11 +457,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               ],
               selected: {_modo},
               onSelectionChanged: (s) {
-                setState(() {
-                  _modo = s.first;
-                  _verticesEnCurso.clear();
-                  _seleccionado = null;
-                });
+                if (mounted) {
+                  setState(() {
+                    _modo = s.first;
+                    _verticesEnCurso.clear();
+                    _seleccionado = null;
+                  });
+                }
               },
             ),
           ),
@@ -391,7 +498,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     onTapMapa: _onTapMapa,
                     onTapBeacon: _borrarBeacon,
                     onTapLugar: _borrarLugar,
-                    onTapZona: _borrarZona, // NUEVO: borrar zona al tocarla
+                    onTapZona: _borrarZona,
                     verticesEnCurso: _verticesEnCurso,
                   ),
                 ),
@@ -399,7 +506,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
             ),
           ),
 
-          // Botones de acción para zonas
+          // Botones de accion para zonas
           if (_modo == _ModoEdicion.zonas)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -426,7 +533,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               ),
             ),
 
-          // Lista de dispositivos BLE (solo en modo beacons)
+          // Lista de dispositivos BLE
           if (_modo == _ModoEdicion.beacons)
             Expanded(
               child: Column(
@@ -468,7 +575,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                               : null,
                           onTap: yaUbicado
                               ? null
-                              : () => setState(() => _seleccionado = d),
+                              : () {
+                                  if (mounted) setState(() => _seleccionado = d);
+                                },
                           tileColor: seleccionado ? Colors.teal.withOpacity(0.1) : null,
                         );
                       },
@@ -478,11 +587,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               ),
             ),
 
-          // Lista de lugares de interés (solo en modo lugares)
+          // Lista de lugares de interes
           if (_modo == _ModoEdicion.lugares)
             Expanded(
               child: _lugares.isEmpty
-                  ? const Center(child: Text('No hay lugares de interés agregados'))
+                  ? const Center(child: Text('No hay lugares de interes agregados'))
                   : ListView.builder(
                       itemCount: _lugares.length,
                       itemBuilder: (context, i) {

@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'database.dart';
+import 'procesador_senal.dart';
+import 'bluetooth_helper.dart';
 import 'pantalla_naveg.dart';
 
 class ModoAutomatico extends StatefulWidget {
@@ -14,116 +15,116 @@ class ModoAutomatico extends StatefulWidget {
 
 class _ModoAutomaticoState extends State<ModoAutomatico> {
   bool _navegando = false;
-  String _estado = 'Buscando senales de BlindRoute...';
+  String _estado = 'Iniciando...';
   int _beaconsDetectados = 0;
+  Timer? _timeoutTimer;
 
-  // NUEVO: Suscripcion al stream
-  StreamSubscription<List<ScanResult>>? _scanSubscription;
+  // Procesador compartido que se pasara a PantallaNavegacion
+  final ProcesadorSenal _procesador = ProcesadorSenal();
 
   @override
   void initState() {
     super.initState();
-    _iniciarBusquedaSilenciosa();
+    _iniciarBusqueda();
   }
 
   @override
   void dispose() {
-    _scanSubscription?.cancel();
+    _timeoutTimer?.cancel();
+    // NO detenemos el scan aqui - PantallaNavegacion lo necesita activo
+    // Solo cancelamos si no navegamos
     if (!_navegando) {
-      FlutterBluePlus.stopScan();
+      BluetoothHelper.detenerScanSeguro();
     }
     super.dispose();
   }
 
-  Future<void> _iniciarBusquedaSilenciosa() async {
-    var permisos = await [Permission.bluetoothScan, Permission.location].request();
-    if (!permisos.values.every((s) => s.isGranted)) {
-      setState(() => _estado = 'Permisos denegados. Habilita Bluetooth y Location.');
-      return;
-    }
-
-    // Esperar Bluetooth encendido
-    if (!await FlutterBluePlus.isSupported) {
-      setState(() => _estado = 'Bluetooth no soportado');
-      return;
-    }
-
-    var state = await FlutterBluePlus.adapterState.first;
-    if (state == BluetoothAdapterState.off) {
-      try {
-        await FlutterBluePlus.turnOn();
-      } catch (e) {
-        setState(() => _estado = 'Por favor, encende el Bluetooth');
-        return;
+  Future<void> _iniciarBusqueda() async {
+    final ok = await BluetoothHelper.verificarPrecondiciones(context);
+    if (!ok) {
+      if (mounted) {
+        setState(() => _estado = 'Bluetooth o permisos no disponibles.');
       }
+      return;
     }
 
-    await FlutterBluePlus.adapterState
-        .where((s) => s == BluetoothAdapterState.on)
-        .first
-        .timeout(const Duration(seconds: 5), onTimeout: () => BluetoothAdapterState.off);
-
-    // Asegurar que no haya scan activo previo
-    if (FlutterBluePlus.isScanningNow) {
-      await FlutterBluePlus.stopScan();
-      await Future.delayed(const Duration(milliseconds: 500));
+    if (mounted) {
+      setState(() => _estado = 'Buscando beacons de BlindRoute...');
     }
 
-    // Limpiar resultados previos
-
-    // NUEVO: Suscribirse con onScanResults antes de iniciar scan
-    _scanSubscription = FlutterBluePlus.onScanResults.listen((resultados) async {
-      if (_navegando) return;
-
-      for (var res in resultados) {
-        String mac = res.device.remoteId.str;
-        final info = await DatabaseHelper.instance.obtenerInfoPorBeacon(mac);
-
-        if (info != null) {
-          _navegando = true;
-
-          if (!mounted) return;
-
-          // Cancelar suscripcion antes de navegar
-          _scanSubscription?.cancel();
-
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (context) => PantallaNavegacion(
-                pisoId: info['id'],
-                rutaImagen: info['ruta_imagen'],
-              ),
-            ),
-          );
-          break;
+    final scanOk = await BluetoothHelper.iniciarScanSeguro(
+      onResultados: (resultados) => _procesarResultados(resultados),
+      onError: (e) {
+        if (mounted) {
+          setState(() => _estado = 'Error en scan: $e');
         }
-      }
-
-      // Contador para feedback visual
-      if (mounted && !_navegando) {
-        setState(() {
-          _beaconsDetectados = resultados.length;
-          if (resultados.isNotEmpty) {
-            _estado = 'Detectados $_beaconsDetectados dispositivo(s)...';
-          }
-        });
-      }
-    });
-
-    // Iniciar scan
-    await FlutterBluePlus.startScan(
-      continuousUpdates: true,
-      androidScanMode: AndroidScanMode.lowLatency,
+      },
       removeIfGone: const Duration(seconds: 3),
     );
 
-    // Timeout de seguridad
-    Future.delayed(const Duration(seconds: 15), () {
+    if (!scanOk && mounted) {
+      setState(() => _estado = 'No se pudo iniciar el escaneo');
+      return;
+    }
+
+    _timeoutTimer = Timer(const Duration(seconds: 15), () {
       if (mounted && !_navegando && _beaconsDetectados == 0) {
-        setState(() => _estado = 'No se detectaron beacons conocidos. Asegurate de estar cerca de un beacon configurado.');
+        setState(() => _estado = 'No se detectaron beacons conocidos.\nAcercate a un beacon configurado.');
       }
     });
+  }
+
+  Future<void> _procesarResultados(List<ScanResult> resultados) async {
+    if (_navegando) return;
+
+    // Procesar señales para mantener el historial del Kalman actualizado
+    for (var res in resultados) {
+      try {
+        String mac = res.device.remoteId.str;
+        _procesador.filtrarYPromediar(mac, res.rssi);
+      } catch (e) {
+        // Ignorar
+      }
+    }
+
+    int detectados = 0;
+    for (var res in resultados) {
+      String mac = res.device.remoteId.str;
+      try {
+        final info = await DatabaseHelper.instance.obtenerInfoPorBeacon(mac);
+        if (info != null) {
+          _navegando = true;
+          _timeoutTimer?.cancel();
+
+          // IMPORTANTE: Indicar que NO se detenga el scan al dispose
+          BluetoothHelper.mantenerScanActivo = true;
+
+          if (mounted) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => PantallaNavegacion(
+                  pisoId: info['id'],
+                  rutaImagen: info['ruta_imagen'],
+                  procesadorCompartido: _procesador, // Pasar el mismo procesador
+                ),
+              ),
+            );
+          }
+          return;
+        }
+      } catch (e) {
+        // Ignorar errores de DB individuales
+      }
+      detectados++;
+    }
+
+    if (mounted && !_navegando && detectados > 0) {
+      setState(() {
+        _beaconsDetectados = detectados;
+        _estado = 'Detectados $detectados dispositivo(s)...';
+      });
+    }
   }
 
   @override
