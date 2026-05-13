@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'database.dart';
 import 'pantalla_naveg.dart';
 
@@ -11,7 +12,7 @@ class ModoAutomatico extends StatefulWidget {
 }
 
 class _ModoAutomaticoState extends State<ModoAutomatico> {
-  bool _buscando = true;
+  bool _navegando = false; // Evita abrir la pantalla varias veces
 
   @override
   void initState() {
@@ -19,23 +20,37 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     _iniciarBusquedaSilenciosa();
   }
 
+  @override
+  void dispose() {
+    // Solo detenemos el scan si todavía no navegamos a la siguiente pantalla.
+    // Si ya navegamos, PantallaNavegacion heredó el scan y lo maneja ella.
+    if (!_navegando) {
+      FlutterBluePlus.stopScan();
+    }
+    super.dispose();
+  }
+
   void _iniciarBusquedaSilenciosa() async {
-    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
+    var permisos = await [Permission.bluetoothScan, Permission.location].request();
+    if (!permisos.values.every((s) => s.isGranted)) return;
+
+    // Iniciamos el scan SIN timeout y SIN llamar stopScan al encontrar el beacon.
+    // PantallaNavegacion recibirá este mismo stream y lo seguirá usando.
+    await FlutterBluePlus.startScan(continuousUpdates: true);
 
     FlutterBluePlus.scanResults.listen((resultados) async {
+      if (_navegando) return;
+
       for (var res in resultados) {
         String mac = res.device.remoteId.str;
-        
-        // Consultamos a la base de datos si conocemos este Beacon
         final info = await DatabaseHelper.instance.obtenerInfoPorBeacon(mac);
-        
-        if (info != null && _buscando) {
-          _buscando = false; // Evitamos que abra la pantalla muchas veces
-          await FlutterBluePlus.stopScan();
+
+        if (info != null) {
+          _navegando = true; // Bloqueamos futuras llamadas
 
           if (!mounted) return;
-          
-          // Saltamos directamente al mapa en modo navegación (solo lectura)
+
+          // CLAVE: NO detenemos el scan. PantallaNavegacion lo hereda activo.
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(

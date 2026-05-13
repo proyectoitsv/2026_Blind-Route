@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
-import 'dart:async';
 import 'dart:math';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'dart:io';
 import 'database.dart';
 import 'beacon_model.dart';
+import 'zona_model.dart';
 import 'procesador_senal.dart';
+import 'mapa_widget.dart';
 
 class PantallaNavegacion extends StatefulWidget {
   final int pisoId;
@@ -25,18 +25,19 @@ class PantallaNavegacion extends StatefulWidget {
 class _PantallaNavegacionState extends State<PantallaNavegacion> {
   final ProcesadorSenal _procesador = ProcesadorSenal();
 
-  // Beacons cargados desde la DB (solo lectura)
   Map<String, BeaconMarcado> _beaconsEnElMapa = {};
+  List<ZonaNoTransitable> _zonas = [];
 
-  // Posición calculada del usuario
-  Offset? _posicionUsuario;
+  // Posición normalizada suavizada con EMA
+  Offset? _posicionSuavizada;
+  static const double _alphaEMA = 0.25;
 
   bool _escaneando = false;
 
   @override
   void initState() {
     super.initState();
-    _cargarBeaconsYEscanear();
+    _cargarDatosYSuscribirse();
   }
 
   @override
@@ -45,22 +46,30 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     super.dispose();
   }
 
-  // Carga los beacons configurados por el admin e inicia el escaneo automáticamente
-  Future<void> _cargarBeaconsYEscanear() async {
+  Future<void> _cargarDatosYSuscribirse() async {
     final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
+    final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
     setState(() {
       _beaconsEnElMapa = {for (var b in beacons) b.mac: b};
+      _zonas = zonas;
     });
-    _iniciarEscaneo();
+
+    if (FlutterBluePlus.isScanningNow) {
+      setState(() => _escaneando = true);
+      FlutterBluePlus.scanResults.listen((resultados) {
+        if (!mounted) return;
+        _actualizarSenales(resultados);
+      });
+    } else {
+      _iniciarEscaneoPropio();
+    }
   }
 
-  Future<void> _iniciarEscaneo() async {
+  Future<void> _iniciarEscaneoPropio() async {
     var permisos = await [Permission.bluetoothScan, Permission.location].request();
     if (!permisos.values.every((s) => s.isGranted)) return;
-
     setState(() => _escaneando = true);
     await FlutterBluePlus.startScan(continuousUpdates: true);
-
     FlutterBluePlus.scanResults.listen((resultados) {
       if (!mounted) return;
       _actualizarSenales(resultados);
@@ -71,17 +80,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     for (var res in resultados) {
       String mac = res.device.remoteId.str;
       double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
-
       if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
-        setState(() {
-          _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave;
-        });
+        _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave;
       }
     }
-    _calcularPosicion();
+    _calcularYSuavizarPosicion();
   }
 
-  void _calcularPosicion() {
+  void _calcularYSuavizarPosicion() {
     var activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > -95).toList();
     if (activos.length < 2) return;
 
@@ -92,12 +98,17 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       sumaY += b.posicion.dy * peso;
       sumaPesos += peso;
     }
+    if (sumaPesos == 0) return;
 
-    if (sumaPesos > 0) {
-      setState(() {
-        _posicionUsuario = Offset(sumaX / sumaPesos, sumaY / sumaPesos);
-      });
-    }
+    final nuevaPosicion = Offset(sumaX / sumaPesos, sumaY / sumaPesos);
+    setState(() {
+      _posicionSuavizada = _posicionSuavizada == null
+          ? nuevaPosicion
+          : Offset(
+              _alphaEMA * nuevaPosicion.dx + (1 - _alphaEMA) * _posicionSuavizada!.dx,
+              _alphaEMA * nuevaPosicion.dy + (1 - _alphaEMA) * _posicionSuavizada!.dy,
+            );
+    });
   }
 
   @override
@@ -112,74 +123,34 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         children: [
           Expanded(
             child: InteractiveViewer(
-              child: Center(
-                child: Container(
-                  margin: const EdgeInsets.all(10),
-                  child: Stack(
-                    children: [
-                      // Plano del piso (solo lectura, sin GestureDetector de edición)
-                      Image.file(
-                        File(widget.rutaImagen),
-                        fit: BoxFit.contain,
-                        errorBuilder: (context, error, stackTrace) =>
-                            const Center(child: Text("Plano no disponible")),
-                      ),
-
-                      // Beacons como referencia visual fija (no interactivos)
-                      ..._beaconsEnElMapa.values.map((b) => Positioned(
-                            left: b.posicion.dx - 5,
-                            top: b.posicion.dy - 5,
-                            child: Container(
-                              width: 10,
-                              height: 10,
-                              decoration: const BoxDecoration(
-                                color: Colors.black26,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          )),
-
-                      // Posición del usuario
-                      if (_posicionUsuario != null)
-                        Positioned(
-                          left: _posicionUsuario!.dx - 15,
-                          top: _posicionUsuario!.dy - 15,
-                          child: const Icon(
-                            Icons.person_pin_circle,
-                            color: Colors.blue,
-                            size: 35,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
+              child: MapaWidget(
+                rutaImagen: widget.rutaImagen,
+                beacons: _beaconsEnElMapa,
+                zonas: _zonas,
+                posicionUsuario: _posicionSuavizada,
+                modoEdicion: false,
               ),
             ),
           ),
-
-          // Indicador de estado del escaneo
           Padding(
             padding: const EdgeInsets.all(12),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                if (_escaneando)
+                if (_escaneando && _posicionSuavizada == null)
                   const SizedBox(
                     width: 14,
                     height: 14,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                if (_escaneando) const SizedBox(width: 8),
+                if (_escaneando && _posicionSuavizada == null) const SizedBox(width: 8),
                 Text(
-                  _escaneando
-                      ? 'Buscando tu ubicación...'
-                      : _posicionUsuario != null
-                          ? 'Ubicación detectada'
+                  _posicionSuavizada != null
+                      ? 'Ubicación detectada'
+                      : _escaneando
+                          ? 'Buscando tu ubicación...'
                           : 'Sin señal de beacons',
-                  style: TextStyle(
-                    color: Colors.indigo[700],
-                    fontSize: 14,
-                  ),
+                  style: TextStyle(color: Colors.indigo[700], fontSize: 14),
                 ),
               ],
             ),

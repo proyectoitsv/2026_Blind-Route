@@ -1,8 +1,9 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'beacon_model.dart';
+import 'zona_model.dart';
 import 'package:flutter/material.dart';
-import 'dart:async';
+import 'dart:convert';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -22,19 +23,18 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2, // Incrementamos versión para la migración
       onCreate: _createDB,
+      onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
     );
   }
 
-  // Esto es para que el borrado automático funcione bien
   Future _onConfigure(Database db) async {
     await db.execute('PRAGMA foreign_keys = ON');
   }
 
   Future _createDB(Database db, int version) async {
-    // Tabla de Edificios
     await db.execute('''
       CREATE TABLE edificios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,7 +42,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // Tabla de Pisos (Corregido edificio_id)
     await db.execute('''
       CREATE TABLE pisos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +52,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // Tabla de Beacons (Corregido piso_id)
     await db.execute('''
       CREATE TABLE beacons (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,9 +63,34 @@ class DatabaseHelper {
         FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
       )
     ''');
+
+    await db.execute('''
+      CREATE TABLE zonas_no_transitables (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        piso_id INTEGER NOT NULL,
+        nombre TEXT NOT NULL,
+        vertices_json TEXT NOT NULL,
+        FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
+      )
+    ''');
   }
 
-  // --- Funciones para Edificios ---
+  // Migración: usuarios existentes con versión 1 reciben la nueva tabla
+  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS zonas_no_transitables (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          piso_id INTEGER NOT NULL,
+          nombre TEXT NOT NULL,
+          vertices_json TEXT NOT NULL,
+          FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
+        )
+      ''');
+    }
+  }
+
+  // --- Edificios ---
   Future<int> crearEdificio(String nombre) async {
     final db = await instance.database;
     return await db.insert('edificios', {'nombre': nombre});
@@ -78,7 +101,7 @@ class DatabaseHelper {
     return await db.query('edificios');
   }
 
-  // --- Funciones para Pisos ---
+  // --- Pisos ---
   Future<int> crearPiso(int edificioId, String nombrePiso, String rutaImagen) async {
     final db = await instance.database;
     return await db.insert('pisos', {
@@ -93,7 +116,7 @@ class DatabaseHelper {
     return await db.query('pisos', where: 'edificio_id = ?', whereArgs: [edificioId]);
   }
 
-  // --- Funciones para Beacons ---
+  // --- Beacons ---
   Future<void> guardarBeacons(int pisoId, List<BeaconMarcado> beacons) async {
     final db = await instance.database;
     await db.delete('beacons', where: 'piso_id = ?', whereArgs: [pisoId]);
@@ -111,7 +134,6 @@ class DatabaseHelper {
   Future<List<BeaconMarcado>> obtenerBeaconsPorPiso(int pisoId) async {
     final db = await instance.database;
     final res = await db.query('beacons', where: 'piso_id = ?', whereArgs: [pisoId]);
-    
     return res.map((json) => BeaconMarcado(
       posicion: Offset(json['x'] as double, json['y'] as double),
       nombre: json['nombre_beacon'] as String,
@@ -119,10 +141,8 @@ class DatabaseHelper {
     )).toList();
   }
 
-  // Esta es la función que te daba error en el Modo Automático
   Future<Map<String, dynamic>?> obtenerInfoPorBeacon(String mac) async {
     final db = await instance.database;
-    
     final result = await db.rawQuery('''
       SELECT pisos.id, pisos.ruta_imagen, edificios.nombre as edificio_nombre, pisos.nombre_piso
       FROM beacons
@@ -131,17 +151,59 @@ class DatabaseHelper {
       WHERE beacons.mac = ?
       LIMIT 1
     ''', [mac]);
-
     if (result.isNotEmpty) return result.first;
     return null;
   }
 
-  // --- Funciones de Borrado Definitivo ---
+  // --- Zonas no transitables ---
+
+  /// Guarda los vértices normalizados como JSON: [{dx, dy}, ...]
+  Future<int> crearZona(ZonaNoTransitable zona) async {
+    final db = await instance.database;
+    final verticesJson = jsonEncode(
+      zona.vertices.map((v) => {'dx': v.dx, 'dy': v.dy}).toList(),
+    );
+    return await db.insert('zonas_no_transitables', {
+      'piso_id': zona.pisoId,
+      'nombre': zona.nombre,
+      'vertices_json': verticesJson,
+    });
+  }
+
+  Future<List<ZonaNoTransitable>> obtenerZonasPorPiso(int pisoId) async {
+    final db = await instance.database;
+    final res = await db.query(
+      'zonas_no_transitables',
+      where: 'piso_id = ?',
+      whereArgs: [pisoId],
+    );
+    return res.map((row) {
+      final List<dynamic> raw = jsonDecode(row['vertices_json'] as String);
+      final vertices = raw.map((v) => Offset(v['dx'] as double, v['dy'] as double)).toList();
+      return ZonaNoTransitable(
+        id: row['id'] as int,
+        pisoId: pisoId,
+        nombre: row['nombre'] as String,
+        vertices: vertices,
+      );
+    }).toList();
+  }
+
+  Future<void> eliminarZona(int zonaId) async {
+    final db = await instance.database;
+    await db.delete('zonas_no_transitables', where: 'id = ?', whereArgs: [zonaId]);
+  }
+
+  // --- Borrado en cascada ---
   Future<void> eliminarEdificioCompleto(int edificioId) async {
     final db = await instance.database;
     await db.transaction((txn) async {
       await txn.rawDelete('''
         DELETE FROM beacons 
+        WHERE piso_id IN (SELECT id FROM pisos WHERE edificio_id = ?)
+      ''', [edificioId]);
+      await txn.rawDelete('''
+        DELETE FROM zonas_no_transitables 
         WHERE piso_id IN (SELECT id FROM pisos WHERE edificio_id = ?)
       ''', [edificioId]);
       await txn.delete('pisos', where: 'edificio_id = ?', whereArgs: [edificioId]);
@@ -152,6 +214,7 @@ class DatabaseHelper {
   Future<int> eliminarPiso(int id) async {
     final db = await instance.database;
     await db.delete('beacons', where: 'piso_id = ?', whereArgs: [id]);
+    await db.delete('zonas_no_transitables', where: 'piso_id = ?', whereArgs: [id]);
     return await db.delete('pisos', where: 'id = ?', whereArgs: [id]);
   }
 }
