@@ -1,0 +1,89 @@
+# ============================================
+# FLUTTER / DART
+# ============================================
+
+# Caché de Dart y Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+pubspec.lock
+
+# ============================================
+# ANDROID
+# ============================================
+
+# Gradle (muy pesado, se regenera)
+**/android/.gradle
+**/android/captures/
+
+# Scripts de Gradle (se pueden regenerar)
+**/android/gradlew
+**/android/gradlew.bat
+
+# Configuración local
+**/android/local.properties
+
+# Archivos generados automáticamente
+**/android/**/GeneratedPluginRegistrant.java
+
+# ============================================
+# iOS
+# ============================================
+
+# Pods (dependencias, se regeneran con pod install)
+**/ios/Pods/
+
+# Symlinks
+**/ios/.symlinks/
+
+# Framework de Flutter (se copia al compilar)
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+
+# ID de última compilación
+**/ios/Flutter/.last_build_id
+
+# ============================================
+# IDE / EDITORES
+# ============================================
+
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# ============================================
+# SISTEMA OPERATIVO
+# ============================================
+
+.DS_Store
+Thumbs.db
+
+# ============================================
+# ARCHIVOS LOCALES / TEMPORALES
+# ============================================
+
+# Configuración local de Flutter
+.metadata
+
+# Configuración local de DevTools
+devtools_options.yaml
+
+# Capturas de error de Flutter
+flutter_*.png
+
+# Logs
+*.log
+log.txt
+
+# ============================================
+# OTROS
+# ============================================
+
+# Archivos de backup
+*.swp
+*.bak
+*~
