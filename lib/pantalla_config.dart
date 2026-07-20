@@ -1,0 +1,1625 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'dart:math';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_compass/flutter_compass.dart';
+import 'beacon_model.dart';
+import 'zona_model.dart';
+import 'poi_model.dart';
+import 'database.dart';
+import 'procesador_senal.dart';
+import 'mapa_widget.dart';
+import 'bluetooth_helper.dart';
+import 'grilla_nav.dart';
+import 'calibracion_model.dart';
+import 'tema.dart';
+
+enum _ModoEdicion { beacons, zonas, lugares, escala, calibracion, brujula }
+
+class PantallaConfiguracion extends StatefulWidget {
+  final int pisoId;
+  final String rutaImagen;
+  final double escalaX;
+  final double escalaY;
+
+  /// Lado de celda de la grilla (m). Configurable por piso, rango 0.5–1.0.
+  final double tamCeldaMetros;
+
+  const PantallaConfiguracion({
+    super.key,
+    required this.pisoId,
+    required this.rutaImagen,
+    this.escalaX = GrillaNav.escalaPorDefecto,
+    this.escalaY = GrillaNav.escalaPorDefecto,
+    this.tamCeldaMetros = 1.0,
+  });
+
+  @override
+  State<PantallaConfiguracion> createState() => _PantallaConfiguracionState();
+}
+
+class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
+  final ProcesadorSenal _procesador = ProcesadorSenal();
+
+  Map<String, BeaconMarcado> _beaconsEnElMapa = {};
+  List<ZonaNoTransitable> _zonas = [];
+  List<LugarInteres> _lugares = [];
+  List<ScanResult> _dispositivosCercanos = [];
+  ScanResult? _seleccionado;
+  bool _escaneando = false;
+  Offset? _posicionUsuario;
+
+  _ModoEdicion _modo = _ModoEdicion.beacons;
+  // NO 'final': se reasigna (no se muta in-place) en cada cambio para que
+  // _MapaPainter.shouldRepaint (que compara listas por referencia) detecte
+  // el cambio y repinte el polígono en construcción mientras se dibuja.
+  List<Offset> _verticesEnCurso = [];
+
+  // Calibración: celda seleccionada por el operador + registros guardados.
+  ({int ix, int iy})? _celdaCalSeleccionada;
+  List<CalibracionRegistro> _calibraciones = [];
+  final TextEditingController _etiquetaCalCtrl = TextEditingController();
+
+  // Escala configurable por eje + grilla derivada.
+  late double _escalaX;
+  late double _escalaY;
+  late double _tamCelda;
+  late GrillaNav _grilla;
+
+  // Rotación de la brújula: grados que hay que sumar al heading del dispositivo
+  // para que 0° coincida con el Norte real del plano. Se persiste en la DB.
+  double _rotacionMapa = 0.0;
+
+  // ── Brújula en vivo (solo activa en modo brujula) ─────────────────────────
+  StreamSubscription<CompassEvent>? _compassConfigSub;
+  double? _headingEnVivo; // heading crudo del sensor, sin compensar
+
+  // ── Calibración de posición: toma continua de N muestras ─────────────────
+  // Mientras el operador esté parado en la celda seleccionada, el sistema
+  // acumula muestras BLE por beacon durante _duracionTomaSeg segundos y luego
+  // promedía con la misma mediana truncada que el modo navegación.
+  bool _tomandoMuestras = false;
+  int _muestrasAcumuladas = 0;
+  static const int _totalMuestras = 30; // ~5 s a 6 Hz
+  // Acumulador: mac → lista de lecturas RSSI durante la toma
+  final Map<String, List<double>> _acumCal = {};
+
+  // Medición interactiva de escala.
+  final List<Offset> _puntosEscala = []; // P1, P2 (largo), P3 (ancho)
+  Offset? _elasticoDesde;                 // origen de la línea elástica en curso
+  Offset? _elasticoHasta;                 // extremo actual durante el arrastre
+  int _pasoEscala = 0;                    // 0 = largo, 1 = ancho, 2 = listo
+  double? _largoMetros;                   // metros del largo (P1→P2)
+
+  @override
+  void initState() {
+    super.initState();
+    _escalaX = widget.escalaX;
+    _escalaY = widget.escalaY;
+    _tamCelda = widget.tamCeldaMetros;
+    _grilla = GrillaNav(metrosX: _escalaX, metrosY: _escalaY, tamCeldaMetros: _tamCelda);
+    _cargarDatosIniciales();
+  }
+
+  @override
+  void dispose() {
+    _etiquetaCalCtrl.dispose();
+    _compassConfigSub?.cancel();
+    BluetoothHelper.detenerScanSeguro();
+    super.dispose();
+  }
+
+  Future<void> _cargarDatosIniciales() async {
+    try {
+      final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
+      final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
+      final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(widget.pisoId);
+      final calibraciones = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(widget.pisoId);
+
+      // Leer rotación del mapa guardada.
+      final db = await DatabaseHelper.instance.database;
+      final filas = await db.query('pisos', columns: ['rotacion_mapa'], where: 'id = ?', whereArgs: [widget.pisoId], limit: 1);
+      final rotGuardada = filas.isNotEmpty ? ((filas.first['rotacion_mapa'] as num?)?.toDouble() ?? 0.0) : 0.0;
+
+      if (mounted) {
+        setState(() {
+          _beaconsEnElMapa = {for (var b in beacons) b.mac: b};
+          _zonas = zonas;
+          _lugares = lugares;
+          _calibraciones = calibraciones;
+          _rotacionMapa = rotGuardada;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error cargando datos: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _sincronizarBeacons() async {
+    try {
+      await DatabaseHelper.instance.guardarBeacons(widget.pisoId, _beaconsEnElMapa.values.toList());
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando beacons: $e')),
+        );
+      }
+    }
+  }
+
+  // -- Beacons ---------------------------------------------------------------
+
+  void _borrarBeacon(String mac) async {
+    try {
+      setState(() => _beaconsEnElMapa.remove(mac));
+      await _sincronizarBeacons();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Beacon eliminado')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error eliminando beacon: $e')),
+        );
+      }
+    }
+  }
+
+  void _conmutarEscaner() async {
+    if (_escaneando) {
+      await BluetoothHelper.detenerScanSeguro();
+      if (mounted) setState(() => _escaneando = false);
+      return;
+    }
+
+    final ok = await BluetoothHelper.verificarPrecondiciones(context);
+    if (!ok) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Bluetooth o permisos no disponibles')),
+        );
+      }
+      return;
+    }
+
+    if (mounted) setState(() => _escaneando = true);
+
+    final scanOk = await BluetoothHelper.iniciarScanSeguro(
+      onResultados: (resultados) {
+        if (!mounted) return;
+        setState(() => _dispositivosCercanos = resultados);
+        _actualizarSenales(resultados);
+      },
+      onError: (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error en scan: $e')),
+          );
+        }
+      },
+    );
+
+    if (!scanOk && mounted) {
+      setState(() => _escaneando = false);
+    }
+  }
+
+  void _actualizarSenales(List<ScanResult> resultados) {
+    if (!mounted) return;
+    for (var res in resultados) {
+      try {
+        String mac = res.device.remoteId.str;
+        double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
+        if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
+          setState(() => _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave);
+        }
+
+        // Acumulación de muestras para calibración multi-muestra.
+        if (_tomandoMuestras && _beaconsEnElMapa.containsKey(mac)) {
+          _acumCal.putIfAbsent(mac, () => []).add(res.rssi.toDouble());
+        }
+      } catch (e) {
+        // Ignorar
+      }
+    }
+
+    // Contar ciclos de scan (no eventos individuales) como "muestras".
+    if (_tomandoMuestras) {
+      setState(() => _muestrasAcumuladas++);
+      if (_muestrasAcumuladas >= _totalMuestras) {
+        _guardarCalibracionAcumulada();
+      }
+    }
+
+    _calcularPosicion();
+  }
+
+  void _calcularPosicion() {
+    // En modo calibración con celda seleccionada: NO actualizar la posición
+    // desde BLE. El operador declaró dónde está; BLE solo se usa para
+    // acumular muestras, no para mover el ícono.
+    if (_modo == _ModoEdicion.calibracion && _celdaCalSeleccionada != null) return;
+
+    try {
+      var activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > -95).toList();
+      if (activos.length < 2) return;
+      double sumaX = 0, sumaY = 0, sumaPesos = 0;
+      for (var b in activos) {
+        double peso = pow(10, (b.rssiFiltrado + 100) / 20).toDouble();
+        sumaX += b.posicion.dx * peso;
+        sumaY += b.posicion.dy * peso;
+        sumaPesos += peso;
+      }
+      if (sumaPesos > 0 && mounted) {
+        setState(() => _posicionUsuario = Offset(sumaX / sumaPesos, sumaY / sumaPesos));
+      }
+    } catch (e) {
+      // Ignorar
+    }
+  }
+
+  // -- Zonas -----------------------------------------------------------------
+
+  void _agregarVertice(Offset normalizado) {
+    if (mounted) {
+      setState(() => _verticesEnCurso = [..._verticesEnCurso, normalizado]);
+    }
+  }
+
+  void _cerrarZona() async {
+    if (_verticesEnCurso.length < 3) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Necesitas al menos 3 puntos para cerrar la zona')),
+        );
+      }
+      return;
+    }
+
+    final nombre = await _pedirNombreZona();
+    if (nombre == null) {
+      _descartarZonaEnCurso();
+      return;
+    }
+    final nombreFinal = nombre.isEmpty ? 'Zona prohibida' : nombre;
+
+    try {
+      final zona = ZonaNoTransitable(
+        pisoId: widget.pisoId,
+        nombre: nombreFinal,
+        vertices: List.from(_verticesEnCurso),
+      );
+      final id = await DatabaseHelper.instance.crearZona(zona);
+      if (mounted) {
+        setState(() {
+          _zonas = [..._zonas, zona.copyWith(id: id)];
+          _verticesEnCurso = [];
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando zona: $e')),
+        );
+      }
+    }
+  }
+
+  void _descartarZonaEnCurso() {
+    if (mounted) setState(() => _verticesEnCurso = []);
+  }
+
+  void _borrarZona(ZonaNoTransitable zona) async {
+    try {
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Eliminar zona?'),
+          content: Text('Se eliminara "${zona.nombre}".'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Eliminar'),
+            ),
+          ],
+        ),
+      );
+      if (confirmar != true) return;
+      await DatabaseHelper.instance.eliminarZona(zona.id!);
+      if (mounted) {
+        setState(() => _zonas = _zonas.where((z) => z.id != zona.id).toList());
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error eliminando zona: $e')),
+        );
+      }
+    }
+  }
+
+  Future<String?> _pedirNombreZona() async {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Nombre de la zona (opcional)'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            hintText: 'Ej: Escaleras, Ascensor (deja vacio para usar nombre por defecto)',
+            border: OutlineInputBorder(),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // -- Lugares de Interes (POI) ----------------------------------------------
+
+  void _agregarLugar(Offset normalizado) async {
+    final controller = TextEditingController();
+    final descController = TextEditingController();
+
+    final nombre = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Nuevo Lugar de Interes'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                hintText: 'Nombre (ej: Bano, Terminal 5)',
+                border: OutlineInputBorder(),
+              ),
+              autofocus: true,
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: descController,
+              decoration: const InputDecoration(
+                hintText: 'Descripcion opcional',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () {
+              final n = controller.text.trim();
+              if (n.isNotEmpty) Navigator.pop(ctx, n);
+            },
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
+
+    if (nombre == null || nombre.isEmpty) return;
+
+    try {
+      final lugar = LugarInteres(
+        pisoId: widget.pisoId,
+        nombre: nombre,
+        posicion: normalizado,
+        descripcion: descController.text.trim().isEmpty ? null : descController.text.trim(),
+      );
+      final id = await DatabaseHelper.instance.crearLugarInteres(lugar);
+      if (mounted) {
+        setState(() => _lugares.add(lugar.copyWith(id: id)));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando lugar: $e')),
+        );
+      }
+    }
+  }
+
+  void _borrarLugar(LugarInteres lugar) async {
+    try {
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Eliminar lugar?'),
+          content: Text('Se eliminara "${lugar.nombre}".'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Eliminar'),
+            ),
+          ],
+        ),
+      );
+      if (confirmar != true) return;
+      await DatabaseHelper.instance.eliminarLugarInteres(lugar.id!);
+      if (mounted) {
+        setState(() => _lugares.removeWhere((l) => l.id == lugar.id));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error eliminando lugar: $e')),
+        );
+      }
+    }
+  }
+
+  // -- Tap en el mapa --------------------------------------------------------
+
+  void _onTapMapa(Offset normalizado) {
+    if (_modo == _ModoEdicion.beacons) {
+      if (_seleccionado == null) return;
+      String mac = _seleccionado!.device.remoteId.str;
+      if (mounted) {
+        setState(() {
+          _beaconsEnElMapa[mac] = BeaconMarcado(
+            posicion: normalizado,
+            nombre: _seleccionado!.device.advName.isEmpty ? 'Beacon' : _seleccionado!.device.advName,
+            mac: mac,
+          );
+          _seleccionado = null;
+        });
+      }
+      _sincronizarBeacons();
+    } else if (_modo == _ModoEdicion.zonas) {
+      _agregarVertice(normalizado);
+    } else if (_modo == _ModoEdicion.lugares) {
+      _agregarLugar(normalizado);
+    } else if (_modo == _ModoEdicion.calibracion) {
+      // Seleccionar la celda donde el operador dice estar parado.
+      // El ícono de posición salta INMEDIATAMENTE a esa celda y deja de
+      // moverse con el BLE mientras se toman muestras: la calibración parte
+      // de la premisa de que el operador declaró dónde está.
+      final ix = _grilla.indiceX(normalizado.dx);
+      final iy = _grilla.indiceY(normalizado.dy);
+      if (mounted) {
+        setState(() {
+          _celdaCalSeleccionada = (ix: ix, iy: iy);
+          // Anclar la posición visible al centro de la celda seleccionada.
+          _posicionUsuario = Offset(_grilla.centroX(ix), _grilla.centroY(iy));
+        });
+      }
+    }
+    // En modo escala la interacción es por arrastre (no por tap).
+  }
+
+  // -- Calibración -----------------------------------------------------------
+
+  /// Asegura que el escáner BLE esté activo (necesario para ver lecturas en
+  /// tiempo real al calibrar). No-op si ya está escaneando.
+  Future<void> _asegurarEscaneando() async {
+    if (_escaneando) return;
+    final ok = await BluetoothHelper.verificarPrecondiciones(context);
+    if (!ok) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Bluetooth o permisos no disponibles')),
+        );
+      }
+      return;
+    }
+    if (mounted) setState(() => _escaneando = true);
+    final scanOk = await BluetoothHelper.iniciarScanSeguro(
+      onResultados: (resultados) {
+        if (!mounted) return;
+        setState(() => _dispositivosCercanos = resultados);
+        _actualizarSenales(resultados);
+      },
+      onError: (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error en scan: $e')),
+          );
+        }
+      },
+    );
+    if (!scanOk && mounted) setState(() => _escaneando = false);
+  }
+
+  // -- Brújula en vivo -------------------------------------------------------
+
+  void _iniciarCompass() {
+    if (_compassConfigSub != null) return; // ya activa
+    if (FlutterCompass.events == null) return;
+    _compassConfigSub = FlutterCompass.events!.listen((CompassEvent event) {
+      if (!mounted) return;
+      if (event.heading != null) {
+        setState(() => _headingEnVivo = event.heading);
+      }
+    });
+  }
+
+  void _detenerCompass() {
+    _compassConfigSub?.cancel();
+    _compassConfigSub = null;
+    if (mounted) setState(() => _headingEnVivo = null);
+  }
+
+  // -- Calibración de posición: toma multi-muestra ---------------------------
+
+  /// Inicia la acumulación de [_totalMuestras] lecturas BLE por beacon.
+  /// Cada llamada a [_actualizarSenales] incrementa el contador mientras
+  /// [_tomandoMuestras] es true.
+  void _iniciarTomaCalibracion() {
+    if (_celdaCalSeleccionada == null) return;
+    _acumCal.clear();
+    if (mounted) {
+      setState(() {
+        _tomandoMuestras = true;
+        _muestrasAcumuladas = 0;
+      });
+    }
+  }
+
+  /// Registra una calibración en la celda seleccionada usando las muestras
+  /// acumuladas. Calcula la mediana truncada por beacon (igual que
+  /// [ProcesadorSenal.filtrarYPromediar]) para obtener un RSSI representativo
+  /// y luego deriva el txPower con el modelo log-distancia.
+  Future<void> _guardarCalibracionAcumulada() async {
+    final celda = _celdaCalSeleccionada;
+    if (celda == null || _acumCal.isEmpty) return;
+
+    final cx = _grilla.centroX(celda.ix);
+    final cy = _grilla.centroY(celda.iy);
+    final nExp = ProcesadorSenal.pathLossExponent;
+
+    final lecturas = <Map<String, dynamic>>[];
+    final txAjustado = <String, double>{};
+
+    for (final entry in _acumCal.entries) {
+      final mac = entry.key;
+      final muestras = entry.value;
+      if (muestras.isEmpty) continue;
+
+      // Mediana truncada al 20% en cada extremo (igual que ProcesadorSenal).
+      final ord = List<double>.from(muestras)..sort();
+      final corte = (ord.length * 0.20).round().clamp(1, ord.length ~/ 3);
+      final interior = ord.length > 2 * corte
+          ? ord.sublist(corte, ord.length - corte)
+          : ord;
+      final rssiMedio = interior.reduce((a, b) => a + b) / interior.length;
+
+      if (rssiMedio <= -95 || rssiMedio >= 0) continue;
+      lecturas.add({'mac': mac, 'rssi': rssiMedio});
+
+      final b = _beaconsEnElMapa[mac];
+      if (b != null) {
+        final dxm = (b.posicion.dx - cx) * _escalaX;
+        final dym = (b.posicion.dy - cy) * _escalaY;
+        final dRaw = sqrt(dxm * dxm + dym * dym);
+        final d = dRaw < 0.1 ? 0.1 : dRaw;
+        txAjustado[mac] = rssiMedio + 10 * nExp * (log(d) / ln10);
+      }
+    }
+
+    if (lecturas.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No se acumularon lecturas válidas. Activá el escáner.')),
+        );
+      }
+      return;
+    }
+
+    final etiqueta = _etiquetaCalCtrl.text.trim();
+    final registro = CalibracionRegistro(
+      pisoId: widget.pisoId,
+      celdaIx: celda.ix,
+      celdaIy: celda.iy,
+      lecturasBle: lecturas,
+      txPowerAjustado: txAjustado,
+      timestamp: DateTime.now(),
+      etiqueta: etiqueta.isEmpty ? null : etiqueta,
+    );
+
+    try {
+      await DatabaseHelper.instance.guardarCalibracion(registro);
+      final nuevas = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(widget.pisoId);
+      if (mounted) {
+        setState(() {
+          _calibraciones = nuevas;
+          _tomandoMuestras = false;
+          _acumCal.clear();
+          _muestrasAcumuladas = 0;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(
+            'Calibración registrada en (${celda.ix},${celda.iy}) '
+            'con ${lecturas.length} beacons.',
+          )),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _tomandoMuestras = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando calibración: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _eliminarCalibracion(CalibracionRegistro c) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Eliminar calibración?'),
+        content: Text(c.etiqueta ?? 'Celda (${c.celdaIx},${c.celdaIy})'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmar != true || c.id == null) return;
+    try {
+      await DatabaseHelper.instance.eliminarCalibracion(c.id!);
+      final nuevas = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(widget.pisoId);
+      if (mounted) setState(() => _calibraciones = nuevas);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error eliminando calibración: $e')),
+        );
+      }
+    }
+  }
+
+  // -- Escala (medición interactiva con línea elástica) ----------------------
+
+  void _reiniciarMedicion() {
+    if (!mounted) return;
+    setState(() {
+      _puntosEscala.clear();
+      _elasticoDesde = null;
+      _elasticoHasta = null;
+      _pasoEscala = 0;
+      _largoMetros = null;
+    });
+  }
+
+  void _onArrastreInicio(Offset n) {
+    if (!mounted) return;
+    setState(() {
+      if (_pasoEscala == 0) {
+        // Fijar punto inicial (violeta) y empezar la línea elástica del largo.
+        _puntosEscala
+          ..clear()
+          ..add(n);
+        _elasticoDesde = n;
+        _elasticoHasta = n;
+      } else if (_pasoEscala == 1) {
+        // El ancho parte del segundo punto (P2), sin importar dónde se toque.
+        _elasticoDesde = _puntosEscala[1];
+        _elasticoHasta = n;
+      }
+    });
+  }
+
+  void _onArrastreActualizar(Offset n) {
+    if (!mounted || _elasticoDesde == null) return;
+    setState(() => _elasticoHasta = n);
+  }
+
+  /// El usuario apoyó un segundo dedo para hacer zoom: descartamos la línea
+  /// elástica a medio dibujar sin perder lo ya confirmado (el largo en paso 1).
+  void _onArrastreCancelar() {
+    if (!mounted) return;
+    setState(() {
+      if (_pasoEscala == 0) {
+        // Todavía no se confirmó el largo: descartar el punto inicial también.
+        _puntosEscala.clear();
+      } else if (_pasoEscala == 1 && _puntosEscala.length >= 3) {
+        // Mantener P1, P2 y el largo; descartar la tentativa de ancho.
+        _puntosEscala.removeRange(2, _puntosEscala.length);
+      }
+      _elasticoDesde = null;
+      _elasticoHasta = null;
+    });
+  }
+
+  Future<void> _onArrastreFin() async {
+    if (_elasticoDesde == null || _elasticoHasta == null) return;
+    final fin = _elasticoHasta!;
+
+    if (_pasoEscala == 0) {
+      // Cerrar el segmento de largo: P2.
+      setState(() {
+        if (_puntosEscala.length >= 2) _puntosEscala.removeRange(1, _puntosEscala.length);
+        _puntosEscala.add(fin);
+        _elasticoDesde = null;
+        _elasticoHasta = null;
+      });
+      final metros = await _pedirMetros('Largo de la línea',
+          'Marcaste el LARGO. ¿Cuántos metros mide en la vida real?');
+      if (metros == null) {
+        _reiniciarMedicion();
+        return;
+      }
+      if (mounted) setState(() { _largoMetros = metros; _pasoEscala = 1; });
+    } else if (_pasoEscala == 1) {
+      // Cerrar el segmento de ancho: P3 (obligatorio).
+      setState(() {
+        if (_puntosEscala.length >= 3) _puntosEscala.removeRange(2, _puntosEscala.length);
+        _puntosEscala.add(fin);
+        _elasticoDesde = null;
+        _elasticoHasta = null;
+      });
+      final metros = await _pedirMetros('Ancho de la línea',
+          'Marcaste el ANCHO. ¿Cuántos metros mide en la vida real?');
+      if (metros == null) {
+        // Volver a permitir re-marcar el ancho sin perder el largo.
+        if (mounted) {
+          setState(() {
+            if (_puntosEscala.length >= 3) _puntosEscala.removeRange(2, _puntosEscala.length);
+          });
+        }
+        return;
+      }
+      await _generarGrillaDesdeMedicion(metros);
+    }
+  }
+
+  /// Con el largo y el ancho ya medidos, calcula la escala por eje y genera la
+  /// grilla con la resolución correspondiente (celdas de 1 m × 1 m).
+  Future<void> _generarGrillaDesdeMedicion(double anchoMetros) async {
+    final largoMetros = _largoMetros;
+    if (largoMetros == null || _puntosEscala.length < 3) {
+      _reiniciarMedicion();
+      return;
+    }
+
+    final largoSeg = _puntosEscala[1] - _puntosEscala[0];
+    final anchoSeg = _puntosEscala[2] - _puntosEscala[1];
+
+    // Componente normalizada mínima para no dividir por ~0 (segmento perpendicular).
+    const eps = 0.02;
+    double comp(double c) => c.abs() < eps ? eps : c.abs();
+
+    // Cada segmento define la escala del eje en el que es dominante: la escala
+    // (metros por unidad normalizada completa) se extrapola desde la fracción
+    // del plano que cubre el segmento.
+    final bool largoEsX = largoSeg.dx.abs() >= largoSeg.dy.abs();
+    double escalaX, escalaY;
+    if (largoEsX) {
+      escalaX = largoMetros / comp(largoSeg.dx);
+      escalaY = anchoMetros / comp(anchoSeg.dy);
+    } else {
+      escalaY = largoMetros / comp(largoSeg.dy);
+      escalaX = anchoMetros / comp(anchoSeg.dx);
+    }
+
+    try {
+      await DatabaseHelper.instance.actualizarEscalaPiso(widget.pisoId, escalaX, escalaY);
+      if (mounted) {
+        setState(() {
+          _escalaX = escalaX;
+          _escalaY = escalaY;
+          _grilla = GrillaNav(metrosX: escalaX, metrosY: escalaY, tamCeldaMetros: _tamCelda);
+          _puntosEscala.clear();
+          _elasticoDesde = null;
+          _elasticoHasta = null;
+          _pasoEscala = 2;
+          _largoMetros = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(
+            'Escala guardada: ${escalaX.toStringAsFixed(1)} m × ${escalaY.toStringAsFixed(1)} m '
+            '→ grilla de ${_grilla.celdasX} × ${_grilla.celdasY} celdas de ${_tamCelda.toStringAsFixed(1)} m.',
+          )),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando escala: $e')),
+        );
+      }
+    }
+  }
+
+  /// Cambia el lado de celda de la grilla (0.5–1.0 m), regenera la grilla con
+  /// la escala actual y persiste el valor. No requiere re-medir la escala.
+  Future<void> _cambiarTamCelda(double valor) async {
+    // Redondear al paso de 0.1 m para evitar ruido de coma flotante del Slider.
+    final v = (valor * 10).round() / 10;
+    if (v == _tamCelda) return;
+    if (mounted) {
+      setState(() {
+        _tamCelda = v;
+        _grilla = GrillaNav(metrosX: _escalaX, metrosY: _escalaY, tamCeldaMetros: _tamCelda);
+      });
+    }
+    try {
+      await DatabaseHelper.instance.actualizarTamCeldaPiso(widget.pisoId, _tamCelda);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando tamaño de celda: $e')),
+        );
+      }
+    }
+  }
+
+  Future<double?> _pedirMetros(String titulo, String mensaje) async {
+    final controller = TextEditingController();
+    return showDialog<double>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: Text(titulo),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(mensaje, style: const TextStyle(fontSize: 13)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                hintText: 'Ej: 12.5',
+                suffixText: 'm',
+                border: OutlineInputBorder(),
+              ),
+              autofocus: true,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () {
+              final v = double.tryParse(controller.text.trim().replaceAll(',', '.'));
+              if (v != null && v > 0) Navigator.pop(ctx, v);
+            },
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // -- UI --------------------------------------------------------------------
+
+  String _hintTexto() {
+    switch (_modo) {
+      case _ModoEdicion.beacons:
+        return 'Selecciona un dispositivo de la lista y toca el mapa para ubicarlo. Long-press sobre un beacon para eliminarlo.';
+      case _ModoEdicion.zonas:
+        if (_verticesEnCurso.isEmpty) {
+          return 'Toca el mapa para marcar los vertices de la zona. Necesitas al menos 3 puntos. Toca una zona existente para borrarla.';
+        }
+        return '${_verticesEnCurso.length} punto(s) marcado(s). Segui tocando o cerra la zona.';
+      case _ModoEdicion.lugares:
+        return 'Toca el mapa para agregar un lugar de interes. Toca el icono morado para eliminarlo.';
+      case _ModoEdicion.escala:
+        final actual = 'Escala actual: ${_escalaX.toStringAsFixed(1)} m × ${_escalaY.toStringAsFixed(1)} m '
+            '(grilla ${_grilla.celdasX}×${_grilla.celdasY}).';
+        if (_pasoEscala == 0) {
+          return '$actual Arrastrá desde un punto para marcar el LARGO e ingresá sus metros.';
+        }
+        if (_pasoEscala == 1) {
+          return '$actual Largo: ${_largoMetros?.toStringAsFixed(1)} m. Ahora arrastrá para marcar el ANCHO (obligatorio).';
+        }
+        return '$actual Volvé a arrastrar para medir de nuevo.';
+      case _ModoEdicion.calibracion:
+        if (_celdaCalSeleccionada == null) {
+          return 'Tocá en el mapa la celda donde estás parado para calibrar.';
+        }
+        final c = _celdaCalSeleccionada!;
+        return 'Celda (${c.ix},${c.iy}) seleccionada. Registrá la calibración desde el panel inferior.';
+      case _ModoEdicion.brujula:
+        return 'Apuntá el teléfono hacia el borde SUPERIOR del mapa y ajustá el offset hasta que la flecha coincida. Tocá Guardar cuando esté correcto.';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      data: TemaApp.tema,
+      child: Scaffold(
+        backgroundColor: TemaApp.fondo,
+        appBar: AppBar(
+          title: const Text('Configuración de Piso'),
+        ),
+        body: Column(
+        children: [
+          // Selector de modo
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 10, 10, 0),
+            // Scroll horizontal: con 5 modos los segmentos no entran en pantallas
+            // angostas. Permite desplazarlos en lugar de provocar overflow.
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SegmentedButton<_ModoEdicion>(
+                segments: const [
+                  ButtonSegment(
+                    value: _ModoEdicion.beacons,
+                    icon: Icon(Icons.router),
+                    label: Text('Beacons'),
+                  ),
+                  ButtonSegment(
+                    value: _ModoEdicion.zonas,
+                    icon: Icon(Icons.block),
+                    label: Text('Zonas'),
+                  ),
+                  ButtonSegment(
+                    value: _ModoEdicion.lugares,
+                    icon: Icon(Icons.place),
+                    label: Text('Lugares'),
+                  ),
+                  ButtonSegment(
+                    value: _ModoEdicion.escala,
+                    icon: Icon(Icons.straighten),
+                    label: Text('Escala'),
+                  ),
+                  ButtonSegment(
+                    value: _ModoEdicion.calibracion,
+                    icon: Icon(Icons.gps_fixed),
+                    label: Text('Calibrar'),
+                  ),
+                  ButtonSegment(
+                    value: _ModoEdicion.brujula,
+                    icon: Icon(Icons.explore),
+                    label: Text('Brújula'),
+                  ),
+                ],
+                selected: {_modo},
+                onSelectionChanged: (s) {
+                  if (!mounted) return;
+                  final nuevoModo = s.first;
+                  // Detener brújula si salimos del modo brujula.
+                  if (_modo == _ModoEdicion.brujula && nuevoModo != _ModoEdicion.brujula) {
+                    _detenerCompass();
+                  }
+                  // Al salir del modo calibración: liberar el anclado de posición.
+                  if (_modo == _ModoEdicion.calibracion && nuevoModo != _ModoEdicion.calibracion) {
+                    _celdaCalSeleccionada = null;
+                    _posicionUsuario = null;
+                    _tomandoMuestras = false;
+                    _acumCal.clear();
+                    _muestrasAcumuladas = 0;
+                  }
+                  setState(() {
+                    _modo = nuevoModo;
+                    _verticesEnCurso = [];
+                    _seleccionado = null;
+                    // Reiniciar la medición de escala al cambiar de modo.
+                    _puntosEscala.clear();
+                    _elasticoDesde = null;
+                    _elasticoHasta = null;
+                    _pasoEscala = 0;
+                    _largoMetros = null;
+                  });
+                  // Las lecturas en vivo de calibración necesitan el escáner activo.
+                  if (nuevoModo == _ModoEdicion.calibracion) {
+                    _asegurarEscaneando();
+                  }
+                  // Iniciar brújula en vivo al entrar al modo brujula.
+                  if (nuevoModo == _ModoEdicion.brujula) {
+                    _iniciarCompass();
+                  }
+                },
+              ),
+            ),
+          ),
+
+          // Hint contextual
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Text(
+              _hintTexto(),
+              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              textAlign: TextAlign.center,
+            ),
+          ),
+
+          // Mapa
+          SizedBox(
+            height: 380,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: InteractiveViewer(
+                  // En escala desactivamos el pan (un dedo dibuja la línea de
+                  // medición) pero dejamos el zoom de dos dedos activo: al apoyar
+                  // el segundo dedo la medición se cancela y se hace zoom. En
+                  // zonas con vértices desactivamos ambos para que el toque dibuje.
+                  panEnabled: _modo != _ModoEdicion.escala &&
+                      (_modo != _ModoEdicion.zonas || _verticesEnCurso.isEmpty),
+                  scaleEnabled:
+                      _modo != _ModoEdicion.zonas || _verticesEnCurso.isEmpty,
+                  child: MapaWidget(
+                    rutaImagen: widget.rutaImagen,
+                    beacons: _beaconsEnElMapa,
+                    zonas: _zonas,
+                    lugares: _lugares,
+                    posicionUsuario: _posicionUsuario,
+                    modoEdicion: true,
+                    mostrarGrilla: true,
+                    grilla: _grilla,
+                    onTapMapa: _onTapMapa,
+                    onTapBeacon: _borrarBeacon,
+                    onTapLugar: _borrarLugar,
+                    onTapZona: _modo == _ModoEdicion.zonas ? _borrarZona : null,
+                    verticesEnCurso: _verticesEnCurso,
+                    puntosMedicion: _modo == _ModoEdicion.escala ? _puntosEscala : const [],
+                    elasticoDesde: _modo == _ModoEdicion.escala ? _elasticoDesde : null,
+                    elasticoHasta: _modo == _ModoEdicion.escala ? _elasticoHasta : null,
+                    onArrastreInicio: _modo == _ModoEdicion.escala ? _onArrastreInicio : null,
+                    onArrastreActualizar: _modo == _ModoEdicion.escala ? _onArrastreActualizar : null,
+                    onArrastreFin: _modo == _ModoEdicion.escala ? _onArrastreFin : null,
+                    onArrastreCancelar: _modo == _ModoEdicion.escala ? _onArrastreCancelar : null,
+                    // Calibración: celda seleccionada (amarillo) + pines de celdas calibradas.
+                    celdaResaltada: _modo == _ModoEdicion.calibracion && _celdaCalSeleccionada != null
+                        ? Offset(_grilla.centroX(_celdaCalSeleccionada!.ix),
+                            _grilla.centroY(_celdaCalSeleccionada!.iy))
+                        : null,
+                    celdasCalibradas: _modo == _ModoEdicion.calibracion
+                        ? _calibraciones
+                            .map((c) => Offset(_grilla.centroX(c.celdaIx), _grilla.centroY(c.celdaIy)))
+                            .toList()
+                        : const [],
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // Botones de accion para zonas
+          if (_modo == _ModoEdicion.zonas)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _verticesEnCurso.isNotEmpty ? _descartarZonaEnCurso : null,
+                      icon: const Icon(Icons.undo),
+                      label: const Text('Descartar'),
+                      style: OutlinedButton.styleFrom(foregroundColor: Colors.orange),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _verticesEnCurso.length >= 3 ? _cerrarZona : null,
+                      icon: const Icon(Icons.check),
+                      label: const Text('Cerrar zona'),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal[700]),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // Botones de accion para escala
+          if (_modo == _ModoEdicion.escala)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: (_puntosEscala.isNotEmpty || _pasoEscala != 0)
+                          ? _reiniciarMedicion
+                          : null,
+                      icon: const Icon(Icons.undo),
+                      label: const Text('Reiniciar medición'),
+                      style: OutlinedButton.styleFrom(foregroundColor: Colors.orange),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // Selector de tamaño de celda de la grilla (0.5–1.0 m). Junto a los
+          // controles de escala porque define la resolución de la misma grilla.
+          if (_modo == _ModoEdicion.escala)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Tamaño de celda: ${_tamCelda.toStringAsFixed(1)} m '
+                    '(grilla ${_grilla.celdasX}×${_grilla.celdasY})',
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  Slider(
+                    value: _tamCelda.clamp(0.5, 1.0),
+                    min: 0.5,
+                    max: 1.0,
+                    divisions: 5, // pasos de 0.1 m: 0.5, 0.6, … 1.0
+                    label: '${_tamCelda.toStringAsFixed(1)} m',
+                    onChanged: _cambiarTamCelda,
+                  ),
+                  Text(
+                    'Menor = más precisión en espacios chicos. Mayor = grilla más liviana.',
+                    style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                  ),
+                ],
+              ),
+            ),
+
+          // Lista de dispositivos BLE
+          if (_modo == _ModoEdicion.beacons)
+            Expanded(
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: Icon(
+                      _escaneando ? Icons.bluetooth_searching : Icons.bluetooth_disabled,
+                      color: _escaneando ? Colors.teal : Colors.grey,
+                    ),
+                    title: Text(_escaneando ? 'Buscando dispositivos...' : 'Escaner detenido'),
+                    trailing: ElevatedButton.icon(
+                      onPressed: _conmutarEscaner,
+                      icon: Icon(_escaneando ? Icons.stop : Icons.play_arrow),
+                      label: Text(_escaneando ? 'Detener' : 'Escanear'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _escaneando ? Colors.red : Colors.teal,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: _dispositivosCercanos.length,
+                      itemBuilder: (context, i) {
+                        final d = _dispositivosCercanos[i];
+                        final mac = d.device.remoteId.str;
+                        final yaUbicado = _beaconsEnElMapa.containsKey(mac);
+                        final seleccionado = _seleccionado == d;
+                        return ListTile(
+                          dense: true,
+                          leading: Icon(
+                            yaUbicado ? Icons.check_circle : Icons.bluetooth,
+                            color: yaUbicado ? Colors.green : (seleccionado ? Colors.teal : Colors.grey),
+                          ),
+                          title: Text(d.device.advName.isEmpty ? 'Dispositivo desconocido' : d.device.advName),
+                          subtitle: Text('MAC: $mac  |  RSSI: ${d.rssi} dBm'),
+                          trailing: seleccionado
+                              ? const Icon(Icons.touch_app, color: Colors.teal)
+                              : null,
+                          onTap: yaUbicado
+                              ? null
+                              : () {
+                                  if (mounted) setState(() => _seleccionado = d);
+                                },
+                          tileColor: seleccionado ? Colors.teal.withValues(alpha: 0.1) : null,
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // Lista de lugares de interes
+          if (_modo == _ModoEdicion.lugares)
+            Expanded(
+              child: _lugares.isEmpty
+                  ? const Center(child: Text('No hay lugares de interes agregados'))
+                  : ListView.builder(
+                      itemCount: _lugares.length,
+                      itemBuilder: (context, i) {
+                        final l = _lugares[i];
+                        return ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.place, color: Colors.purple),
+                          title: Text(l.nombre),
+                          subtitle: l.descripcion != null ? Text(l.descripcion!) : null,
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete, color: Colors.red),
+                            onPressed: () => _borrarLugar(l),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+
+          // Panel de calibración
+          if (_modo == _ModoEdicion.calibracion)
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (_celdaCalSeleccionada == null)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 16),
+                        child: Text(
+                          'Tocá una celda en el mapa para empezar a calibrar.',
+                          style: TextStyle(fontSize: 14),
+                        ),
+                      )
+                    else ...[
+                      Text(
+                        'Celda seleccionada: (${_celdaCalSeleccionada!.ix}, ${_celdaCalSeleccionada!.iy})',
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: _etiquetaCalCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Etiqueta (opcional)',
+                          hintText: 'Ej: Entrada, Pasillo norte',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Lecturas BLE actuales (${_beaconsEnElMapa.length} beacons):',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 4),
+                      if (_beaconsEnElMapa.isEmpty)
+                        const Text('No hay beacons configurados en este piso.',
+                            style: TextStyle(fontSize: 12, color: Colors.grey))
+                      else
+                        ..._beaconsEnElMapa.values.map((b) {
+                          final valido = b.rssiFiltrado > -95 && b.rssiFiltrado < 0;
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  valido ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                                  size: 16,
+                                  color: valido ? TemaApp.acento : TemaApp.textoSecundario,
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    '${b.nombre}  ·  ${b.mac}',
+                                    style: const TextStyle(fontSize: 12),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                Text(
+                                  '${b.rssiFiltrado.toStringAsFixed(0)} dBm',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: valido ? TemaApp.textoBlanco : TemaApp.textoSecundario,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                      const SizedBox(height: 12),
+
+                      // ── Toma multi-muestra ──────────────────────────────
+                      if (_tomandoMuestras) ...[
+                        // Barra de progreso y botón cancelar
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Tomando muestras: $_muestrasAcumuladas / $_totalMuestras',
+                                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  LinearProgressIndicator(
+                                    value: _muestrasAcumuladas / _totalMuestras,
+                                    backgroundColor: TemaApp.fondoSurface,
+                                    color: TemaApp.acento,
+                                    minHeight: 8,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            TextButton.icon(
+                              onPressed: () {
+                                if (mounted) {
+                                  setState(() {
+                                    _tomandoMuestras = false;
+                                    _muestrasAcumuladas = 0;
+                                    _acumCal.clear();
+                                  });
+                                }
+                              },
+                              icon: const Icon(Icons.cancel_outlined, size: 18),
+                              label: const Text('Cancelar'),
+                              style: TextButton.styleFrom(foregroundColor: TemaApp.zonaRestringidaBorde),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          '¡No te muevas de la celda! El sistema promedia las lecturas automáticamente.',
+                          style: TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
+                        ),
+                      ] else ...[
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: _escaneando ? _iniciarTomaCalibracion : null,
+                            icon: const Icon(Icons.add_location_alt),
+                            label: Text(
+                              _escaneando
+                                  ? 'Iniciar toma de calibración (~5 s)'
+                                  : 'Activá el escáner primero',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                    const Divider(height: 24),
+                    ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      title: Text(
+                        'Calibraciones guardadas (${_calibraciones.length})',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      children: _calibraciones.isEmpty
+                          ? [
+                              const ListTile(
+                                dense: true,
+                                title: Text('Todavía no hay calibraciones.'),
+                              )
+                            ]
+                          : _calibraciones.map((c) {
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.check_circle, color: Colors.green),
+                                title: Text(c.etiqueta ?? 'Celda (${c.celdaIx},${c.celdaIy})'),
+                                subtitle: Text(
+                                    '${c.lecturasBle.length} beacons · ${_formatearTimestamp(c.timestamp)}'),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.delete, color: Colors.red),
+                                  onPressed: () => _eliminarCalibracion(c),
+                                ),
+                              );
+                            }).toList(),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // ── Panel de calibración de brújula ────────────────────────────────
+          if (_modo == _ModoEdicion.brujula)
+            Expanded(
+              child: _buildPanelBrujula(),
+            ),
+        ],
+      ),
+    ),
+    );
+  }
+
+  /// Panel para calibrar la rotación del mapa respecto al norte real.
+  ///
+  /// El operador apunta el teléfono hacia el borde SUPERIOR del mapa y ajusta
+  /// el slider hasta que la flecha de la brújula quede paralela al eje Y de la
+  /// imagen. El valor guardado (rotacion_mapa, en grados) es el offset que
+  /// PantallaNavegacion resta al heading de FlutterCompass para alinear la
+  /// brújula con el plano.
+  Widget _buildPanelBrujula() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Instrucción
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: TemaApp.acentoSuave,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: TemaApp.acento.withValues(alpha: 0.4)),
+            ),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Icon(Icons.info_outline, color: TemaApp.acento, size: 18),
+                  SizedBox(width: 8),
+                  Text('Cómo calibrar', style: TextStyle(color: TemaApp.acento, fontWeight: FontWeight.w700, fontSize: 15)),
+                ]),
+                SizedBox(height: 6),
+                Text(
+                  '1. Apuntá el borde SUPERIOR del teléfono hacia el borde SUPERIOR del mapa físico.\n'
+                  '2. Ajustá el offset con el slider hasta que la flecha quede paralela al eje Y del plano.\n'
+                  '3. Tocá "Guardar offset".',
+                  style: TextStyle(color: TemaApp.textoBlanco, fontSize: 14, height: 1.5),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Visualizador de flecha en vivo
+          Center(
+            child: Column(
+              children: [
+                Container(
+                  width: 140, height: 140,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: TemaApp.fondoSurface,
+                    border: Border.all(color: TemaApp.acento.withValues(alpha: 0.4), width: 2),
+                  ),
+                  child: Center(
+                    child: _headingEnVivo == null
+                        ? Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const SizedBox(
+                                width: 28, height: 28,
+                                child: CircularProgressIndicator(strokeWidth: 2.5, color: TemaApp.acento),
+                              ),
+                              const SizedBox(height: 8),
+                              const Text('Esperando\nbrújula...', textAlign: TextAlign.center,
+                                  style: TextStyle(color: TemaApp.textoSecundario, fontSize: 12)),
+                            ],
+                          )
+                        : AnimatedRotation(
+                            // La flecha muestra el heading COMPENSADO: (heading_real - offset).
+                            // Cuando el offset esté bien calibrado, la flecha apuntará exactamente
+                            // hacia ARRIBA cuando el teléfono mire el borde superior del mapa.
+                            // Al mover el slider, la flecha se mueve en tiempo real → el operador
+                            // ajusta hasta que la flecha quede derecha con el teléfono apuntando
+                            // al borde superior del plano.
+                            turns: ((_headingEnVivo! - _rotacionMapa) % 360 + 360) % 360 / 360,
+                            duration: const Duration(milliseconds: 200),
+                            child: const Icon(Icons.navigation, color: TemaApp.acento, size: 80),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _headingEnVivo != null
+                      ? 'Norte magnético: ${_headingEnVivo!.toStringAsFixed(0)}°  |  Offset actual: ${_rotacionMapa.toStringAsFixed(0)}°'
+                      : 'Sin señal de brújula',
+                  style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 13),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Apuntá el borde superior del teléfono al borde superior del mapa.\n'
+                  'Ajustá el slider hasta que la flecha quede apuntando exactamente hacia ARRIBA.',
+                  style: TextStyle(color: TemaApp.textoSecundario, fontSize: 12, height: 1.4),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Slider de offset
+          Text(
+            'Offset: ${_rotacionMapa.toStringAsFixed(0)}°',
+            style: const TextStyle(color: TemaApp.textoBlanco, fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '0° = Norte arriba · 90° = Este arriba · 180° = Sur arriba · 270° = Oeste arriba',
+            style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 12),
+          ),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: TemaApp.acento,
+              thumbColor: TemaApp.acento,
+              inactiveTrackColor: TemaApp.fondoSurface,
+              overlayColor: TemaApp.acento.withValues(alpha: 0.15),
+              valueIndicatorColor: TemaApp.acento,
+              valueIndicatorTextStyle: const TextStyle(color: TemaApp.fondo, fontWeight: FontWeight.bold),
+            ),
+            child: Slider(
+              value: _rotacionMapa.clamp(0.0, 359.0),
+              min: 0,
+              max: 359,
+              divisions: 359,
+              label: '${_rotacionMapa.toStringAsFixed(0)}°',
+              onChanged: (v) {
+                if (mounted) setState(() => _rotacionMapa = v.roundToDouble());
+              },
+            ),
+          ),
+
+          // Botones de presets rápidos
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              for (final preset in [
+                (label: 'Norte (0°)', valor: 0.0),
+                (label: 'Este (90°)', valor: 90.0),
+                (label: 'Sur (180°)', valor: 180.0),
+                (label: 'Oeste (270°)', valor: 270.0),
+              ])
+                OutlinedButton(
+                  onPressed: () {
+                    if (mounted) setState(() => _rotacionMapa = preset.valor);
+                  },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: TemaApp.acento,
+                    side: BorderSide(color: TemaApp.acento.withValues(alpha: 0.5)),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Text(preset.label, style: const TextStyle(fontSize: 13)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 24),
+
+          // Botón guardar
+          SizedBox(
+            width: double.infinity,
+            height: TemaApp.targetTactil,
+            child: ElevatedButton.icon(
+              onPressed: () async {
+                try {
+                  await DatabaseHelper.instance.actualizarRotacionMapa(widget.pisoId, _rotacionMapa);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Offset de brújula guardado: ${_rotacionMapa.toStringAsFixed(0)}°')),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Error guardando offset: $e')),
+                    );
+                  }
+                }
+              },
+              icon: const Icon(Icons.save_rounded),
+              label: const Text('Guardar offset de brújula'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatearTimestamp(DateTime t) {
+    String dos(int n) => n.toString().padLeft(2, '0');
+    return '${dos(t.day)}/${dos(t.month)} ${dos(t.hour)}:${dos(t.minute)}';
+  }
+}
