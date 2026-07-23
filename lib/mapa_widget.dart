@@ -12,11 +12,16 @@ Offset _desnormalizar(Offset n, Size tam) =>
     Offset(n.dx * tam.width, n.dy * tam.height);
 
 Rect _rectCelda(Offset centroNorm, GrillaNav grilla, Size tam) {
-  return Rect.fromCenter(
+  final rect = Rect.fromCenter(
     center: _desnormalizar(centroNorm, tam),
     width: grilla.tamCeldaX * tam.width,
     height: grilla.tamCeldaY * tam.height,
   );
+  // Recorte al plano: la última celda de cada eje puede ser PARCIAL (la escala
+  // rara vez es múltiplo exacto del lado de celda), así que su rectángulo se
+  // sale de la imagen si no se acota. Sin esto, la celda del usuario o la
+  // última celda de la ruta se pintan por fuera del borde del mapa.
+  return rect.intersect(Rect.fromLTWH(0, 0, tam.width, tam.height));
 }
 
 /// Painter "estático" del mapa: grilla de 1 m × 1 m, zonas no transitables,
@@ -44,6 +49,10 @@ class _MapaPainter extends CustomPainter {
   /// Centros normalizados de las celdas que ya tienen calibraciones (pin ✓).
   final List<Offset> celdasCalibradas;
 
+  /// Índice del vértice de [verticesEnCurso] que el operador está arrastrando
+  /// en este momento (se resalta más grande), o null si no hay ninguno.
+  final int? verticeArrastrado;
+
   _MapaPainter({
     required this.zonas,
     required this.verticesEnCurso,
@@ -56,6 +65,7 @@ class _MapaPainter extends CustomPainter {
     this.elasticoHasta,
     this.celdaResaltada,
     this.celdasCalibradas = const [],
+    this.verticeArrastrado,
   });
 
   @override
@@ -205,18 +215,32 @@ class _MapaPainter extends CustomPainter {
         }
       }
 
-      // Círculos numerados en cada vértice.
+      // Círculos numerados en cada vértice. Funcionan como manijas de arrastre:
+      // el vértice que se está moviendo se dibuja más grande y con un halo,
+      // para que quede claro cuál agarró el dedo (que además lo tapa).
       final paintCirculo = Paint()..color = Colors.orange..style = PaintingStyle.fill;
+      final paintCirculoActivo = Paint()
+        ..color = Colors.deepOrange..style = PaintingStyle.fill;
+      final paintHalo = Paint()
+        ..color = Colors.orange.withValues(alpha: 0.30)
+        ..style = PaintingStyle.fill;
       final paintCirculoBorde = Paint()
         ..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 2.0;
       final tp = TextPainter(textDirection: TextDirection.ltr);
       for (var i = 0; i < verticesEnCurso.length; i++) {
         final c = _desnormalizar(verticesEnCurso[i], tamanoImagen);
-        canvas.drawCircle(c, 9, paintCirculo);
-        canvas.drawCircle(c, 9, paintCirculoBorde);
+        final activo = verticeArrastrado == i;
+        final radio = activo ? 13.0 : 9.0;
+        if (activo) canvas.drawCircle(c, 24, paintHalo);
+        canvas.drawCircle(c, radio, activo ? paintCirculoActivo : paintCirculo);
+        canvas.drawCircle(c, radio, paintCirculoBorde);
         tp.text = TextSpan(
           text: '${i + 1}',
-          style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: activo ? 12 : 9,
+            fontWeight: FontWeight.bold,
+          ),
         );
         tp.layout();
         tp.paint(canvas, c - Offset(tp.width / 2, tp.height / 2));
@@ -295,7 +319,8 @@ class _MapaPainter extends CustomPainter {
       old.elasticoDesde != elasticoDesde ||
       old.elasticoHasta != elasticoHasta ||
       old.celdaResaltada != celdaResaltada ||
-      old.celdasCalibradas != celdasCalibradas;
+      old.celdasCalibradas != celdasCalibradas ||
+      old.verticeArrastrado != verticeArrastrado;
 }
 
 /// Painter liviano de la posición del usuario: pinta solo la celda actual y la
@@ -393,17 +418,24 @@ class MapaWidget extends StatelessWidget {
   final Offset? elasticoDesde;
   final Offset? elasticoHasta;
 
-  /// Callbacks de arrastre para la herramienta de medición (modo escala).
-  /// Si [onArrastreInicio] es no nulo, el arrastre dibuja la línea elástica en
-  /// lugar de hacer pan del mapa. [onArrastreFin] no recibe posición: usar la
-  /// última reportada por [onArrastreActualizar].
+  /// Callbacks de arrastre con **un solo dedo** sobre el plano. Los usan tanto
+  /// la herramienta de medición (modo escala, para la línea elástica) como el
+  /// editor de zonas (modo zonas, para colocar y reacomodar vértices).
+  /// Si [onArrastreInicio] es no nulo, el arrastre se entrega a estos callbacks
+  /// en lugar de hacer pan del mapa. [onArrastreFin] no recibe posición: usar
+  /// la última reportada por [onArrastreActualizar].
   final void Function(Offset normalizado)? onArrastreInicio;
   final void Function(Offset normalizado)? onArrastreActualizar;
   final void Function()? onArrastreFin;
 
-  /// Se llama cuando la medición en curso se cancela porque el usuario apoyó un
-  /// segundo dedo (gesto de zoom). Permite descartar la línea elástica a medias.
+  /// Se llama cuando el gesto en curso se cancela porque el usuario apoyó un
+  /// segundo dedo (gesto de zoom). Permite descartar la línea elástica a medias
+  /// o el vértice recién apoyado.
   final void Function()? onArrastreCancelar;
+
+  /// Índice del vértice de [verticesEnCurso] que se está arrastrando (se
+  /// resalta como manija activa), o null.
+  final int? verticeArrastrado;
 
   /// Modo calibración: centro normalizado de la celda seleccionada (amarillo) y
   /// centros de las celdas que ya tienen calibraciones guardadas (pin ✓).
@@ -436,6 +468,7 @@ class MapaWidget extends StatelessWidget {
     this.onArrastreCancelar,
     this.celdaResaltada,
     this.celdasCalibradas = const [],
+    this.verticeArrastrado,
   });
 
   /// Tamaño del plano renderizado dentro del [contenedor], conservando una
@@ -521,7 +554,7 @@ class MapaWidget extends StatelessWidget {
                             // Buscar si el toque cayó dentro de alguna zona existente
                             for (final zona in zonas) {
                               if (zona.vertices.length >= 3 &&
-                                  _puntoEnPoligono(puntoTocado, zona.vertices)) {
+                                  MapaWidget.puntoEnPoligono(puntoTocado, zona.vertices)) {
                                 onTapZona!(zona);
                                 return;
                               }
@@ -542,6 +575,7 @@ class MapaWidget extends StatelessWidget {
                           elasticoHasta: elasticoHasta,
                           celdaResaltada: celdaResaltada,
                           celdasCalibradas: celdasCalibradas,
+                          verticeArrastrado: verticeArrastrado,
                         ),
                       ),
                     ),
@@ -659,7 +693,7 @@ class MapaWidget extends StatelessWidget {
             // Listener (eventos crudos de puntero) porque no compite en la arena
             // de gestos con el zoom del InteractiveViewer.
             if (hayArrastre) {
-              mapa = _MedidorEscala(
+              mapa = _ArrastreUnDedo(
                 aNormalizado: aNormalizado,
                 onInicio: onArrastreInicio!,
                 onActualizar: onArrastreActualizar,
@@ -706,8 +740,10 @@ class MapaWidget extends StatelessWidget {
     return completer.future;
   }
 
-  /// Ray-casting: determina si un punto está dentro de un polígono
-  static bool _puntoEnPoligono(Offset punto, List<Offset> vertices) {
+  /// Ray-casting: determina si un punto está dentro de un polígono.
+  /// Público para que las pantallas puedan reusarlo (p. ej. la configuración,
+  /// para saber si un toque cayó sobre una zona ya creada).
+  static bool puntoEnPoligono(Offset punto, List<Offset> vertices) {
     bool dentro = false;
     int j = vertices.length - 1;
     for (int i = 0; i < vertices.length; i++) {
@@ -723,12 +759,14 @@ class MapaWidget extends StatelessWidget {
   }
 }
 
-/// Captura la medición de escala con eventos crudos de puntero (Listener), de
-/// modo que **un solo dedo** dibuje la línea elástica mientras que apoyar un
-/// **segundo dedo** cancele la medición y deje que el InteractiveViewer haga
-/// zoom. A diferencia de un GestureDetector con onPan*, el Listener no compite
-/// en la arena de gestos, así que convive con el zoom del InteractiveViewer.
-class _MedidorEscala extends StatefulWidget {
+/// Captura gestos de **un solo dedo** sobre el plano con eventos crudos de
+/// puntero (Listener): la medición de escala (línea elástica) y la edición de
+/// vértices de zonas prohibidas. Apoyar un **segundo dedo** cancela el gesto en
+/// curso y deja que el InteractiveViewer haga zoom. A diferencia de un
+/// GestureDetector con onPan*, el Listener no compite en la arena de gestos,
+/// así que convive con el zoom del InteractiveViewer y con los taps internos
+/// del mapa (p. ej. tocar una zona existente para borrarla).
+class _ArrastreUnDedo extends StatefulWidget {
   final Offset Function(Offset local) aNormalizado;
   final void Function(Offset normalizado) onInicio;
   final void Function(Offset normalizado)? onActualizar;
@@ -736,7 +774,7 @@ class _MedidorEscala extends StatefulWidget {
   final void Function()? onCancelar;
   final Widget child;
 
-  const _MedidorEscala({
+  const _ArrastreUnDedo({
     required this.aNormalizado,
     required this.onInicio,
     required this.onActualizar,
@@ -746,10 +784,10 @@ class _MedidorEscala extends StatefulWidget {
   });
 
   @override
-  State<_MedidorEscala> createState() => _MedidorEscalaState();
+  State<_ArrastreUnDedo> createState() => _ArrastreUnDedoState();
 }
 
-class _MedidorEscalaState extends State<_MedidorEscala> {
+class _ArrastreUnDedoState extends State<_ArrastreUnDedo> {
   final Set<int> _punteros = {};
   bool _midiendo = false;
 

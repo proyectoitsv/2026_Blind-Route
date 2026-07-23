@@ -83,7 +83,9 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
   Future<void> _procesarResultados(List<ScanResult> resultados) async {
     if (_navegando) return;
  
-    // Procesar señales para mantener el historial del Kalman actualizado
+    // Procesar señales para ir llenando la ventana de mediana de cada beacon,
+    // así al pasar a PantallaNavegacion (mismo ProcesadorSenal compartido) el
+    // filtro ya tiene historial y la ubicación se estabiliza más rápido.
     for (var res in resultados) {
       try {
         String mac = res.device.remoteId.str;
