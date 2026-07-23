@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-// Asegurate de importar tu pantalla principal
+
 import 'pantalla_princ.dart'; 
 
 void main() {
@@ -17,8 +17,6 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.indigo,
       ),
-      // ESTA ES LA LÍNEA CLAVE:
-      // Debe decir PantallaPrincipal() y NO ListaEdificios()
       home: const PantallaPrincipal(), 
     );
   }

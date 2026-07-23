@@ -90,6 +90,23 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   Offset? _elasticoHasta;                 // extremo actual durante el arrastre
   int _pasoEscala = 0;                    // 0 = largo, 1 = ancho, 2 = listo
   double? _largoMetros;                   // metros del largo (P1→P2)
+  double? _anchoMetros;                   // metros del ancho (P2→P3)
+
+  // Edición de puntos ya marcados: índice del punto que se está arrastrando
+  // para reacomodarlo (null = no se está moviendo ningún punto, la interacción
+  // dibuja un segmento nuevo). Radio de "agarre" de un punto en coords
+  // normalizadas: un toque dentro de este radio mueve el punto en vez de
+  // empezar un trazo nuevo.
+  int? _puntoArrastrado;
+  static const double _radioAgarrePunto = 0.045;
+
+  // Edición de vértices de zonas prohibidas: índice del vértice que se está
+  // arrastrando (null = no se está moviendo ninguno) y si ese vértice se creó
+  // en el gesto actual (para poder descartarlo si el gesto se cancela por un
+  // zoom de dos dedos). Radio de agarre en coordenadas normalizadas.
+  int? _verticeArrastrado;
+  bool _verticeReciente = false;
+  static const double _radioAgarreVertice = 0.05;
 
   @override
   void initState() {
@@ -300,6 +317,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         setState(() {
           _zonas = [..._zonas, zona.copyWith(id: id)];
           _verticesEnCurso = [];
+          _verticeArrastrado = null;
+          _verticeReciente = false;
         });
       }
     } catch (e) {
@@ -312,7 +331,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   }
 
   void _descartarZonaEnCurso() {
-    if (mounted) setState(() => _verticesEnCurso = []);
+    if (!mounted) return;
+    setState(() {
+      _verticesEnCurso = [];
+      _verticeArrastrado = null;
+      _verticeReciente = false;
+    });
   }
 
   void _borrarZona(ZonaNoTransitable zona) async {
@@ -372,6 +396,113 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         ],
       ),
     );
+  }
+
+  // -- Zonas: arrastre de vértices -------------------------------------------
+  //
+  // El editor de zonas usa el mismo mecanismo de un dedo que la medición de
+  // escala (Listener crudo dentro de MapaWidget), de modo que los vértices se
+  // puedan reacomodar ANTES de cerrar la zona:
+  //   · Tocar sobre un vértice ya marcado y arrastrar → lo mueve.
+  //   · Tocar en cualquier otro lado → agrega un vértice nuevo, que queda
+  //     enganchado al dedo y se puede afinar sin levantarlo.
+  //   · Apoyar un segundo dedo → zoom; si el vértice se acababa de crear en
+  //     ese gesto, se descarta.
+
+  int? _verticeCercano(Offset n) {
+    int? mejorIdx;
+    double mejorDist = _radioAgarreVertice;
+    for (int i = 0; i < _verticesEnCurso.length; i++) {
+      final d = (_verticesEnCurso[i] - n).distance;
+      if (d <= mejorDist) {
+        mejorDist = d;
+        mejorIdx = i;
+      }
+    }
+    return mejorIdx;
+  }
+
+  void _moverVertice(int idx, Offset n) {
+    if (idx < 0 || idx >= _verticesEnCurso.length) return;
+    // Copia nueva (no mutación in-place): el painter compara las listas por
+    // referencia, así que sin la copia el arrastre no se repintaría.
+    final nuevos = List<Offset>.from(_verticesEnCurso);
+    nuevos[idx] = n;
+    setState(() => _verticesEnCurso = nuevos);
+  }
+
+  void _onArrastreInicioZona(Offset n) {
+    if (!mounted) return;
+
+    // 1) ¿El dedo cayó sobre un vértice ya marcado? → se arrastra ese punto
+    //    en lugar de crear uno nuevo.
+    final idx = _verticeCercano(n);
+    if (idx != null) {
+      setState(() {
+        _verticeArrastrado = idx;
+        _verticeReciente = false;
+      });
+      _moverVertice(idx, n);
+      return;
+    }
+
+    // 2) Sin zona en curso, un toque dentro de una zona ya guardada significa
+    //    "borrar esa zona" (lo maneja el tap interno del MapaWidget): no se
+    //    empieza un polígono nuevo encima.
+    if (_verticesEnCurso.isEmpty) {
+      for (final zona in _zonas) {
+        if (zona.vertices.length >= 3 &&
+            MapaWidget.puntoEnPoligono(n, zona.vertices)) {
+          return;
+        }
+      }
+    }
+
+    // 3) Vértice nuevo, enganchado al dedo para poder corregirlo en el mismo
+    //    gesto sin tener que soltarlo y volver a agarrarlo.
+    setState(() {
+      _verticesEnCurso = [..._verticesEnCurso, n];
+      _verticeArrastrado = _verticesEnCurso.length - 1;
+      _verticeReciente = true;
+    });
+  }
+
+  void _onArrastreActualizarZona(Offset n) {
+    if (!mounted || _verticeArrastrado == null) return;
+    _moverVertice(_verticeArrastrado!, n);
+  }
+
+  void _onArrastreFinZona() {
+    if (!mounted || _verticeArrastrado == null) return;
+    setState(() {
+      _verticeArrastrado = null;
+      _verticeReciente = false;
+    });
+  }
+
+  /// Segundo dedo apoyado (gesto de zoom): si el vértice se acababa de crear en
+  /// este gesto se descarta; si era uno ya existente se deja donde quedó.
+  void _onArrastreCancelarZona() {
+    if (!mounted) return;
+    setState(() {
+      if (_verticeReciente && _verticesEnCurso.isNotEmpty) {
+        _verticesEnCurso =
+            _verticesEnCurso.sublist(0, _verticesEnCurso.length - 1);
+      }
+      _verticeArrastrado = null;
+      _verticeReciente = false;
+    });
+  }
+
+  /// Quita el último vértice marcado (deshacer un toque de más).
+  void _quitarUltimoVertice() {
+    if (!mounted || _verticesEnCurso.isEmpty) return;
+    setState(() {
+      _verticesEnCurso =
+          _verticesEnCurso.sublist(0, _verticesEnCurso.length - 1);
+      _verticeArrastrado = null;
+      _verticeReciente = false;
+    });
   }
 
   // -- Lugares de Interes (POI) ----------------------------------------------
@@ -489,6 +620,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       }
       _sincronizarBeacons();
     } else if (_modo == _ModoEdicion.zonas) {
+      // En modo zonas los toques ya NO llegan por acá: se manejan en
+      // _onArrastreInicioZona, para poder apoyar el vértice y corregir su
+      // ubicación dentro del mismo gesto. Se conserva la rama por si el
+      // callback se vuelve a conectar.
       _agregarVertice(normalizado);
     } else if (_modo == _ModoEdicion.lugares) {
       _agregarLugar(normalizado);
@@ -706,11 +841,43 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       _elasticoHasta = null;
       _pasoEscala = 0;
       _largoMetros = null;
+      _anchoMetros = null;
+      _puntoArrastrado = null;
     });
+  }
+
+  /// Devuelve el índice del punto de escala más cercano a [n] si está dentro del
+  /// radio de agarre, o null si el toque no cae sobre ningún punto ya marcado.
+  int? _puntoCercano(Offset n) {
+    int? mejorIdx;
+    double mejorDist = _radioAgarrePunto;
+    for (int i = 0; i < _puntosEscala.length; i++) {
+      final d = (_puntosEscala[i] - n).distance;
+      if (d <= mejorDist) {
+        mejorDist = d;
+        mejorIdx = i;
+      }
+    }
+    return mejorIdx;
   }
 
   void _onArrastreInicio(Offset n) {
     if (!mounted) return;
+
+    // Prioridad 1: si el toque cae sobre un punto ya marcado, se arrastra ese
+    // punto para reacomodarlo (en vez de empezar un trazo nuevo).
+    final idx = _puntoCercano(n);
+    if (idx != null) {
+      setState(() {
+        _puntoArrastrado = idx;
+        _puntosEscala[idx] = n;
+        _elasticoDesde = null;
+        _elasticoHasta = null;
+      });
+      return;
+    }
+
+    // Prioridad 2: trazo nuevo según el paso.
     setState(() {
       if (_pasoEscala == 0) {
         // Fijar punto inicial (violeta) y empezar la línea elástica del largo.
@@ -724,11 +891,19 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         _elasticoDesde = _puntosEscala[1];
         _elasticoHasta = n;
       }
+      // En paso 2 (medición completa) un toque en zona libre no hace nada:
+      // solo se pueden mover los puntos. Para medir de nuevo: "Reiniciar".
     });
   }
 
   void _onArrastreActualizar(Offset n) {
-    if (!mounted || _elasticoDesde == null) return;
+    if (!mounted) return;
+    // Si estamos moviendo un punto, actualizamos su posición.
+    if (_puntoArrastrado != null) {
+      setState(() => _puntosEscala[_puntoArrastrado!] = n);
+      return;
+    }
+    if (_elasticoDesde == null) return;
     setState(() => _elasticoHasta = n);
   }
 
@@ -737,6 +912,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _onArrastreCancelar() {
     if (!mounted) return;
     setState(() {
+      // Si se estaba moviendo un punto, se deja donde quedó (no se revierte).
+      if (_puntoArrastrado != null) {
+        _puntoArrastrado = null;
+        return;
+      }
       if (_pasoEscala == 0) {
         // Todavía no se confirmó el largo: descartar el punto inicial también.
         _puntosEscala.clear();
@@ -750,6 +930,17 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   }
 
   Future<void> _onArrastreFin() async {
+    // Caso A: se estaba reacomodando un punto ya existente.
+    if (_puntoArrastrado != null) {
+      if (mounted) setState(() => _puntoArrastrado = null);
+      // Si la medición ya estaba completa, recalcular y persistir la escala con
+      // las posiciones corregidas (los metros de referencia no cambian).
+      if (_pasoEscala == 2) {
+        await _recalcularYGuardarEscala(mostrarAviso: false);
+      }
+      return;
+    }
+
     if (_elasticoDesde == null || _elasticoHasta == null) return;
     final fin = _elasticoHasta!;
 
@@ -787,16 +978,20 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         }
         return;
       }
-      await _generarGrillaDesdeMedicion(metros);
+      if (mounted) setState(() => _anchoMetros = metros);
+      await _recalcularYGuardarEscala(mostrarAviso: true);
     }
   }
 
-  /// Con el largo y el ancho ya medidos, calcula la escala por eje y genera la
-  /// grilla con la resolución correspondiente (celdas de 1 m × 1 m).
-  Future<void> _generarGrillaDesdeMedicion(double anchoMetros) async {
+  /// Con el largo y el ancho ya medidos (y sus metros de referencia guardados),
+  /// calcula la escala por eje a partir de las posiciones ACTUALES de los puntos
+  /// y persiste el resultado. No borra los puntos: quedan en pantalla para poder
+  /// reacomodarlos y recalcular. [mostrarAviso] muestra el SnackBar de confirmación
+  /// (true al completar la medición; false en los reajustes finos de puntos).
+  Future<void> _recalcularYGuardarEscala({required bool mostrarAviso}) async {
     final largoMetros = _largoMetros;
-    if (largoMetros == null || _puntosEscala.length < 3) {
-      _reiniciarMedicion();
+    final anchoMetros = _anchoMetros;
+    if (largoMetros == null || anchoMetros == null || _puntosEscala.length < 3) {
       return;
     }
 
@@ -827,18 +1022,20 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           _escalaX = escalaX;
           _escalaY = escalaY;
           _grilla = GrillaNav(metrosX: escalaX, metrosY: escalaY, tamCeldaMetros: _tamCelda);
-          _puntosEscala.clear();
+          // Medición completa: los puntos SIGUEN en pantalla para reacomodarlos.
           _elasticoDesde = null;
           _elasticoHasta = null;
           _pasoEscala = 2;
-          _largoMetros = null;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(
-            'Escala guardada: ${escalaX.toStringAsFixed(1)} m × ${escalaY.toStringAsFixed(1)} m '
-            '→ grilla de ${_grilla.celdasX} × ${_grilla.celdasY} celdas de ${_tamCelda.toStringAsFixed(1)} m.',
-          )),
-        );
+        if (mostrarAviso) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(
+              'Escala guardada: ${escalaX.toStringAsFixed(1)} m × ${escalaY.toStringAsFixed(1)} m '
+              '→ grilla de ${_grilla.celdasX} × ${_grilla.celdasY} celdas de ${_tamCelda.toStringAsFixed(1)} m. '
+              'Podés arrastrar los puntos para ajustar.',
+            )),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -918,9 +1115,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         return 'Selecciona un dispositivo de la lista y toca el mapa para ubicarlo. Long-press sobre un beacon para eliminarlo.';
       case _ModoEdicion.zonas:
         if (_verticesEnCurso.isEmpty) {
-          return 'Toca el mapa para marcar los vertices de la zona. Necesitas al menos 3 puntos. Toca una zona existente para borrarla.';
+          return 'Tocá el mapa para marcar los vértices de la zona (podés arrastrar sin soltar para afinar el punto). Necesitás al menos 3. Tocá una zona existente para borrarla.';
         }
-        return '${_verticesEnCurso.length} punto(s) marcado(s). Segui tocando o cerra la zona.';
+        return '${_verticesEnCurso.length} punto(s) marcado(s). Arrastrá cualquier punto naranja para corregir su ubicación. Seguí tocando para agregar más, o cerrá la zona.';
       case _ModoEdicion.lugares:
         return 'Toca el mapa para agregar un lugar de interes. Toca el icono morado para eliminarlo.';
       case _ModoEdicion.escala:
@@ -930,9 +1127,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           return '$actual Arrastrá desde un punto para marcar el LARGO e ingresá sus metros.';
         }
         if (_pasoEscala == 1) {
-          return '$actual Largo: ${_largoMetros?.toStringAsFixed(1)} m. Ahora arrastrá para marcar el ANCHO (obligatorio).';
+          return '$actual Largo: ${_largoMetros?.toStringAsFixed(1)} m. Arrastrá desde una zona libre para marcar el ANCHO. Podés tocar y arrastrar los puntos violetas para corregirlos.';
         }
-        return '$actual Volvé a arrastrar para medir de nuevo.';
+        return '$actual Medición lista. Arrastrá cualquiera de los 3 puntos violetas para acomodarlos: la escala se recalcula sola. "Reiniciar" para medir de nuevo.';
       case _ModoEdicion.calibracion:
         if (_celdaCalSeleccionada == null) {
           return 'Tocá en el mapa la celda donde estás parado para calibrar.';
@@ -1021,6 +1218,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     _elasticoHasta = null;
                     _pasoEscala = 0;
                     _largoMetros = null;
+                    _anchoMetros = null;
+                    _puntoArrastrado = null;
+                    _verticeArrastrado = null;
+                    _verticeReciente = false;
                   });
                   // Las lecturas en vivo de calibración necesitan el escáner activo.
                   if (nuevoModo == _ModoEdicion.calibracion) {
@@ -1053,14 +1254,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: InteractiveViewer(
-                  // En escala desactivamos el pan (un dedo dibuja la línea de
-                  // medición) pero dejamos el zoom de dos dedos activo: al apoyar
-                  // el segundo dedo la medición se cancela y se hace zoom. En
-                  // zonas con vértices desactivamos ambos para que el toque dibuje.
+                  // En escala y en zonas, UN dedo dibuja o arrastra puntos, así
+                  // que se desactiva el pan de un dedo; el zoom de dos dedos
+                  // queda siempre activo (al apoyar el segundo dedo el gesto en
+                  // curso se cancela y el InteractiveViewer hace zoom).
                   panEnabled: _modo != _ModoEdicion.escala &&
-                      (_modo != _ModoEdicion.zonas || _verticesEnCurso.isEmpty),
-                  scaleEnabled:
-                      _modo != _ModoEdicion.zonas || _verticesEnCurso.isEmpty,
+                      _modo != _ModoEdicion.zonas,
+                  scaleEnabled: true,
                   child: MapaWidget(
                     rutaImagen: widget.rutaImagen,
                     beacons: _beaconsEnElMapa,
@@ -1070,18 +1270,40 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     modoEdicion: true,
                     mostrarGrilla: true,
                     grilla: _grilla,
-                    onTapMapa: _onTapMapa,
+                    // En modo zonas los toques se atienden por los callbacks de
+                    // arrastre (apoyar y corregir el vértice en un solo gesto).
+                    onTapMapa: _modo == _ModoEdicion.zonas ? null : _onTapMapa,
                     onTapBeacon: _borrarBeacon,
                     onTapLugar: _borrarLugar,
-                    onTapZona: _modo == _ModoEdicion.zonas ? _borrarZona : null,
+                    // Borrar una zona existente solo cuando NO hay un polígono
+                    // en curso: mientras se dibuja, un toque adentro de otra
+                    // zona agrega un vértice (permite zonas superpuestas).
+                    onTapZona: _modo == _ModoEdicion.zonas && _verticesEnCurso.isEmpty
+                        ? _borrarZona
+                        : null,
                     verticesEnCurso: _verticesEnCurso,
-                    puntosMedicion: _modo == _ModoEdicion.escala ? _puntosEscala : const [],
+                    verticeArrastrado:
+                        _modo == _ModoEdicion.zonas ? _verticeArrastrado : null,
+                    // Copia nueva en cada build: el painter compara por
+                    // referencia, así que al mover un punto (mutación in-place)
+                    // esta copia fuerza el repintado en cada frame del arrastre.
+                    puntosMedicion: _modo == _ModoEdicion.escala ? List.of(_puntosEscala) : const [],
                     elasticoDesde: _modo == _ModoEdicion.escala ? _elasticoDesde : null,
                     elasticoHasta: _modo == _ModoEdicion.escala ? _elasticoHasta : null,
-                    onArrastreInicio: _modo == _ModoEdicion.escala ? _onArrastreInicio : null,
-                    onArrastreActualizar: _modo == _ModoEdicion.escala ? _onArrastreActualizar : null,
-                    onArrastreFin: _modo == _ModoEdicion.escala ? _onArrastreFin : null,
-                    onArrastreCancelar: _modo == _ModoEdicion.escala ? _onArrastreCancelar : null,
+                    // Gestos de un dedo: la medición de escala y la edición de
+                    // vértices de zonas comparten el mismo canal.
+                    onArrastreInicio: _modo == _ModoEdicion.escala
+                        ? _onArrastreInicio
+                        : (_modo == _ModoEdicion.zonas ? _onArrastreInicioZona : null),
+                    onArrastreActualizar: _modo == _ModoEdicion.escala
+                        ? _onArrastreActualizar
+                        : (_modo == _ModoEdicion.zonas ? _onArrastreActualizarZona : null),
+                    onArrastreFin: _modo == _ModoEdicion.escala
+                        ? _onArrastreFin
+                        : (_modo == _ModoEdicion.zonas ? _onArrastreFinZona : null),
+                    onArrastreCancelar: _modo == _ModoEdicion.escala
+                        ? _onArrastreCancelar
+                        : (_modo == _ModoEdicion.zonas ? _onArrastreCancelarZona : null),
                     // Calibración: celda seleccionada (amarillo) + pines de celdas calibradas.
                     celdaResaltada: _modo == _ModoEdicion.calibracion && _celdaCalSeleccionada != null
                         ? Offset(_grilla.centroX(_celdaCalSeleccionada!.ix),
@@ -1104,10 +1326,19 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               child: Row(
                 children: [
+                  // Deshacer el último punto: ahora cualquier toque sobre el
+                  // plano crea un vértice, así que hace falta una forma de
+                  // sacar uno solo sin descartar la zona entera.
+                  IconButton(
+                    onPressed: _verticesEnCurso.isNotEmpty ? _quitarUltimoVertice : null,
+                    icon: const Icon(Icons.undo),
+                    tooltip: 'Quitar último punto',
+                    color: Colors.orange,
+                  ),
                   Expanded(
                     child: OutlinedButton.icon(
                       onPressed: _verticesEnCurso.isNotEmpty ? _descartarZonaEnCurso : null,
-                      icon: const Icon(Icons.undo),
+                      icon: const Icon(Icons.delete_outline),
                       label: const Text('Descartar'),
                       style: OutlinedButton.styleFrom(foregroundColor: Colors.orange),
                     ),

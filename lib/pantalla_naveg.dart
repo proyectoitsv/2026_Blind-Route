@@ -62,22 +62,20 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   List<CalibracionRegistro> _calibraciones = [];
  
   // ── Posición ──────────────────────────────────────────────────────────────
-  Offset? _posicionEMA;
+  // Filtro One Euro (paso-bajo con corte adaptativo a la velocidad): quieto
+  // filtra fuerte (estable), en movimiento se abre (baja latencia). Mejora
+  // estabilidad y respuesta a la vez. Parámetros en la clase _Filtro1EuroPos.
+  final _Filtro1EuroPos _filtroPos = _Filtro1EuroPos();
 
-  // Alpha EMA = 0.15: τ ≈ 6.7 ciclos @ 5.5 Hz ≈ 1.2 s al 63%.
-  static const double _alphaEMA = 0.15;
+  // Última posición filtrada, usada como referencia del gate de outliers.
+  Offset? _ultimaPosicion;
 
-  // Máximo desplazamiento normalizado que el EMA puede hacer en UN solo paso.
-  // Evita que un spike de RSSI arrastre el EMA de golpe causando saltos grandes.
-  // 0.04 ≈ 2 m en un plano de 50 m. Movimiento real de una persona: < 1.5 m/s.
-  //
-  // Este clamp es ahora la ÚNICA defensa anti-salto de todo el pipeline: el
-  // gate de confirmación de 5 ciclos que existía antes (_posicionConfirmada,
-  // _contadorEstabilidad, _posicionEMAAnterior, _lecturasParaConfirmar,
-  // _umbralEstabilidad) se eliminó por completo — era el origen tanto del
-  // congelamiento como de los saltos de ~10 m, ver el comentario en
-  // _calcularPosicionRobusta().
-  static const double _maxPasoEMA = 0.04;
+  // Gate de outliers a la ENTRADA del filtro: si el centroide crudo salta más
+  // que esto respecto de la última posición (spike grosero de RSSI en varios
+  // beacons a la vez), se recorta la entrada. Recortar la entrada —y no la
+  // salida— mantiene coherente el estado interno del filtro. 0.15 ≈ 7.5 m en
+  // un plano de 50 m: solo corta saltos absurdos, no el movimiento real.
+  static const double _maxSaltoRaw = 0.15;
 
   // _historialPosiciones/_ventanaCentroid (promedio móvil redundante) fueron
   // eliminados: sumaban una segunda capa de latencia sin reducir ruido real,
@@ -520,50 +518,25 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
  
       final nuevaPosicionRaw = Offset(sumaX / sumaPesos, sumaY / sumaPesos);
 
-      // EMA con paso máximo clampeado: si el raw está muy lejos del EMA actual,
-      // limitamos el movimiento a _maxPasoEMA por ciclo. Esto evita que un único
-      // spike de RSSI (beacon con lectura anómala) arrastre el EMA bruscamente.
-      Offset nuevaPosicionEMA;
-      if (_posicionEMA == null) {
-        nuevaPosicionEMA = nuevaPosicionRaw;
-      } else {
-        final candidato = Offset(
-          _alphaEMA * nuevaPosicionRaw.dx + (1 - _alphaEMA) * _posicionEMA!.dx,
-          _alphaEMA * nuevaPosicionRaw.dy + (1 - _alphaEMA) * _posicionEMA!.dy,
-        );
-        // Clampear: si el paso es muy grande, avanzar solo _maxPasoEMA hacia candidato.
-        final delta = candidato - _posicionEMA!;
-        final distDelta = delta.distance;
-        if (distDelta > _maxPasoEMA) {
-          final escala = _maxPasoEMA / distDelta;
-          nuevaPosicionEMA = _posicionEMA! + delta * escala;
-        } else {
-          nuevaPosicionEMA = candidato;
+      // Gate de outliers: recorta la ENTRADA del filtro si el centroide crudo
+      // salta absurdamente lejos (spike grosero de RSSI). Recortar la entrada
+      // —no la salida— evita descoordinar el estado del filtro.
+      Offset entradaFiltro = nuevaPosicionRaw;
+      if (_ultimaPosicion != null) {
+        final delta = nuevaPosicionRaw - _ultimaPosicion!;
+        final dist = delta.distance;
+        if (dist > _maxSaltoRaw) {
+          entradaFiltro = _ultimaPosicion! + delta * (_maxSaltoRaw / dist);
         }
       }
-      _posicionEMA = nuevaPosicionEMA;
 
-      // BUG ARQUITECTONICO (causaba TANTO el congelamiento como los saltos de
-      // 10 m -- son el mismo defecto visto en dos momentos distintos):
-      //
-      // Antes, para "confirmar" una posicion nueva se exigian 5 ciclos
-      // CONSECUTIVOS con delta de EMA < 1.25 m, y recien ahi _posicionConfirmada
-      // saltaba DIRECTO al valor del EMA en ese instante (sin interpolar desde
-      // el valor viejo). El EMA esta clampeado a 2 m/ciclo -- con ruido BLE
-      // moderado, es comun que se mueva entre 1.25 m y 2 m por ciclo de forma
-      // sostenida: siempre por encima del umbral de "estable", asi que los 5
-      // ciclos seguidos nunca se juntaban y la posicion quedaba congelada. Y
-      // cuando por fin habia 5 ciclos tranquilos, el salto directo al EMA
-      // actual podia ser de hasta 5 ciclos x 2 m = 10 m si venia congelada
-      // mientras la persona caminaba. Mismo bug, dos sintomas.
-      //
-      // FIX: el EMA (con su propio clamp de _maxPasoEMA por ciclo, que YA
-      // evita saltos bruscos por spikes de RSSI) alimenta la posicion
-      // directamente, todos los ciclos. Sin gate extra encima. Esto da
-      // seguimiento continuo y en tiempo real -- igual que en modo
-      // configuracion -- pero con el suavizado anti-ruido que modo
-      // configuracion no tiene.
-      final nuevaPosicionFinal = nuevaPosicionEMA;
+      // Filtro One Euro: paso-bajo con frecuencia de corte adaptativa a la
+      // velocidad. Quieto → corte bajo → muy estable (mata el jitter en
+      // reposo). En movimiento → corte alto → baja latencia (sigue al usuario
+      // en tiempo real). Reemplaza al EMA de α fijo, que obligaba a elegir
+      // entre estable O rápido; este mejora ambos a la vez.
+      final nuevaPosicionFinal = _filtroPos.filtrar(entradaFiltro, DateTime.now());
+      _ultimaPosicion = nuevaPosicionFinal;
 
       {
         final bool primeraUbicacion = _posicionFinal == null;
@@ -875,6 +848,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       _voz.hablar('Navegación cancelada.');
     }
   }
+
+  /// Punto de entrada accesible: tocar CUALQUIER parte de la pantalla inicia la
+  /// selección de destino por voz. Pensado para personas ciegas: no hay que
+  /// buscar un botón chico. Los controles con su propio onTap (lista, cancelar,
+  /// barra de micrófono) siguen funcionando porque capturan el toque primero;
+  /// el zoom/desplazamiento del mapa está desactivado, así que el toque siempre
+  /// llega. Si ya se estaba escuchando (o el estado quedó trabado), el toque lo
+  /// detiene para poder reintentar sin quedar bloqueado.
+  void _iniciarSeleccionDestinoPorPantalla() {
+    if (_escuchando) {
+      _voz.detenerEscucha();
+      if (mounted) setState(() => _escuchando = false);
+      return;
+    }
+    _seleccionarDestinoPorVoz();
+  }
  
   // ─── INSTRUCCIONES POR VOZ (OUTPUT) ───────────────────────────────────────
  
@@ -1153,7 +1142,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
                     ),
                   ),
                   Text(
-                    escuchando ? 'Decí el nombre del lugar' : 'Decí a dónde querés ir',
+                    escuchando ? 'Decí el nombre del lugar' : 'Tocá en cualquier parte de la pantalla',
                     style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 14),
                   ),
                 ],
@@ -1225,8 +1214,17 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           ],
         ),
 
-        body: Column(
-          children: [
+        body: Semantics(
+          label: 'Tocá en cualquier parte de la pantalla para elegir tu destino por voz',
+          explicitChildNodes: true,
+          child: GestureDetector(
+            // Toque en cualquier parte → selección de destino por voz.
+            // translucent deja pasar los eventos a los hijos (mapa, botones,
+            // barra de micrófono), que capturan sus propios toques y gestos.
+            behavior: HitTestBehavior.translucent,
+            onTap: _iniciarSeleccionDestinoPorPantalla,
+            child: Column(
+              children: [
             // Panel de destino + brújula
             Container(
               padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
@@ -1269,7 +1267,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
                             ],
                           )
                         : Text(
-                            'Tocá el micrófono para elegir destino',
+                            'Tocá la pantalla para elegir destino',
                             style: TextStyle(fontSize: 15, color: TemaApp.textoSecundario),
                           ),
                   ),
@@ -1332,21 +1330,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
                   border: Border.all(color: const Color(0xFF21262D), width: 1),
                 ),
                 clipBehavior: Clip.antiAlias,
-                child: InteractiveViewer(
-                  child: MapaWidget(
-                    rutaImagen: widget.rutaImagen,
-                    beacons: _beaconsEnElMapa,
-                    zonas: _zonas,
-                    lugares: _lugares,
-                    posicionUsuario: _posicionFinal,
-                    modoEdicion: false,
-                    mostrarGrilla: true,
-                    grilla: _grilla,
-                    ruta: _rutaActual,
-                    headingUsuario: _orientacion.heading != null
-                        ? ((_orientacion.heading! - _rotacionMapaEfectiva) % 360 + 360) % 360
-                        : null,
-                  ),
+                // Sin InteractiveViewer en navegación: la persona no manipula el
+                // mapa, así el mapa no compite por los gestos y el toque en
+                // cualquier parte de la pantalla siempre inicia la selección.
+                child: MapaWidget(
+                  rutaImagen: widget.rutaImagen,
+                  beacons: _beaconsEnElMapa,
+                  zonas: _zonas,
+                  lugares: _lugares,
+                  posicionUsuario: _posicionFinal,
+                  modoEdicion: false,
+                  mostrarGrilla: true,
+                  grilla: _grilla,
+                  ruta: _rutaActual,
+                  headingUsuario: _orientacion.heading != null
+                      ? ((_orientacion.heading! - _rotacionMapaEfectiva) % 360 + 360) % 360
+                      : null,
                 ),
               ),
             ),
@@ -1380,7 +1379,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
             // Barra de micrófono
             _buildBarraMicrofono(),
-          ],
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1449,5 +1450,98 @@ class _HisteresisCelda {
     _celdaConfirmada = null;
     _ciclosEnCeldaNueva = 0;
     _celdaCandidataActual = null;
+  }
+}
+/// Filtro "One Euro" (Casiez, Roussel & Vogel, 2012) de un canal escalar.
+///
+/// Es un paso-bajo cuya frecuencia de corte se adapta a la velocidad de la
+/// señal: cuando el valor está casi quieto usa un corte bajo (filtra fuerte →
+/// mucha estabilidad, mata el jitter en reposo); cuando el valor se mueve
+/// rápido usa un corte alto (filtra poco → baja latencia, sigue el movimiento
+/// en tiempo real). Por eso mejora estabilidad Y respuesta a la vez, en lugar
+/// de negociar una por la otra como un EMA de α fijo.
+class _Filtro1Euro {
+  /// Corte mínimo (Hz) cuando la señal está quieta. Menor = más estable en
+  /// reposo (más lag al arrancar). ~0.10 da más estabilidad que el EMA previo.
+  final double minCutoff;
+
+  /// Cuánto se abre el corte con la velocidad. Mayor = sigue más rápido al
+  /// moverse (a costa de dejar pasar algo más de ruido durante el movimiento).
+  final double beta;
+
+  /// Corte del suavizado de la derivada (Hz). 1.0 es el valor habitual.
+  final double dCutoff;
+
+  double? _xPrev;      // último valor crudo
+  double? _dxPrev;     // última derivada suavizada
+  double? _xFiltPrev;  // último valor filtrado (salida)
+
+  _Filtro1Euro({this.minCutoff = 0.10, this.beta = 12.0, this.dCutoff = 1.0});
+
+  static double _alpha(double cutoff, double dt) {
+    final tau = 1.0 / (2 * pi * cutoff);
+    return 1.0 / (1.0 + tau / dt);
+  }
+
+  double filtrar(double x, double dt) {
+    if (_xFiltPrev == null || dt <= 0) {
+      _xPrev = x;
+      _dxPrev = 0.0;
+      _xFiltPrev = x;
+      return x;
+    }
+    // Derivada suavizada.
+    final dx = (x - _xPrev!) / dt;
+    final aD = _alpha(dCutoff, dt);
+    final edx = aD * dx + (1 - aD) * _dxPrev!;
+    // Corte adaptativo y paso-bajo del valor.
+    final cutoff = minCutoff + beta * edx.abs();
+    final a = _alpha(cutoff, dt);
+    final xFilt = a * x + (1 - a) * _xFiltPrev!;
+    _xPrev = x;
+    _dxPrev = edx;
+    _xFiltPrev = xFilt;
+    return xFilt;
+  }
+
+  void reset() {
+    _xPrev = null;
+    _dxPrev = null;
+    _xFiltPrev = null;
+  }
+}
+
+/// Filtro One Euro para una posición 2D: un filtro por eje, compartiendo el
+/// mismo dt (tiempo real entre muestras). El dt real —y no un valor fijo— es
+/// clave para que el corte adaptativo funcione con la tasa variable del BLE.
+class _Filtro1EuroPos {
+  final _Filtro1Euro _fx;
+  final _Filtro1Euro _fy;
+  DateTime? _tPrev;
+
+  // dt de arranque/seguridad cuando no hay muestra previa o el reloj no avanzó:
+  // ~1/5.5 Hz, la tasa nominal del pipeline de posicionamiento.
+  static const double _dtPorDefecto = 0.18;
+
+  _Filtro1EuroPos({double minCutoff = 0.10, double beta = 12.0, double dCutoff = 1.0})
+      : _fx = _Filtro1Euro(minCutoff: minCutoff, beta: beta, dCutoff: dCutoff),
+        _fy = _Filtro1Euro(minCutoff: minCutoff, beta: beta, dCutoff: dCutoff);
+
+  Offset filtrar(Offset p, DateTime t) {
+    double dt;
+    if (_tPrev == null) {
+      dt = _dtPorDefecto;
+    } else {
+      dt = t.difference(_tPrev!).inMicroseconds / 1e6;
+      if (dt <= 0) dt = _dtPorDefecto;
+    }
+    _tPrev = t;
+    return Offset(_fx.filtrar(p.dx, dt), _fy.filtrar(p.dy, dt));
+  }
+
+  void reset() {
+    _fx.reset();
+    _fy.reset();
+    _tPrev = null;
   }
 }
