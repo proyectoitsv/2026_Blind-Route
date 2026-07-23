@@ -6,6 +6,7 @@ import 'beacon_model.dart';
 import 'zona_model.dart';
 import 'poi_model.dart';
 import 'grilla_nav.dart';
+import 'asistente_trazo.dart';
 import 'tema.dart';
 /// Helpers de coordenadas/celdas compartidos por los painters.
 Offset _desnormalizar(Offset n, Size tam) =>
@@ -22,6 +23,30 @@ Rect _rectCelda(Offset centroNorm, GrillaNav grilla, Size tam) {
   // sale de la imagen si no se acota. Sin esto, la celda del usuario o la
   // última celda de la ruta se pintan por fuera del borde del mapa.
   return rect.intersect(Rect.fromLTWH(0, 0, tam.width, tam.height));
+}
+
+/// Dibuja una línea punteada entre [a] y [b].
+void _lineaPunteada(Canvas canvas, Offset a, Offset b, Paint paint,
+    {double paso = 8.0}) {
+  final d = b - a;
+  final dist = d.distance;
+  if (dist <= 0) return;
+  final ux = d.dx / dist, uy = d.dy / dist;
+  double t = 0;
+  bool pintar = true;
+  while (t < dist) {
+    final t1 = t;
+    final t2 = (t + paso / 2).clamp(0.0, dist);
+    if (pintar) {
+      canvas.drawLine(
+        Offset(a.dx + ux * t1, a.dy + uy * t1),
+        Offset(a.dx + ux * t2, a.dy + uy * t2),
+        paint,
+      );
+    }
+    t += paso / 2;
+    pintar = !pintar;
+  }
 }
 
 /// Painter "estático" del mapa: grilla de 1 m × 1 m, zonas no transitables,
@@ -53,6 +78,13 @@ class _MapaPainter extends CustomPainter {
   /// en este momento (se resalta más grande), o null si no hay ninguno.
   final int? verticeArrastrado;
 
+  /// Guías de alineación activas del asistente de trazo (líneas rectas).
+  final List<GuiaTrazo> guias;
+
+  /// Punto donde se ancla la etiqueta con el ángulo imantado (normalmente el
+  /// punto que el operador está moviendo).
+  final Offset? guiaPunto;
+
   _MapaPainter({
     required this.zonas,
     required this.verticesEnCurso,
@@ -66,6 +98,8 @@ class _MapaPainter extends CustomPainter {
     this.celdaResaltada,
     this.celdasCalibradas = const [],
     this.verticeArrastrado,
+    this.guias = const [],
+    this.guiaPunto,
   });
 
   @override
@@ -190,29 +224,8 @@ class _MapaPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.5
           ..strokeCap = StrokeCap.round;
-        // Dibujar guiones: trayecto entre último punto y primero.
-        const paso = 8.0;
-        final dx = primero.dx - ultimo.dx;
-        final dy = primero.dy - ultimo.dy;
-        final dist = sqrt(dx * dx + dy * dy);
-        if (dist > 0) {
-          final ux = dx / dist, uy = dy / dist;
-          double t = 0;
-          bool dibujar = true;
-          while (t < dist) {
-            final t1 = t;
-            final t2 = (t + paso / 2).clamp(0.0, dist);
-            if (dibujar) {
-              canvas.drawLine(
-                Offset(ultimo.dx + ux * t1, ultimo.dy + uy * t1),
-                Offset(ultimo.dx + ux * t2, ultimo.dy + uy * t2),
-                paintCierre,
-              );
-            }
-            t += paso / 2;
-            dibujar = !dibujar;
-          }
-        }
+        // Guiones entre el último punto y el primero.
+        _lineaPunteada(canvas, ultimo, primero, paintCierre);
       }
 
       // Círculos numerados en cada vértice. Funcionan como manijas de arrastre:
@@ -305,6 +318,72 @@ class _MapaPainter extends CustomPainter {
         tp.paint(canvas, Offset(c.dx - tp.width / 2, c.dy - tp.height / 2));
       }
     }
+
+    // --- Guías del asistente de trazo (siempre por encima de todo) ---
+    _dibujarGuias(canvas, tamanoImagen);
+  }
+
+  /// Guías de alineación: rectas punteadas magenta que atraviesan el plano por
+  /// el punto de anclaje, más una etiqueta con el ángulo al que se imantó el
+  /// trazo. Es la señal visual de que la línea quedó perfectamente recta.
+  void _dibujarGuias(Canvas canvas, Size tam) {
+    if (guias.isEmpty) return;
+
+    final paintGuia = Paint()
+      ..color = TemaApp.guiaAlineacion.withValues(alpha: 0.90)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round;
+
+    // Los ejes tienen escalas métricas distintas, así que la dirección de la
+    // guía (calculada en metros) hay que convertirla a normalizado antes de
+    // dibujarla, o una guía de 45° no se vería a 45°.
+    final mx = grilla.metrosX > 0 ? grilla.metrosX : 1.0;
+    final my = grilla.metrosY > 0 ? grilla.metrosY : 1.0;
+
+    canvas.save();
+    canvas.clipRect(Rect.fromLTWH(0, 0, tam.width, tam.height));
+    for (final g in guias) {
+      final rad = g.anguloGrados * pi / 180;
+      var ux = cos(rad) / mx;
+      var uy = sin(rad) / my;
+      final n = sqrt(ux * ux + uy * uy);
+      if (n == 0) continue;
+      ux = ux / n * 3.0; // 3 unidades normalizadas: cruza el plano entero
+      uy = uy / n * 3.0;
+      final a = _desnormalizar(Offset(g.ancla.dx - ux, g.ancla.dy - uy), tam);
+      final b = _desnormalizar(Offset(g.ancla.dx + ux, g.ancla.dy + uy), tam);
+      _lineaPunteada(canvas, a, b, paintGuia, paso: 10);
+    }
+    canvas.restore();
+
+    // Etiqueta con el ángulo, pegada al punto que se está moviendo.
+    final punto = guiaPunto;
+    if (punto == null) return;
+    final tp = TextPainter(
+      textDirection: TextDirection.ltr,
+      text: TextSpan(
+        text: guias.first.etiqueta,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    )..layout();
+    final c = _desnormalizar(punto, tam);
+    final ancho = tp.width + 12, alto = tp.height + 6;
+    // Si no entra a la derecha, la etiqueta se pasa al otro lado del punto.
+    var izq = c.dx + 14;
+    if (izq + ancho > tam.width) izq = c.dx - 14 - ancho;
+    var arriba = c.dy - 30;
+    if (arriba < 0) arriba = c.dy + 14;
+    final rect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(izq, arriba, ancho, alto),
+      const Radius.circular(4),
+    );
+    canvas.drawRRect(rect, Paint()..color = TemaApp.guiaEtiqueta);
+    tp.paint(canvas, Offset(rect.left + 6, rect.top + 3));
   }
 
   @override
@@ -320,7 +399,9 @@ class _MapaPainter extends CustomPainter {
       old.elasticoHasta != elasticoHasta ||
       old.celdaResaltada != celdaResaltada ||
       old.celdasCalibradas != celdasCalibradas ||
-      old.verticeArrastrado != verticeArrastrado;
+      old.verticeArrastrado != verticeArrastrado ||
+      old.guias != guias ||
+      old.guiaPunto != guiaPunto;
 }
 
 /// Painter liviano de la posición del usuario: pinta solo la celda actual y la
@@ -437,6 +518,13 @@ class MapaWidget extends StatelessWidget {
   /// resalta como manija activa), o null.
   final int? verticeArrastrado;
 
+  /// Guías activas del asistente de trazo (líneas rectas). Se dibujan como
+  /// rectas punteadas magenta que cruzan todo el plano.
+  final List<GuiaTrazo> guias;
+
+  /// Punto al que se pega la etiqueta con el ángulo imantado.
+  final Offset? guiaPunto;
+
   /// Modo calibración: centro normalizado de la celda seleccionada (amarillo) y
   /// centros de las celdas que ya tienen calibraciones guardadas (pin ✓).
   final Offset? celdaResaltada;
@@ -469,6 +557,8 @@ class MapaWidget extends StatelessWidget {
     this.celdaResaltada,
     this.celdasCalibradas = const [],
     this.verticeArrastrado,
+    this.guias = const [],
+    this.guiaPunto,
   });
 
   /// Tamaño del plano renderizado dentro del [contenedor], conservando una
@@ -576,6 +666,8 @@ class MapaWidget extends StatelessWidget {
                           celdaResaltada: celdaResaltada,
                           celdasCalibradas: celdasCalibradas,
                           verticeArrastrado: verticeArrastrado,
+                          guias: guias,
+                          guiaPunto: guiaPunto,
                         ),
                       ),
                     ),

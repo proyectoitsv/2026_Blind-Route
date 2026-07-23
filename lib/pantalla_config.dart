@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:math';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_compass/flutter_compass.dart';
@@ -11,6 +12,7 @@ import 'procesador_senal.dart';
 import 'mapa_widget.dart';
 import 'bluetooth_helper.dart';
 import 'grilla_nav.dart';
+import 'asistente_trazo.dart';
 import 'calibracion_model.dart';
 import 'tema.dart';
 
@@ -107,6 +109,89 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   int? _verticeArrastrado;
   bool _verticeReciente = false;
   static const double _radioAgarreVertice = 0.05;
+
+  // ── Asistente de trazo (líneas rectas, estilo Canva) ──────────────────────
+  // Cuando el trazo se acerca a un ángulo notable el punto se corrige para que
+  // la línea quede exactamente recta, se dibujan guías punteadas y se emite un
+  // pulso háptico. Se puede apagar para dibujar ángulos libres a propósito.
+  bool _asistenteRecto = true;
+  List<GuiaTrazo> _guias = const [];
+  Offset? _guiaPunto;
+
+  /// Pasa [n] por el asistente y actualiza las guías a dibujar. Devuelve el
+  /// punto ya corregido. No llama a setState: los llamadores lo hacen (o
+  /// invocan _moverVertice, que ya repinta).
+  Offset _aplicarAsistente(
+    Offset n, {
+    Offset? ancla,
+    Offset? anclaSecundaria,
+    bool diagonales = false,
+  }) {
+    final r = AsistenteTrazo.ajustar(
+      punto: n,
+      metrosX: _escalaX,
+      metrosY: _escalaY,
+      ancla: ancla,
+      anclaSecundaria: anclaSecundaria,
+      diagonales: diagonales,
+      activo: _asistenteRecto,
+    );
+    final habiaGuia = _guias.isNotEmpty;
+    _guias = r.guias;
+    _guiaPunto = r.hayAjuste ? r.punto : null;
+    // Pulso háptico solo en el flanco de "enganche", no en cada frame.
+    if (!habiaGuia && r.hayAjuste) HapticFeedback.selectionClick();
+    return r.punto;
+  }
+
+  void _limpiarGuias() {
+    _guias = const [];
+    _guiaPunto = null;
+  }
+
+  /// Puntos de referencia para imantar el punto [idx] de la medición de escala:
+  /// el extremo opuesto del segmento que lo contiene y, para el vértice del
+  /// medio, también el otro extremo (así el ancho queda perpendicular al largo).
+  ({Offset? ancla, Offset? sec}) _anclasEscala(int idx) {
+    Offset? ancla, sec;
+    if (idx == 0) {
+      if (_puntosEscala.length > 1) ancla = _puntosEscala[1];
+    } else if (idx == 1) {
+      if (_puntosEscala.isNotEmpty) ancla = _puntosEscala[0];
+      if (_puntosEscala.length > 2) sec = _puntosEscala[2];
+    } else if (idx == 2) {
+      if (_puntosEscala.length > 1) ancla = _puntosEscala[1];
+    }
+    return (ancla: ancla, sec: sec);
+  }
+
+  /// Puntos de referencia para imantar el vértice [i] de la zona en curso: el
+  /// vértice anterior (la arista que se está trazando) y el siguiente. Cuando
+  /// [i] es el último y ya hay 3 o más vértices, el "siguiente" es el primero:
+  /// eso es lo que hace que el cierre de un rectángulo caiga exacto.
+  ({Offset? ancla, Offset? sec}) _anclasVertice(int i) {
+    final n = _verticesEnCurso.length;
+    Offset? ancla, sec;
+    if (i - 1 >= 0) {
+      ancla = _verticesEnCurso[i - 1];
+    } else if (n >= 3) {
+      ancla = _verticesEnCurso[n - 1];
+    }
+    if (i + 1 < n) {
+      sec = _verticesEnCurso[i + 1];
+    } else if (n >= 3) {
+      sec = _verticesEnCurso[0];
+    }
+    return (ancla: ancla, sec: sec);
+  }
+
+  /// Aplica el asistente al vértice [idx] y lo reubica.
+  void _aplicarAsistenteEnVertice(int idx, Offset n) {
+    final a = _anclasVertice(idx);
+    final p = _aplicarAsistente(n,
+        ancla: a.ancla, anclaSecundaria: a.sec, diagonales: true);
+    _moverVertice(idx, p);
+  }
 
   @override
   void initState() {
@@ -319,6 +404,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           _verticesEnCurso = [];
           _verticeArrastrado = null;
           _verticeReciente = false;
+          _limpiarGuias();
         });
       }
     } catch (e) {
@@ -336,6 +422,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       _verticesEnCurso = [];
       _verticeArrastrado = null;
       _verticeReciente = false;
+      _limpiarGuias();
     });
   }
 
@@ -442,7 +529,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         _verticeArrastrado = idx;
         _verticeReciente = false;
       });
-      _moverVertice(idx, n);
+      _aplicarAsistenteEnVertice(idx, n);
       return;
     }
 
@@ -460,23 +547,28 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
     // 3) Vértice nuevo, enganchado al dedo para poder corregirlo en el mismo
     //    gesto sin tener que soltarlo y volver a agarrarlo.
+    final idxNuevo = _verticesEnCurso.length;
     setState(() {
       _verticesEnCurso = [..._verticesEnCurso, n];
-      _verticeArrastrado = _verticesEnCurso.length - 1;
+      _verticeArrastrado = idxNuevo;
       _verticeReciente = true;
     });
+    // El imantado se evalúa recién con el vértice ya en la lista, para que el
+    // asistente pueda mirar también el primer vértice (arista de cierre).
+    _aplicarAsistenteEnVertice(idxNuevo, n);
   }
 
   void _onArrastreActualizarZona(Offset n) {
     if (!mounted || _verticeArrastrado == null) return;
-    _moverVertice(_verticeArrastrado!, n);
+    _aplicarAsistenteEnVertice(_verticeArrastrado!, n);
   }
 
   void _onArrastreFinZona() {
-    if (!mounted || _verticeArrastrado == null) return;
+    if (!mounted) return;
     setState(() {
       _verticeArrastrado = null;
       _verticeReciente = false;
+      _limpiarGuias();
     });
   }
 
@@ -485,6 +577,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _onArrastreCancelarZona() {
     if (!mounted) return;
     setState(() {
+      _limpiarGuias();
       if (_verticeReciente && _verticesEnCurso.isNotEmpty) {
         _verticesEnCurso =
             _verticesEnCurso.sublist(0, _verticesEnCurso.length - 1);
@@ -502,6 +595,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           _verticesEnCurso.sublist(0, _verticesEnCurso.length - 1);
       _verticeArrastrado = null;
       _verticeReciente = false;
+      _limpiarGuias();
     });
   }
 
@@ -843,6 +937,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       _largoMetros = null;
       _anchoMetros = null;
       _puntoArrastrado = null;
+      _limpiarGuias();
     });
   }
 
@@ -868,9 +963,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     // punto para reacomodarlo (en vez de empezar un trazo nuevo).
     final idx = _puntoCercano(n);
     if (idx != null) {
+      final a = _anclasEscala(idx);
+      final p = _aplicarAsistente(n, ancla: a.ancla, anclaSecundaria: a.sec);
       setState(() {
         _puntoArrastrado = idx;
-        _puntosEscala[idx] = n;
+        _puntosEscala[idx] = p;
         _elasticoDesde = null;
         _elasticoHasta = null;
       });
@@ -881,6 +978,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     setState(() {
       if (_pasoEscala == 0) {
         // Fijar punto inicial (violeta) y empezar la línea elástica del largo.
+        // El primer punto no tiene ancla: no hay nada con qué alinearlo.
+        _limpiarGuias();
         _puntosEscala
           ..clear()
           ..add(n);
@@ -889,7 +988,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       } else if (_pasoEscala == 1) {
         // El ancho parte del segundo punto (P2), sin importar dónde se toque.
         _elasticoDesde = _puntosEscala[1];
-        _elasticoHasta = n;
+        _elasticoHasta = _aplicarAsistente(n, ancla: _puntosEscala[1]);
       }
       // En paso 2 (medición completa) un toque en zona libre no hace nada:
       // solo se pueden mover los puntos. Para medir de nuevo: "Reiniciar".
@@ -898,13 +997,18 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   void _onArrastreActualizar(Offset n) {
     if (!mounted) return;
-    // Si estamos moviendo un punto, actualizamos su posición.
+    // Si estamos moviendo un punto, actualizamos su posición (imantada).
     if (_puntoArrastrado != null) {
-      setState(() => _puntosEscala[_puntoArrastrado!] = n);
+      final a = _anclasEscala(_puntoArrastrado!);
+      final p = _aplicarAsistente(n, ancla: a.ancla, anclaSecundaria: a.sec);
+      setState(() => _puntosEscala[_puntoArrastrado!] = p);
       return;
     }
     if (_elasticoDesde == null) return;
-    setState(() => _elasticoHasta = n);
+    // El extremo libre de la línea elástica se imanta contra su origen: es lo
+    // que hace que el largo y el ancho del plano queden perfectamente rectos.
+    final p = _aplicarAsistente(n, ancla: _elasticoDesde);
+    setState(() => _elasticoHasta = p);
   }
 
   /// El usuario apoyó un segundo dedo para hacer zoom: descartamos la línea
@@ -912,6 +1016,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _onArrastreCancelar() {
     if (!mounted) return;
     setState(() {
+      _limpiarGuias();
       // Si se estaba moviendo un punto, se deja donde quedó (no se revierte).
       if (_puntoArrastrado != null) {
         _puntoArrastrado = null;
@@ -930,6 +1035,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   }
 
   Future<void> _onArrastreFin() async {
+    if (mounted) setState(_limpiarGuias);
     // Caso A: se estaba reacomodando un punto ya existente.
     if (_puntoArrastrado != null) {
       if (mounted) setState(() => _puntoArrastrado = null);
@@ -1222,6 +1328,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     _puntoArrastrado = null;
                     _verticeArrastrado = null;
                     _verticeReciente = false;
+                    _limpiarGuias();
                   });
                   // Las lecturas en vivo de calibración necesitan el escáner activo.
                   if (nuevoModo == _ModoEdicion.calibracion) {
@@ -1245,6 +1352,49 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               textAlign: TextAlign.center,
             ),
           ),
+
+          // Asistente de trazo: solo tiene sentido donde se dibujan líneas.
+          if (_modo == _ModoEdicion.escala || _modo == _ModoEdicion.zonas)
+            SizedBox(
+              // Alto acotado: el body es un Column con un Expanded abajo y el
+              // mapa ocupa 380 px fijos, así que esta fila tiene que sumar lo
+              // mínimo para no desbordar en pantallas chicas.
+              height: 36,
+              child: Padding(
+              padding: const EdgeInsets.only(left: 12, right: 4),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.architecture,
+                    size: 18,
+                    color: _asistenteRecto
+                        ? TemaApp.guiaAlineacion
+                        : TemaApp.textoSecundario,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _modo == _ModoEdicion.zonas
+                          ? 'Líneas rectas: imanta a 0°, 45° y 90°'
+                          : 'Líneas rectas: imanta a 0° y 90°',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  Switch(
+                    value: _asistenteRecto,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    onChanged: (v) {
+                      if (!mounted) return;
+                      setState(() {
+                        _asistenteRecto = v;
+                        _limpiarGuias();
+                      });
+                    },
+                  ),
+                ],
+              ),
+              ),
+            ),
 
           // Mapa
           SizedBox(
@@ -1284,6 +1434,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     verticesEnCurso: _verticesEnCurso,
                     verticeArrastrado:
                         _modo == _ModoEdicion.zonas ? _verticeArrastrado : null,
+                    // Guías del asistente de trazo (magenta punteado).
+                    guias: _guias,
+                    guiaPunto: _guiaPunto,
                     // Copia nueva en cada build: el painter compara por
                     // referencia, así que al mover un punto (mutación in-place)
                     // esta copia fuerza el repintado en cada frame del arrastre.

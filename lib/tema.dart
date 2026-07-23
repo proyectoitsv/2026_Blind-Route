@@ -44,6 +44,12 @@ abstract final class TemaApp {
   static const Color fondoAdvertencia = Color(0xFF2D1F00);
 
   // ── Mapa ─────────────────────────────────────────────────────────────────
+  // Asistente de trazo (guías de alineación tipo Canva). Magenta saturado:
+  // es el convencionalismo de las herramientas de diseño y contrasta tanto
+  // sobre planos claros como sobre el naranja de los vértices en curso.
+  static const Color guiaAlineacion   = Color(0xFFFF2D95);
+  static const Color guiaEtiqueta     = Color(0xFFFF2D95);
+
   static const Color beacon           = Color(0xFF00C8E0);
   static const Color poi              = Color(0xFFA78BFA);
   static const Color posicionUsuario  = Color(0xFF2979FF);
