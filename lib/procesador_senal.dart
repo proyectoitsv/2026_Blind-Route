@@ -15,8 +15,34 @@ class ProcesadorSenal {
   static const int _tamVentana = 19;
   static const double _corteMediana = 0.20;
 
+  /// Ventana mínima cuando el usuario está caminando: 7 muestras ≈ 1,1 s.
+  /// La ventana larga de 3 s da mucha estabilidad con el usuario parado, pero
+  /// su retardo de grupo (~1,5 s) es la MAYOR fuente de latencia del pipeline:
+  /// a 1,2 m/s son ~1,8 m de atraso antes de que la posición siquiera entre al
+  /// filtro. Con el usuario en movimiento conviene resignar suavizado —el
+  /// filtro One Euro ya se encarga— a cambio de reducir ese retardo a ~0,55 s.
+  static const int _ventanaMin = 7;
+
   final Map<String, List<double>> _ventanaRssi = {};
   final Map<String, double> _varianzaRssi = {};
+
+  /// Cantidad de muestras (las más recientes del buffer) que efectivamente se
+  /// promedian. La controla [ajustarPorMovimiento].
+  int _ventanaEfectiva = _tamVentana;
+
+  int get ventanaEfectiva => _ventanaEfectiva;
+
+  /// Acorta la ventana de mediana a medida que el usuario se mueve.
+  /// [factor]: 0 = quieto (ventana completa, máxima estabilidad),
+  ///           1 = caminando (ventana mínima, mínima latencia).
+  /// El buffer sigue guardando [_tamVentana] muestras: solo cambia cuántas se
+  /// usan, así volver al estado "quieto" recupera el suavizado al instante,
+  /// sin tener que re-llenar nada.
+  void ajustarPorMovimiento(double factor) {
+    final f = factor.clamp(0.0, 1.0);
+    final v = (_tamVentana + (_ventanaMin - _tamVentana) * f).round();
+    _ventanaEfectiva = v.clamp(_ventanaMin, _tamVentana);
+  }
 
   // ─── MODELO DE DISTANCIA ──────────────────────────────────────────────────
   //
@@ -76,12 +102,17 @@ class ProcesadorSenal {
     final minMuestras = (_tamVentana * 0.25).ceil();
     if (v.length < minMuestras) return null;
 
+    // Solo las N muestras más recientes (N = ventana efectiva según movimiento).
+    final desde = v.length > _ventanaEfectiva ? v.length - _ventanaEfectiva : 0;
+    final usadas = desde == 0 ? v : v.sublist(desde);
+
     // Hot path: se ejecuta por cada beacon en cada callback BLE (~6 Hz × N
     // beacons). Se evitan las asignaciones de sublist() y map()/reduce()
     // recorriendo el rango interior con índices directos. El resultado numérico
     // (media truncada + varianza sobre el interior) es idéntico al anterior.
-    final ordenados = List<double>.from(v)..sort();
-    final corte = (v.length * _corteMediana).round().clamp(1, v.length ~/ 3);
+    final ordenados = List<double>.from(usadas)..sort();
+    final corte =
+        (usadas.length * _corteMediana).round().clamp(1, usadas.length ~/ 3);
     final hasta = ordenados.length - corte;
     final cuenta = hasta - corte;
 
@@ -108,5 +139,6 @@ class ProcesadorSenal {
   void limpiar() {
     _ventanaRssi.clear();
     _varianzaRssi.clear();
+    _ventanaEfectiva = _tamVentana;
   }
 }
