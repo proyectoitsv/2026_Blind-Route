@@ -9,6 +9,7 @@ import 'zona_model.dart';
 import 'poi_model.dart';
 import 'database.dart';
 import 'procesador_senal.dart';
+import 'posicionador.dart';
 import 'mapa_widget.dart';
 import 'bluetooth_helper.dart';
 import 'grilla_nav.dart';
@@ -109,6 +110,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   int? _verticeArrastrado;
   bool _verticeReciente = false;
   static const double _radioAgarreVertice = 0.05;
+
+  // Arrastre de beacons ya ubicados (modo beacons): MAC del beacon que se está
+  // moviendo (null = ninguno) y radio de "agarre" en coordenadas normalizadas.
+  // El arrastre entra por el mismo canal de un dedo que zonas/escala, así el
+  // zoom de dos dedos sigue disponible sin conflicto.
+  String? _beaconArrastrado;
+  static const double _radioAgarreBeacon = 0.05;
 
   // ── Asistente de trazo (líneas rectas, estilo Canva) ──────────────────────
   // Cuando el trazo se acerca a un ángulo notable el punto se corrige para que
@@ -273,6 +281,59 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
+  /// MAC del beacon ubicado cuyo ícono cae dentro del radio de agarre de [n],
+  /// o null. Si hay varios, el más cercano.
+  String? _beaconCercano(Offset n) {
+    String? mejor;
+    double mejorDist = _radioAgarreBeacon;
+    for (final b in _beaconsEnElMapa.values) {
+      final d = (b.posicion - n).distance;
+      if (d <= mejorDist) {
+        mejorDist = d;
+        mejor = b.mac;
+      }
+    }
+    return mejor;
+  }
+
+  // ── Arrastre de beacons (modo beacons) ────────────────────────────────────
+  // Comparte el canal de un dedo con zonas/escala. Un dedo apoyado sobre un
+  // beacon lo agarra y lo mueve; en zona libre no hace nada (la colocación de
+  // un beacon nuevo sigue siendo por tap con un dispositivo seleccionado). El
+  // segundo dedo cancela el arrastre y deja que el InteractiveViewer haga zoom.
+
+  void _onArrastreInicioBeacon(Offset n) {
+    if (!mounted) return;
+    final mac = _beaconCercano(n);
+    if (mac != null) setState(() => _beaconArrastrado = mac);
+  }
+
+  void _onArrastreActualizarBeacon(Offset n) {
+    if (!mounted || _beaconArrastrado == null) return;
+    final b = _beaconsEnElMapa[_beaconArrastrado!];
+    if (b == null) return;
+    // posicion es mutable; recortada a [0,1]. El repintado sale del setState.
+    setState(() {
+      b.posicion = Offset(n.dx.clamp(0.0, 1.0), n.dy.clamp(0.0, 1.0));
+    });
+  }
+
+  Future<void> _onArrastreFinBeacon() async {
+    if (!mounted) return;
+    final movio = _beaconArrastrado != null;
+    setState(() => _beaconArrastrado = null);
+    if (movio) await _sincronizarBeacons(); // persistir la nueva ubicación
+  }
+
+  void _onArrastreCancelarBeacon() {
+    if (!mounted) return;
+    // Segundo dedo (zoom): se deja el beacon donde quedó y se suelta el
+    // arrastre; se persiste igual para no perder el reacomodo parcial.
+    final movio = _beaconArrastrado != null;
+    setState(() => _beaconArrastrado = null);
+    if (movio) _sincronizarBeacons();
+  }
+
   void _conmutarEscaner() async {
     if (_escaneando) {
       await BluetoothHelper.detenerScanSeguro();
@@ -351,16 +412,20 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     try {
       var activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > -95).toList();
       if (activos.length < 2) return;
-      double sumaX = 0, sumaY = 0, sumaPesos = 0;
+      // Misma multilateración que la navegación (ver [Posicionador]): el
+      // centroide ponderado se sesgaba hacia el centro del layout.
+      final obs = <ObservacionRango>[];
       for (var b in activos) {
-        double peso = pow(10, (b.rssiFiltrado + 100) / 20).toDouble();
-        sumaX += b.posicion.dx * peso;
-        sumaY += b.posicion.dy * peso;
-        sumaPesos += peso;
+        final tx = ProcesadorSenal.txPowerCalibrado(b.mac, _calibraciones);
+        final d = ProcesadorSenal.rssiADistanciaConTx(b.rssiFiltrado, tx);
+        obs.add(ObservacionRango(b.posicion, d, 1.0 / (d + 1.0)));
       }
-      if (sumaPesos > 0 && mounted) {
-        setState(() => _posicionUsuario = Offset(sumaX / sumaPesos, sumaY / sumaPesos));
-      }
+      final p = Posicionador.estimar(obs,
+          metrosX: _grilla.metrosX,
+          metrosY: _grilla.metrosY,
+          posPrevia: _posicionUsuario,
+          factorMovimiento: 0.5);
+      if (mounted) setState(() => _posicionUsuario = p);
     } catch (e) {
       // Ignorar
     }
@@ -701,6 +766,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _onTapMapa(Offset normalizado) {
     if (_modo == _ModoEdicion.beacons) {
       if (_seleccionado == null) return;
+      // Si el toque cayó sobre un beacon ya ubicado, no se coloca uno nuevo
+      // encima: ese gesto es para arrastrar (lo maneja el canal de un dedo).
+      if (_beaconCercano(normalizado) != null) return;
       String mac = _seleccionado!.device.remoteId.str;
       if (mounted) {
         setState(() {
@@ -1218,7 +1286,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   String _hintTexto() {
     switch (_modo) {
       case _ModoEdicion.beacons:
-        return 'Selecciona un dispositivo de la lista y toca el mapa para ubicarlo. Long-press sobre un beacon para eliminarlo.';
+        return 'Seleccioná un dispositivo de la lista y tocá el mapa para ubicarlo. Arrastrá la mira de un beacon para reacomodarlo (zoom con dos dedos). Long-press sobre un beacon para eliminarlo.';
       case _ModoEdicion.zonas:
         if (_verticesEnCurso.isEmpty) {
           return 'Tocá el mapa para marcar los vértices de la zona (podés arrastrar sin soltar para afinar el punto). Necesitás al menos 3. Tocá una zona existente para borrarla.';
@@ -1408,8 +1476,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                   // que se desactiva el pan de un dedo; el zoom de dos dedos
                   // queda siempre activo (al apoyar el segundo dedo el gesto en
                   // curso se cancela y el InteractiveViewer hace zoom).
+                  // En escala, zonas y beacons UN dedo dibuja/arrastra puntos,
+                  // así que se desactiva el pan de un dedo; el zoom de dos dedos
+                  // queda siempre activo.
                   panEnabled: _modo != _ModoEdicion.escala &&
-                      _modo != _ModoEdicion.zonas,
+                      _modo != _ModoEdicion.zonas &&
+                      _modo != _ModoEdicion.beacons,
                   scaleEnabled: true,
                   child: MapaWidget(
                     rutaImagen: widget.rutaImagen,
@@ -1447,16 +1519,34 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     // vértices de zonas comparten el mismo canal.
                     onArrastreInicio: _modo == _ModoEdicion.escala
                         ? _onArrastreInicio
-                        : (_modo == _ModoEdicion.zonas ? _onArrastreInicioZona : null),
+                        : _modo == _ModoEdicion.zonas
+                            ? _onArrastreInicioZona
+                            : _modo == _ModoEdicion.beacons
+                                ? _onArrastreInicioBeacon
+                                : null,
                     onArrastreActualizar: _modo == _ModoEdicion.escala
                         ? _onArrastreActualizar
-                        : (_modo == _ModoEdicion.zonas ? _onArrastreActualizarZona : null),
+                        : _modo == _ModoEdicion.zonas
+                            ? _onArrastreActualizarZona
+                            : _modo == _ModoEdicion.beacons
+                                ? _onArrastreActualizarBeacon
+                                : null,
                     onArrastreFin: _modo == _ModoEdicion.escala
                         ? _onArrastreFin
-                        : (_modo == _ModoEdicion.zonas ? _onArrastreFinZona : null),
+                        : _modo == _ModoEdicion.zonas
+                            ? _onArrastreFinZona
+                            : _modo == _ModoEdicion.beacons
+                                ? _onArrastreFinBeacon
+                                : null,
                     onArrastreCancelar: _modo == _ModoEdicion.escala
                         ? _onArrastreCancelar
-                        : (_modo == _ModoEdicion.zonas ? _onArrastreCancelarZona : null),
+                        : _modo == _ModoEdicion.zonas
+                            ? _onArrastreCancelarZona
+                            : _modo == _ModoEdicion.beacons
+                                ? _onArrastreCancelarBeacon
+                                : null,
+                    beaconArrastrado:
+                        _modo == _ModoEdicion.beacons ? _beaconArrastrado : null,
                     // Calibración: celda seleccionada (amarillo) + pines de celdas calibradas.
                     celdaResaltada: _modo == _ModoEdicion.calibracion && _celdaCalSeleccionada != null
                         ? Offset(_grilla.centroX(_celdaCalSeleccionada!.ix),

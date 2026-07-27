@@ -49,6 +49,94 @@ void _lineaPunteada(Canvas canvas, Offset a, Offset b, Paint paint,
   }
 }
 
+/// Dibuja una "mira" (retícula translúcida con cruz central) para marcar un
+/// punto con PRECISIÓN. El centro exacto queda libre —los brazos de la cruz no
+/// llegan a tocarse— para que el punto objetivo no quede tapado ni por el
+/// dibujo ni por el dedo. Doble trazo (halo blanco debajo + color encima) para
+/// que se lea sobre cualquier fondo del plano; pensado también para baja visión.
+void _dibujarMira(
+  Canvas canvas,
+  Offset centro, {
+  required double radio,
+  required Color color,
+  bool activo = false,
+  double alphaRelleno = 0.16,
+}) {
+  final gap = radio * 0.30; // hueco central: no se tapa el punto exacto
+  final brazo = radio * 1.30; // los brazos sobresalen del anillo (estilo mira)
+
+  // Relleno translúcido: deja ver el plano debajo.
+  canvas.drawCircle(
+    centro,
+    radio,
+    Paint()
+      ..color = color.withValues(alpha: activo ? alphaRelleno + 0.12 : alphaRelleno)
+      ..style = PaintingStyle.fill,
+  );
+
+  void trazo(Color c, double w) {
+    final p = Paint()
+      ..color = c
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = w
+      ..strokeCap = StrokeCap.round;
+    canvas.drawCircle(centro, radio, p); // anillo
+    // Cruz con hueco central.
+    canvas.drawLine(centro + Offset(-brazo, 0), centro + Offset(-gap, 0), p);
+    canvas.drawLine(centro + Offset(gap, 0), centro + Offset(brazo, 0), p);
+    canvas.drawLine(centro + Offset(0, -brazo), centro + Offset(0, -gap), p);
+    canvas.drawLine(centro + Offset(0, gap), centro + Offset(0, brazo), p);
+  }
+
+  trazo(Colors.white, activo ? 4.0 : 3.0); // halo de contraste
+  trazo(color, activo ? 2.4 : 1.8);
+
+  // Punto central exacto (con borde blanco).
+  final rp = activo ? 2.6 : 2.0;
+  canvas.drawCircle(centro, rp, Paint()..color = color);
+  canvas.drawCircle(
+    centro,
+    rp,
+    Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0,
+  );
+}
+
+/// Painter de una sola mira centrada en su caja. Lo usa el marcador arrastrable
+/// de cada beacon (que es un widget Positioned, no parte del CustomPaint del
+/// mapa).
+class _MiraBeaconPainter extends CustomPainter {
+  final Color color;
+  final bool activo;
+  final bool edicion;
+
+  _MiraBeaconPainter({
+    required this.color,
+    required this.activo,
+    required this.edicion,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final centro = Offset(size.width / 2, size.height / 2);
+    final radio = edicion ? (activo ? 15.0 : 12.0) : 7.0;
+    if (activo) {
+      canvas.drawCircle(
+        centro,
+        radio + 9,
+        Paint()..color = color.withValues(alpha: 0.18),
+      );
+    }
+    _dibujarMira(canvas, centro, radio: radio, color: color, activo: activo);
+  }
+
+  @override
+  bool shouldRepaint(_MiraBeaconPainter old) =>
+      old.color != color || old.activo != activo || old.edicion != edicion;
+}
+
 /// Painter "estático" del mapa: grilla de 1 m × 1 m, zonas no transitables,
 /// celdas del camino y polígono en construcción. NO incluye la posición del
 /// usuario (esa se pinta en una capa aparte) para que el movimiento del usuario
@@ -231,32 +319,33 @@ class _MapaPainter extends CustomPainter {
       // Círculos numerados en cada vértice. Funcionan como manijas de arrastre:
       // el vértice que se está moviendo se dibuja más grande y con un halo,
       // para que quede claro cuál agarró el dedo (que además lo tapa).
-      final paintCirculo = Paint()..color = Colors.orange..style = PaintingStyle.fill;
-      final paintCirculoActivo = Paint()
-        ..color = Colors.deepOrange..style = PaintingStyle.fill;
-      final paintHalo = Paint()
-        ..color = Colors.orange.withValues(alpha: 0.30)
-        ..style = PaintingStyle.fill;
-      final paintCirculoBorde = Paint()
-        ..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 2.0;
+      // Manijas de arrastre como MIRAS (retícula con cruz): el centro exacto
+      // del vértice queda visible bajo el dedo, así se lo ubica con precisión.
       final tp = TextPainter(textDirection: TextDirection.ltr);
       for (var i = 0; i < verticesEnCurso.length; i++) {
         final c = _desnormalizar(verticesEnCurso[i], tamanoImagen);
         final activo = verticeArrastrado == i;
-        final radio = activo ? 13.0 : 9.0;
-        if (activo) canvas.drawCircle(c, 24, paintHalo);
-        canvas.drawCircle(c, radio, activo ? paintCirculoActivo : paintCirculo);
-        canvas.drawCircle(c, radio, paintCirculoBorde);
+        final radio = activo ? 15.0 : 11.0;
+        if (activo) {
+          canvas.drawCircle(
+              c, radio + 9, Paint()..color = Colors.orange.withValues(alpha: 0.22));
+        }
+        _dibujarMira(canvas, c,
+            radio: radio,
+            color: activo ? Colors.deepOrange : Colors.orange,
+            activo: activo);
+        // Número del vértice, corrido arriba-derecha para no tapar el centro.
         tp.text = TextSpan(
           text: '${i + 1}',
           style: TextStyle(
             color: Colors.white,
-            fontSize: activo ? 12 : 9,
+            fontSize: activo ? 12 : 10,
             fontWeight: FontWeight.bold,
+            shadows: const [Shadow(color: Colors.black, blurRadius: 2)],
           ),
         );
         tp.layout();
-        tp.paint(canvas, c - Offset(tp.width / 2, tp.height / 2));
+        tp.paint(canvas, c + Offset(radio * 0.6, -radio - tp.height * 0.6));
       }
     }
 
@@ -267,14 +356,6 @@ class _MapaPainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3.0
         ..strokeCap = StrokeCap.round;
-      final paintPunto = Paint()
-        ..color = Colors.purple
-        ..style = PaintingStyle.fill;
-      final paintBordePunto = Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0;
-
       // Líneas entre puntos fijos consecutivos.
       for (int i = 1; i < puntosMedicion.length; i++) {
         canvas.drawLine(
@@ -291,11 +372,10 @@ class _MapaPainter extends CustomPainter {
           paintLinea,
         );
       }
-      // Puntos fijos (violeta con borde blanco).
+      // Puntos fijos: mira violeta para fijar cada extremo con precisión.
       for (final p in puntosMedicion) {
         final c = _desnormalizar(p, tamanoImagen);
-        canvas.drawCircle(c, 7, paintPunto);
-        canvas.drawCircle(c, 7, paintBordePunto);
+        _dibujarMira(canvas, c, radio: 11.0, color: Colors.purple);
       }
     }
 
@@ -530,6 +610,11 @@ class MapaWidget extends StatelessWidget {
   final Offset? celdaResaltada;
   final List<Offset> celdasCalibradas;
 
+  /// MAC del beacon que el operador está arrastrando ahora (modo beacons de la
+  /// configuración), o null. Se resalta como mira activa. El arrastre en sí lo
+  /// maneja el canal de un dedo ([onArrastreInicio]/…) de la pantalla de config.
+  final String? beaconArrastrado;
+
   const MapaWidget({
     super.key,
     required this.rutaImagen,
@@ -557,6 +642,7 @@ class MapaWidget extends StatelessWidget {
     this.celdaResaltada,
     this.celdasCalibradas = const [],
     this.verticeArrastrado,
+    this.beaconArrastrado,
     this.guias = const [],
     this.guiaPunto,
   });
@@ -676,19 +762,36 @@ class MapaWidget extends StatelessWidget {
 
                 // Beacons
                 ...beacons.values.map((b) {
-                  final px = offsetX + b.posicion.dx * tamanoRenderizado.width - 10;
-                  final py = offsetY + b.posicion.dy * tamanoRenderizado.height - 10;
+                  final activo = beaconArrastrado == b.mac;
+                  // Caja mayor en edición: aloja la mira y da un área de agarre
+                  // cómoda para arrastrar el beacon (el arrastre lo captura el
+                  // Listener de un dedo que envuelve al mapa).
+                  final caja = modoEdicion ? 48.0 : 22.0;
+                  final px =
+                      offsetX + b.posicion.dx * tamanoRenderizado.width - caja / 2;
+                  final py =
+                      offsetY + b.posicion.dy * tamanoRenderizado.height - caja / 2;
+                  final color = !modoEdicion
+                      ? Colors.black54
+                      : (activo ? Colors.deepOrange : Colors.red);
                   return Positioned(
                     left: px,
                     top: py,
                     child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
                       onLongPress: modoEdicion && onTapBeacon != null
                           ? () => onTapBeacon!(b.mac)
                           : null,
-                      child: Icon(
-                        Icons.radio_button_checked,
-                        color: modoEdicion ? Colors.red : Colors.black38,
-                        size: 20,
+                      child: SizedBox(
+                        width: caja,
+                        height: caja,
+                        child: CustomPaint(
+                          painter: _MiraBeaconPainter(
+                            color: color,
+                            activo: activo,
+                            edicion: modoEdicion,
+                          ),
+                        ),
                       ),
                     ),
                   );
