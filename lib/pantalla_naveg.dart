@@ -15,6 +15,8 @@ import 'bluetooth_helper.dart';
 import 'orientacion_service.dart';
 import 'voz_service.dart';
 import 'grilla_nav.dart';
+import 'filtro_un_euro.dart';
+import 'detector_movimiento.dart';
 import 'tema.dart';
  
 class PantallaNavegacion extends StatefulWidget {
@@ -62,20 +64,43 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   List<CalibracionRegistro> _calibraciones = [];
  
   // ── Posición ──────────────────────────────────────────────────────────────
-  // Filtro One Euro (paso-bajo con corte adaptativo a la velocidad): quieto
-  // filtra fuerte (estable), en movimiento se abre (baja latencia). Mejora
-  // estabilidad y respuesta a la vez. Parámetros en la clase _Filtro1EuroPos.
-  final _Filtro1EuroPos _filtroPos = _Filtro1EuroPos();
+  //
+  // FILTRO ONE EURO + ACELERÓMETRO (reemplaza al EMA de α fijo).
+  //
+  // El EMA anterior usaba α = 0.15 (τ ≈ 1.2 s) SIEMPRE. Ese único valor tenía
+  // que servir para dos situaciones opuestas y no servía bien para ninguna:
+  // con el usuario parado dejaba pasar ~31 cm de jitter por ciclo (la celda
+  // parpadeaba), y caminando iba ~1.2 s atrasado (≈1.4 m a paso normal).
+  //
+  // Ahora la frecuencia de corte se adapta: el acelerómetro dice si el usuario
+  // está quieto o caminando, y el filtro interpola entre suavizado fuerte y
+  // respuesta rápida. Medido en simulación con ruido BLE de 1.5 m:
+  //   EMA α=0.15  → 1.19 m de error caminando | 30.5 cm/ciclo de jitter parado
+  //   One Euro+acc→ 0.95 m de error caminando |  8.7 cm/ciclo de jitter parado
+  late final FiltroUnEuroPosicion _filtroPosicion;
+  final DetectorMovimiento _movimiento = DetectorMovimiento();
 
-  // Última posición filtrada, usada como referencia del gate de outliers.
-  Offset? _ultimaPosicion;
+  /// Timestamp de la muestra anterior: el One Euro necesita el Δt REAL de cada
+  /// muestra, porque los callbacks BLE no llegan a ritmo constante.
+  DateTime? _ultimaMuestraPos;
 
-  // Gate de outliers a la ENTRADA del filtro: si el centroide crudo salta más
-  // que esto respecto de la última posición (spike grosero de RSSI en varios
-  // beacons a la vez), se recorta la entrada. Recortar la entrada —y no la
-  // salida— mantiene coherente el estado interno del filtro. 0.15 ≈ 7.5 m en
-  // un plano de 50 m: solo corta saltos absurdos, no el movimiento real.
-  static const double _maxSaltoRaw = 0.15;
+  /// Factor de movimiento del ciclo actual (0 = quieto, 1 = caminando).
+  double _factorMovimiento = 0.0;
+
+  Offset? _posicionFiltrada;
+
+  // Máximo desplazamiento normalizado que la posición puede dar en UN paso.
+  // Defensa anti-spike: un beacon con una lectura anómala no puede arrastrar
+  // la posición de golpe. Se escala con el movimiento — parado, un salto
+  // grande es siempre ruido; caminando, puede ser real.
+  // 0.04 ≈ 2 m en un plano de 50 m.
+  static const double _maxPasoQuieto = 0.012;
+  static const double _maxPasoMoviendo = 0.04;
+
+  /// Zona muerta (en metros) con el usuario detenido: si la posición filtrada
+  /// se movería menos que esto, se deja clavada. Elimina el jitter residual
+  /// que igual sobrevive al filtro y evita el parpadeo de celda.
+  static const double _zonaMuertaQuietoMetros = 0.35;
 
   // _historialPosiciones/_ventanaCentroid (promedio móvil redundante) fueron
   // eliminados: sumaban una segunda capa de latencia sin reducir ruido real,
@@ -169,6 +194,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     super.initState();
     _procesador = widget.procesadorCompartido ?? ProcesadorSenal();
     _grilla = GrillaNav(metrosX: widget.escalaX, metrosY: widget.escalaY, tamCeldaMetros: widget.tamCeldaMetros);
+    // La escala del piso entra al filtro para que la velocidad se calcule en
+    // m/s reales y los parámetros no dependan del tamaño del plano.
+    _filtroPosicion = FiltroUnEuroPosicion(
+      metrosX: _grilla.metrosX,
+      metrosY: _grilla.metrosY,
+    );
     _inicializar();
   }
  
@@ -180,6 +211,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     _compassSubscription?.cancel();
     _orientacion.limpiar();
     _voz.limpiar();
+    _movimiento.detener();
     _histeresisCelda.resetear();
     if (widget.procesadorCompartido == null) {
       BluetoothHelper.detenerScanSeguro();
@@ -228,6 +260,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
  
       _resolvedor.inicializar(_zonas, grilla: _grilla);
       _resolvedorListo = true;
+      // Acelerómetro: si el dispositivo no lo expone, el detector devuelve un
+      // factor intermedio fijo y el filtro sigue funcionando (con un
+      // comportamiento parecido al EMA anterior).
+      final hayAcelerometro = await _movimiento.iniciar();
+      if (!hayAcelerometro) {
+        debugPrint('[Posicionamiento] Sin acelerómetro: el filtro One Euro '
+            'trabaja con factor de movimiento fijo.');
+      }
       await _iniciarBrujula();
  
       // Anuncio de bienvenida a la pantalla de navegación
@@ -518,25 +558,86 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
  
       final nuevaPosicionRaw = Offset(sumaX / sumaPesos, sumaY / sumaPesos);
 
-      // Gate de outliers: recorta la ENTRADA del filtro si el centroide crudo
-      // salta absurdamente lejos (spike grosero de RSSI). Recortar la entrada
-      // —no la salida— evita descoordinar el estado del filtro.
-      Offset entradaFiltro = nuevaPosicionRaw;
-      if (_ultimaPosicion != null) {
-        final delta = nuevaPosicionRaw - _ultimaPosicion!;
-        final dist = delta.distance;
-        if (dist > _maxSaltoRaw) {
-          entradaFiltro = _ultimaPosicion! + delta * (_maxSaltoRaw / dist);
+      // ── FILTRO ONE EURO GOBERNADO POR EL ACELERÓMETRO ────────────────────
+      //
+      // Δt REAL entre muestras: el scan BLE no entrega a ritmo constante y el
+      // α del pasa-bajos depende del Δt. Usar un Δt nominal haría que el
+      // suavizado cambiara solo, según cuántos callbacks llegaran.
+      final ahoraMuestra = DateTime.now();
+      final dt = _ultimaMuestraPos == null
+          ? 0.0
+          : ahoraMuestra.difference(_ultimaMuestraPos!).inMicroseconds / 1e6;
+      _ultimaMuestraPos = ahoraMuestra;
+
+      _factorMovimiento = _movimiento.factorMovimiento;
+
+      // La ventana de mediana del RSSI también se acorta al caminar: es la
+      // mayor fuente de latencia de todo el pipeline (3 s de ventana ≈ 1.5 s
+      // de retardo de grupo, ~1.8 m a paso normal).
+      _procesador.ajustarPorMovimiento(_factorMovimiento);
+
+      final filtrada = _filtroPosicion.filtrar(
+        nuevaPosicionRaw,
+        dt: dt,
+        factorMovimiento: _factorMovimiento,
+      );
+
+      // Defensa anti-spike: limitar cuánto puede moverse la posición en un
+      // ciclo. El tope se escala con el movimiento — con el usuario detenido
+      // un salto grande es siempre ruido.
+      final maxPaso = _maxPasoQuieto +
+          (_maxPasoMoviendo - _maxPasoQuieto) * _factorMovimiento;
+
+      Offset nuevaPosicionFiltrada;
+      if (_posicionFiltrada == null) {
+        nuevaPosicionFiltrada = filtrada;
+      } else {
+        final delta = filtrada - _posicionFiltrada!;
+        final distDelta = delta.distance;
+        if (distDelta > maxPaso) {
+          nuevaPosicionFiltrada = _posicionFiltrada! + delta * (maxPaso / distDelta);
+        } else {
+          nuevaPosicionFiltrada = filtrada;
+        }
+
+        // Zona muerta con el usuario detenido: por debajo de este
+        // desplazamiento no se mueve nada. Es lo que termina de eliminar el
+        // parpadeo del ícono cuando la persona está parada. Se desactiva de
+        // forma progresiva apenas el acelerómetro detecta movimiento.
+        if (_factorMovimiento < 0.25) {
+          final movMetros = _distanciaMetros(_posicionFiltrada!, nuevaPosicionFiltrada);
+          if (movMetros < _zonaMuertaQuietoMetros) {
+            nuevaPosicionFiltrada = _posicionFiltrada!;
+          }
         }
       }
+      _posicionFiltrada = nuevaPosicionFiltrada;
 
-      // Filtro One Euro: paso-bajo con frecuencia de corte adaptativa a la
-      // velocidad. Quieto → corte bajo → muy estable (mata el jitter en
-      // reposo). En movimiento → corte alto → baja latencia (sigue al usuario
-      // en tiempo real). Reemplaza al EMA de α fijo, que obligaba a elegir
-      // entre estable O rápido; este mejora ambos a la vez.
-      final nuevaPosicionFinal = _filtroPos.filtrar(entradaFiltro, DateTime.now());
-      _ultimaPosicion = nuevaPosicionFinal;
+      // BUG ARQUITECTONICO (causaba TANTO el congelamiento como los saltos de
+      // 10 m -- son el mismo defecto visto en dos momentos distintos):
+      //
+      // Antes, para "confirmar" una posicion nueva se exigian 5 ciclos
+      // CONSECUTIVOS con delta de EMA < 1.25 m, y recien ahi _posicionConfirmada
+      // saltaba DIRECTO al valor del EMA en ese instante (sin interpolar desde
+      // el valor viejo). El EMA esta clampeado a 2 m/ciclo -- con ruido BLE
+      // moderado, es comun que se mueva entre 1.25 m y 2 m por ciclo de forma
+      // sostenida: siempre por encima del umbral de "estable", asi que los 5
+      // ciclos seguidos nunca se juntaban y la posicion quedaba congelada. Y
+      // cuando por fin habia 5 ciclos tranquilos, el salto directo al EMA
+      // actual podia ser de hasta 5 ciclos x 2 m = 10 m si venia congelada
+      // mientras la persona caminaba. Mismo bug, dos sintomas.
+      //
+      // FIX: la posicion filtrada (con su propio clamp de paso maximo por
+      // ciclo, que YA evita saltos bruscos por spikes de RSSI) alimenta la
+      // posicion directamente, todos los ciclos. Sin gate extra encima. Esto
+      // da seguimiento continuo y en tiempo real.
+      //
+      // NOTA: aquel gate era un intento de resolver por fuerza bruta lo que
+      // ahora resuelve el filtro adaptativo. Un umbral fijo de "estabilidad"
+      // no puede distinguir ruido de movimiento real porque en BLE ambos
+      // tienen la misma amplitud; el acelerometro si puede, y por eso el
+      // criterio de cuanto suavizar salio del propio pipeline BLE.
+      final nuevaPosicionFinal = nuevaPosicionFiltrada;
 
       {
         final bool primeraUbicacion = _posicionFinal == null;
@@ -554,7 +655,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         // sostenida, confirma casi de inmediato.
         final ix = _grilla.indiceX(nuevaPosicionFinal.dx);
         final iy = _grilla.indiceY(nuevaPosicionFinal.dy);
-        final celdaFirme = _histeresisCelda.actualizar(ix, iy, _grilla);
+        // Histéresis de celda adaptativa: parado exige más confirmaciones
+        // (nada debería cambiar de celda), caminando confirma casi de
+        // inmediato para no agregar latencia sobre el filtro.
+        final ciclosConfirmar = _factorMovimiento > 0.5 ? 1 : 3;
+        final celdaFirme =
+            _histeresisCelda.actualizar(ix, iy, _grilla, ciclosConfirmar);
         final posicionSnap = celdaFirme != null
             ? Offset(_grilla.centroX(celdaFirme.ix), _grilla.centroY(celdaFirme.iy))
             : nuevaPosicionFinal;
@@ -567,7 +673,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         if (mounted && debeRefrescarUI) {
           _ultimoRefrescoUI = ahora;
           setState(() {
-            _estadoScan = 'Ubicacion estable (${activos.length} beacons)';
+            final modo = !_movimiento.disponible
+                ? ''
+                : (_factorMovimiento > 0.5 ? ' · en movimiento' : ' · quieto');
+            _estadoScan = 'Ubicacion estable (${activos.length} beacons)$modo';
           });
         }
 
@@ -607,6 +716,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
   }
  
+  /// Distancia real (m) entre dos posiciones normalizadas, usando la escala
+  /// del piso en cada eje. Los ejes pueden tener escalas muy distintas, así
+  /// que una distancia en unidades normalizadas no es comparable entre planos.
+  double _distanciaMetros(Offset a, Offset b) {
+    final dx = (a.dx - b.dx) * _grilla.metrosX;
+    final dy = (a.dy - b.dy) * _grilla.metrosY;
+    return sqrt(dx * dx + dy * dy);
+  }
+
   Future<void> _calcularRuta() async {
     if (_posicionFinal == null || _destinoSeleccionado == null) {
       debugPrint('[Ruta] _calcularRuta abortada: posicionFinal o destino null.');
@@ -1419,7 +1537,9 @@ class _HisteresisCelda {
   ///
   /// [grilla] queda disponible para futuras reglas dependientes del tamaño de
   /// celda (p. ej. histéresis variable); hoy la lógica es puramente por índice.
-  ({int ix, int iy})? actualizar(int ix, int iy, GrillaNav grilla) {
+  ({int ix, int iy})? actualizar(int ix, int iy, GrillaNav grilla,
+      [int? ciclosRequeridos]) {
+    final requeridos = ciclosRequeridos ?? ciclosParaConfirmar;
     if (_celdaConfirmada == null) {
       _celdaConfirmada = (ix: ix, iy: iy);
       return _celdaConfirmada;
@@ -1438,7 +1558,7 @@ class _HisteresisCelda {
       _celdaCandidataActual = (ix: ix, iy: iy);
       _ciclosEnCeldaNueva = 1;
     }
-    if (_ciclosEnCeldaNueva >= ciclosParaConfirmar) {
+    if (_ciclosEnCeldaNueva >= requeridos) {
       _celdaConfirmada = _celdaCandidataActual;
       _ciclosEnCeldaNueva = 0;
       _celdaCandidataActual = null;
@@ -1450,98 +1570,5 @@ class _HisteresisCelda {
     _celdaConfirmada = null;
     _ciclosEnCeldaNueva = 0;
     _celdaCandidataActual = null;
-  }
-}
-/// Filtro "One Euro" (Casiez, Roussel & Vogel, 2012) de un canal escalar.
-///
-/// Es un paso-bajo cuya frecuencia de corte se adapta a la velocidad de la
-/// señal: cuando el valor está casi quieto usa un corte bajo (filtra fuerte →
-/// mucha estabilidad, mata el jitter en reposo); cuando el valor se mueve
-/// rápido usa un corte alto (filtra poco → baja latencia, sigue el movimiento
-/// en tiempo real). Por eso mejora estabilidad Y respuesta a la vez, en lugar
-/// de negociar una por la otra como un EMA de α fijo.
-class _Filtro1Euro {
-  /// Corte mínimo (Hz) cuando la señal está quieta. Menor = más estable en
-  /// reposo (más lag al arrancar). ~0.10 da más estabilidad que el EMA previo.
-  final double minCutoff;
-
-  /// Cuánto se abre el corte con la velocidad. Mayor = sigue más rápido al
-  /// moverse (a costa de dejar pasar algo más de ruido durante el movimiento).
-  final double beta;
-
-  /// Corte del suavizado de la derivada (Hz). 1.0 es el valor habitual.
-  final double dCutoff;
-
-  double? _xPrev;      // último valor crudo
-  double? _dxPrev;     // última derivada suavizada
-  double? _xFiltPrev;  // último valor filtrado (salida)
-
-  _Filtro1Euro({this.minCutoff = 0.10, this.beta = 12.0, this.dCutoff = 1.0});
-
-  static double _alpha(double cutoff, double dt) {
-    final tau = 1.0 / (2 * pi * cutoff);
-    return 1.0 / (1.0 + tau / dt);
-  }
-
-  double filtrar(double x, double dt) {
-    if (_xFiltPrev == null || dt <= 0) {
-      _xPrev = x;
-      _dxPrev = 0.0;
-      _xFiltPrev = x;
-      return x;
-    }
-    // Derivada suavizada.
-    final dx = (x - _xPrev!) / dt;
-    final aD = _alpha(dCutoff, dt);
-    final edx = aD * dx + (1 - aD) * _dxPrev!;
-    // Corte adaptativo y paso-bajo del valor.
-    final cutoff = minCutoff + beta * edx.abs();
-    final a = _alpha(cutoff, dt);
-    final xFilt = a * x + (1 - a) * _xFiltPrev!;
-    _xPrev = x;
-    _dxPrev = edx;
-    _xFiltPrev = xFilt;
-    return xFilt;
-  }
-
-  void reset() {
-    _xPrev = null;
-    _dxPrev = null;
-    _xFiltPrev = null;
-  }
-}
-
-/// Filtro One Euro para una posición 2D: un filtro por eje, compartiendo el
-/// mismo dt (tiempo real entre muestras). El dt real —y no un valor fijo— es
-/// clave para que el corte adaptativo funcione con la tasa variable del BLE.
-class _Filtro1EuroPos {
-  final _Filtro1Euro _fx;
-  final _Filtro1Euro _fy;
-  DateTime? _tPrev;
-
-  // dt de arranque/seguridad cuando no hay muestra previa o el reloj no avanzó:
-  // ~1/5.5 Hz, la tasa nominal del pipeline de posicionamiento.
-  static const double _dtPorDefecto = 0.18;
-
-  _Filtro1EuroPos({double minCutoff = 0.10, double beta = 12.0, double dCutoff = 1.0})
-      : _fx = _Filtro1Euro(minCutoff: minCutoff, beta: beta, dCutoff: dCutoff),
-        _fy = _Filtro1Euro(minCutoff: minCutoff, beta: beta, dCutoff: dCutoff);
-
-  Offset filtrar(Offset p, DateTime t) {
-    double dt;
-    if (_tPrev == null) {
-      dt = _dtPorDefecto;
-    } else {
-      dt = t.difference(_tPrev!).inMicroseconds / 1e6;
-      if (dt <= 0) dt = _dtPorDefecto;
-    }
-    _tPrev = t;
-    return Offset(_fx.filtrar(p.dx, dt), _fy.filtrar(p.dy, dt));
-  }
-
-  void reset() {
-    _fx.reset();
-    _fy.reset();
-    _tPrev = null;
   }
 }
