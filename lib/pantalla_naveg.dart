@@ -9,6 +9,7 @@ import 'zona_model.dart';
 import 'poi_model.dart';
 import 'calibracion_model.dart';
 import 'procesador_senal.dart';
+import 'posicionador.dart';
 import 'mapa_widget.dart';
 import 'pathfinder.dart';
 import 'bluetooth_helper.dart';
@@ -152,9 +153,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   //   Bajamos de -95 a -90: más allá de ~20 m la señal BLE es tan débil y ruidosa
   //   que su distancia estimada distorsiona la trilateración más de lo que aporta.
   static const double _umbralRSSI = -90;
-  // Epsilon del peso 1/(d²+eps) para evitar dividir por ~0 cuando el beacon
-  // queda casi sobre la posición estimada (d se acota a ≥0.1 m igualmente).
-  static const double _epsPeso = 0.01;
   // Dos beacons cuyo RSSI filtrado cae en la misma banda de este ancho (dBm)
   // se consideran "igual de cercanos": ahí desempata la varianza (más estable
   // primero). Ver ordenamiento en _calcularPosicionRobusta().
@@ -540,23 +538,59 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       });
       final activos = candidatos.take(_maxBeaconsParaCalcular).toList();
  
-      // Centroide ponderado por distancia: para cada beacon estimamos su
-      // distancia con rssiADistanciaConTx usando el txPower CALIBRADO por beacon
-      // (promedio de las calibraciones del piso; si no hay, cae al -55 dBm
-      // global). Pesamos 1/d²: los beacons más cercanos —y mejor calibrados—
-      // dominan la posición. Así la calibración mejora realmente el cálculo.
-      double sumaX = 0, sumaY = 0, sumaPesos = 0;
+      // MULTILATERACIÓN por mínimos cuadrados (reemplaza al centroide ponderado
+      // 1/d²). El centroide era un promedio de las POSICIONES de los beacons:
+      // andaba bien pegado a un beacon (ese beacon dominaba el peso) pero
+      // COLAPSABA al centro del layout cuando el usuario estaba en el medio,
+      // equidistante de varios. La multilateración usa las distancias como
+      // restricciones geométricas (circunferencias) y sí puede ubicar al
+      // usuario en cualquier parte del plano. Ver [Posicionador] para el detalle
+      // y las mediciones. Se sigue usando el txPower CALIBRADO por beacon.
+      final observaciones = <ObservacionRango>[];
       for (var b in activos) {
         final txPower = ProcesadorSenal.txPowerCalibrado(b.mac, _calibraciones);
         final d = ProcesadorSenal.rssiADistanciaConTx(b.rssiFiltrado, txPower);
-        final peso = 1.0 / (d * d + _epsPeso);
-        sumaX += b.posicion.dx * peso;
-        sumaY += b.posicion.dy * peso;
-        sumaPesos += peso;
+        // Beacon más cercano = rango más confiable: el error en metros del
+        // modelo log crece con la distancia, así que pesa menos lo lejano.
+        final confianza = 1.0 / (d + 1.0);
+        observaciones.add(ObservacionRango(b.posicion, d, confianza));
       }
-      if (sumaPesos == 0) return;
- 
-      final nuevaPosicionRaw = Offset(sumaX / sumaPesos, sumaY / sumaPesos);
+      if (observaciones.isEmpty) return;
+
+      // El factor de movimiento (acelerómetro) se lee ANTES de estimar
+      // porque ahora gobierna también el ancla temporal del posicionador.
+      _factorMovimiento = _movimiento.factorMovimiento;
+
+      // Rumbo de la brújula llevado al marco del PLANO (se descuenta la
+      // rotación del mapa, igual que en _buildOrientacion) y expresado como
+      // versor en coordenadas normalizadas de pantalla (x→derecha, y→abajo):
+      //   rumbo 0° = arriba en pantalla = (0, -1).
+      // Con esto el posicionador restringe el movimiento al eje del rumbo
+      // (blando a lo largo, duro en perpendicular) y deja de irse de costado.
+      Offset? rumboPlano;
+      if (_compassDisponible) {
+        final h = _orientacion.heading;
+        if (h != null) {
+          final hp = ((h - _rotacionMapaEfectiva) % 360 + 360) % 360;
+          final rad = hp * pi / 180.0;
+          rumboPlano = Offset(sin(rad), -cos(rad));
+        }
+      }
+
+      // Multilateración RECURSIVA: se le pasa la posición filtrada previa
+      // como ancla temporal y arranque en caliente. Eso mata los saltos
+      // (un outlier de un frame ya no la mueve) y estabiliza geometrías
+      // malas, sin reintroducir el sesgo al centro. El rumbo restringe la
+      // deriva lateral. El One Euro de abajo sigue puliendo, pero ahora
+      // sobre una entrada ya estable.
+      final nuevaPosicionRaw = Posicionador.estimar(
+        observaciones,
+        metrosX: _grilla.metrosX,
+        metrosY: _grilla.metrosY,
+        posPrevia: _posicionFiltrada,
+        factorMovimiento: _factorMovimiento,
+        rumboPlano: rumboPlano,
+      );
 
       // ── FILTRO ONE EURO GOBERNADO POR EL ACELERÓMETRO ────────────────────
       //
@@ -568,8 +602,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           ? 0.0
           : ahoraMuestra.difference(_ultimaMuestraPos!).inMicroseconds / 1e6;
       _ultimaMuestraPos = ahoraMuestra;
-
-      _factorMovimiento = _movimiento.factorMovimiento;
 
       // La ventana de mediana del RSSI también se acorta al caminar: es la
       // mayor fuente de latencia de todo el pipeline (3 s de ventana ≈ 1.5 s
