@@ -72,7 +72,7 @@ class FiltroUnEuroPosicion {
   /// Tope de velocidad considerada (m/s). Una persona no camina más rápido
   /// que esto en interiores; recortar evita que un salto de señal dispare el
   /// corte.
-  static const double velocidadMaxima = 2.5;
+  static const double velocidadMaxima = 3.5;
 
   final _PasaBajos _x = _PasaBajos();
   final _PasaBajos _y = _PasaBajos();
