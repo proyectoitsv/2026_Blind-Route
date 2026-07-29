@@ -81,6 +81,19 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   late final FiltroUnEuroPosicion _filtroPosicion;
   final DetectorMovimiento _movimiento = DetectorMovimiento();
 
+  /// Puerta direccional por rumbo (ver [PuertaRumbo] en posicionador.dart).
+  /// Es la que decide si un desplazamiento perpendicular a la direccion de
+  /// marcha es ruido BLE o movimiento real. Tiene estado entre ciclos: por eso
+  /// es un campo y no una funcion suelta.
+  final PuertaRumbo _puertaRumbo = PuertaRumbo();
+
+  /// Calidad minima de la brujula (0..1) para dejar que el rumbo restrinja el
+  /// posicionamiento. Por debajo de esto el heading se sigue usando para las
+  /// instrucciones de voz y para el icono, pero NO para condicionar la
+  /// posicion: un rumbo distorsionado por metal cercano clavaria la posicion
+  /// sobre un eje equivocado, que es peor que no restringir nada.
+  static const double _calidadRumboMinima = 0.35;
+
   /// Timestamp de la muestra anterior: el One Euro necesita el Δt REAL de cada
   /// muestra, porque los callbacks BLE no llegan a ritmo constante.
   DateTime? _ultimaMuestraPos;
@@ -90,13 +103,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
   Offset? _posicionFiltrada;
 
-  // Máximo desplazamiento normalizado que la posición puede dar en UN paso.
-  // Defensa anti-spike: un beacon con una lectura anómala no puede arrastrar
-  // la posición de golpe. Se escala con el movimiento — parado, un salto
-  // grande es siempre ruido; caminando, puede ser real.
-  // 0.04 ≈ 2 m en un plano de 50 m.
-  static const double _maxPasoQuieto = 0.012;
-  static const double _maxPasoMoviendo = 0.04;
+  // Tope de velocidad de la posicion, en m/s REALES. Defensa anti-spike: un
+  // beacon con una lectura anomala no puede arrastrar la posicion de golpe. Se
+  // escala con el movimiento: parado, un salto grande es siempre ruido.
+  //
+  // ANTES estaba expresado en unidades NORMALIZADAS (0.012 y 0.04), lo que lo
+  // hacia depender del tamano del plano: los mismos 0.04 son 2 m en un plano de
+  // 50 m y 4 m en uno de 100 m. Y como se aplicaba sobre la distancia
+  // normalizada, en un plano rectangular (metrosX != metrosY) el tope terminaba
+  // siendo distinto segun la direccion, sin relacion con el rumbo. Ahora es un
+  // limite de velocidad fisico y se multiplica por el dt real del ciclo.
+  static const double _velMaxQuietoMs = 1.2;
+  static const double _velMaxMoviendoMs = 3.0;
+
+  /// Fraccion del tope longitudinal que se le permite al eje PERPENDICULAR al
+  /// rumbo cuando el usuario camina. Es la ultima linea de defensa contra la
+  /// deriva lateral, por debajo de la puerta direccional.
+  static const double _facTopePerp = 0.35;
 
   /// Zona muerta (en metros) con el usuario detenido: si la posición filtrada
   /// se movería menos que esto, se deja clavada. Elimina el jitter residual
@@ -159,7 +182,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   static const double _umbralRssiSimilar = 2.0;
  
   Timer? _timeoutTimer;
-  Timer? _scanReinicioTimer;  // reinicia el scan BLE periódicamente
+  Timer? _scanReinicioTimer;  // watchdog del scan BLE (ver _iniciarEscaneo)
+
+  /// Momento en que esta pantalla empezo a esperar resultados BLE. Es la
+  /// referencia del watchdog mientras todavia no llego ningun lote.
+  DateTime? _inicioEscaneo;
+
+  /// Silencio BLE tolerado antes de dar el scan por muerto y forzar reinicio.
+  /// Con removeIfGone de 4 s y beacons emitiendo a ~6 Hz, 8 s sin un solo lote
+  /// no es "poca senal": es que el scan dejo de entregar.
+  static const Duration _silencioParaReiniciar = Duration(seconds: 8);
+
+  /// Cada cuanto corre el watchdog.
+  static const Duration _intervaloWatchdog = Duration(seconds: 3);
+
+  /// Reinicios forzados consecutivos sin exito. Solo para informar al usuario;
+  /// la cuota de arranques la administra BluetoothHelper.
+  int _reiniciosSinDatos = 0;
   Timer? _compassUITimer;     // refresca el chip de brújula a 4 Hz, desacoplado del BLE
 
   // Último heading que efectivamente disparó un rebuild de UI. Se usa para
@@ -208,17 +247,29 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     _compassUITimer?.cancel();
     _compassSubscription?.cancel();
     _orientacion.limpiar();
-    _voz.limpiar();
+    // Guarda de dueño, misma razón que en BluetoothHelper: si esta pantalla se
+    // destruye DESPUÉS de que la siguiente ya arrancó, limpiar el TTS acá corta
+    // el anuncio de la pantalla nueva. En el log del bug se veía justamente
+    // eso: "Buscando ubicación" marcado como Interrupted: true.
+    _voz.limpiar(dueno: this);
     _movimiento.detener();
+    _puertaRumbo.resetear();
     _histeresisCelda.resetear();
     if (widget.procesadorCompartido == null) {
-      BluetoothHelper.detenerScanSeguro();
+      BluetoothHelper.detenerScanSeguro(dueno: this);
+    } else {
+      // El scan fisico sigue vivo para la proxima pantalla, pero la suscripcion
+      // hay que soltarla igual: si no, el stream sigue entregando a esta State
+      // ya desmontada, cuyo callback descarta todo por !mounted. El scan queda
+      // "vivo pero mudo" y la pantalla siguiente puede quedarse sin datos.
+      BluetoothHelper.liberarSuscripcion(this);
     }
     super.dispose();
   }
  
   Future<void> _inicializar() async {
     try {
+      _voz.registrarDueno(this);
       await _voz.inicializar();
 
       final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
@@ -268,8 +319,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       }
       await _iniciarBrujula();
  
-      // Anuncio de bienvenida a la pantalla de navegación
-      await _voz.hablar('Buscando ubicación.');
+      // Anuncio de bienvenida. NO se espera a que termine: `hablar()` bloquea
+      // hasta que el motor TTS confirma la locucion (o hasta su timeout, ~3.4 s
+      // para este texto). Al entrar y salir rapido de la pantalla, el TTS
+      // anterior se interrumpe y esa espera retrasaba el arranque del scan
+      // varios segundos justo cuando mas importa. El anuncio es informativo:
+      // no tiene por que estar en el camino critico del posicionamiento.
+      _voz.hablarSinEsperar('Buscando ubicación.');
  
       if (widget.procesadorCompartido != null && FlutterBluePlus.isScanningNow) {
         if (mounted) {
@@ -278,7 +334,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
             _estadoScan = 'Continuando escaneo...';
           });
         }
-        _suscribirAScan();
+        // Antes esta rama llamaba a _suscribirAScan(), que se suscribia al
+        // stream pero NO instalaba el watchdog del scan. Resultado: todo el
+        // camino "vengo del modo automatico" corria sin vigilancia, y si el
+        // scan moria no habia nada que lo reviviera. Ahora ambos caminos pasan
+        // por el mismo metodo.
+        await _iniciarEscaneo(reutilizandoScan: true);
         return;
       }
  
@@ -398,29 +459,21 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
   }
  
-  void _suscribirAScan() {
-    BluetoothHelper.iniciarScanSeguro(
-      onResultados: (resultados) => _actualizarSenales(resultados),
-      onError: (e) {
-        if (mounted) {
-          setState(() => _estadoScan = 'Error en scan: $e');
-        }
-      },
-      removeIfGone: const Duration(seconds: 4),
-    );
- 
-    _timeoutTimer = Timer(const Duration(seconds: 10), () {
-      if (mounted && _posicionFinal == null) {
-        setState(() => _estadoScan = 'Escaneando... esperando señal estable');
-      }
-    });
-  }
- 
-  Future<void> _iniciarEscaneo() async {
+  /// Arranca (o reengancha) el escaneo BLE e instala el watchdog.
+  ///
+  /// [reutilizandoScan] indica que venimos de otra pantalla que dejo el scan
+  /// fisico corriendo (modo automatico): no hay que volver a pedir permisos ni
+  /// arrancar nada, solo suscribirse. Pero el watchdog se instala IGUAL, que es
+  /// justamente lo que faltaba antes.
+  Future<void> _iniciarEscaneo({bool reutilizandoScan = false}) async {
     if (!mounted) return;
     setState(() => _escaneando = true);
- 
+
+    _inicioEscaneo = DateTime.now();
+    _reiniciosSinDatos = 0;
+
     final scanOk = await BluetoothHelper.iniciarScanSeguro(
+      dueno: this,
       onResultados: (resultados) => _actualizarSenales(resultados),
       onError: (e) {
         if (mounted) {
@@ -429,38 +482,94 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       },
       removeIfGone: const Duration(seconds: 4),
     );
- 
-    if (!scanOk) {
+
+    if (!scanOk && !reutilizandoScan) {
+      // Puede ser un fallo real o simplemente falta de cupo de arranques. El
+      // watchdog de abajo se instala igual y va a reintentar cuando haya cupo,
+      // asi que esto es informativo, no terminal.
+      final espera = BluetoothHelper.esperaParaArrancar();
       if (mounted) {
-        setState(() => _estadoScan = 'No se pudo iniciar el escaneo');
+        setState(() => _estadoScan = espera > Duration.zero
+            ? 'Reintentando escaneo en ${espera.inSeconds} s...'
+            : 'No se pudo iniciar el escaneo');
       }
-      return;
-    }
- 
-    if (mounted) {
+    } else if (mounted) {
       setState(() => _estadoScan = 'Buscando beacons...');
     }
- 
+
+    _timeoutTimer?.cancel();
     _timeoutTimer = Timer(const Duration(seconds: 12), () {
       if (mounted && _posicionFinal == null) {
         setState(() => _estadoScan = 'No se detectan beacons suficientes.\nAcercate a un beacon configurado.');
       }
     });
- 
-    // Android detiene el scan BLE automáticamente después de ~25 segundos
-    // cuando no hay resultados, o puede cortar el stream sin avisar.
-    // Este timer lo reinicia cada 20s para garantizar continuidad.
+
+    _instalarWatchdogScan();
+  }
+
+  /// ── WATCHDOG DEL SCAN BLE ────────────────────────────────────────────────
+  ///
+  /// El watchdog anterior preguntaba `if (!FlutterBluePlus.isScanningNow)` cada
+  /// 20 s. Esa condicion NO detecta el modo de falla que congelaba la posicion:
+  /// cuando se supera el limite de Android de 5 arranques de scan por 30 s, el
+  /// sistema acepta el `startScan()`, deja de entregar advertisements, y
+  /// `isScanningNow` sigue devolviendo `true`. El watchdog concluia que el scan
+  /// estaba sano y no hacia nada, para siempre.
+  ///
+  /// La unica evidencia confiable de que el scan esta vivo es que LLEGUEN
+  /// DATOS. Por eso este watchdog vigila el silencio: si pasan
+  /// [_silencioParaReiniciar] sin un solo lote de resultados, fuerza un
+  /// reinicio completo (stop + start) en lugar de confiar en la bandera.
+  void _instalarWatchdogScan() {
     _scanReinicioTimer?.cancel();
-    _scanReinicioTimer = Timer.periodic(const Duration(seconds: 20), (_) async {
+    _scanReinicioTimer = Timer.periodic(_intervaloWatchdog, (_) async {
       if (!mounted) return;
-      if (!FlutterBluePlus.isScanningNow) {
-        await BluetoothHelper.iniciarScanSeguro(
-          onResultados: (resultados) => _actualizarSenales(resultados),
-          onError: (e) {
-            if (mounted) setState(() => _estadoScan = 'Error en scan: $e');
-          },
-          removeIfGone: const Duration(seconds: 4),
-        );
+
+      final referencia =
+          BluetoothHelper.ultimoResultado ?? _inicioEscaneo ?? DateTime.now();
+      final silencio = DateTime.now().difference(referencia);
+      if (silencio < _silencioParaReiniciar) {
+        _reiniciosSinDatos = 0;
+        return;
+      }
+
+      // AUTOCURACIÓN: si perdimos la propiedad del scan (una pantalla anterior
+      // se destruyó tarde y desarmó nuestros callbacks), no hay nada que
+      // "reiniciar" — hay que volver a registrarse. Sin esto, el watchdog
+      // quedaba pidiendo un reinicio que el helper rechazaba en silencio,
+      // exactamente lo que mostraba el log: "Forzando reinicio" cada 3 s,
+      // para siempre, sin recuperación posible.
+      if (!BluetoothHelper.esDueno(this)) {
+        debugPrint('[BLE] Perdimos la propiedad del scan. Re-registrando.');
+        await _iniciarEscaneo(reutilizandoScan: true);
+        return;
+      }
+
+      debugPrint('[BLE] Sin resultados hace ${silencio.inSeconds}s '
+          '(isScanningNow=${FlutterBluePlus.isScanningNow}). Forzando reinicio.');
+
+      final ok = await BluetoothHelper.reiniciarScanForzado();
+      if (!mounted) return;
+
+      if (ok) {
+        _reiniciosSinDatos = 0;
+        setState(() => _estadoScan = 'Reconectando con los beacons...');
+      } else {
+        _reiniciosSinDatos++;
+        final espera = BluetoothHelper.esperaParaArrancar();
+        setState(() {
+          _estadoScan = espera > Duration.zero
+              ? 'Bluetooth saturado, reintentando en ${espera.inSeconds} s...'
+              : 'Sin senal de beacons, reintentando...';
+        });
+        // Aviso por voz una sola vez, cuando el problema deja de ser un bache
+        // momentaneo. Es informacion que un usuario ciego necesita: sin esto,
+        // la app simplemente deja de guiarlo sin decir nada.
+        if (_reiniciosSinDatos == 3) {
+          _voz.hablarSinEsperar(
+            'Perdi la senal de los beacons. Estoy reintentando.',
+          );
+        }
       }
     });
   }
@@ -557,18 +666,49 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       }
       if (observaciones.isEmpty) return;
 
-      // El factor de movimiento (acelerómetro) se lee ANTES de estimar
-      // porque ahora gobierna también el ancla temporal del posicionador.
+      // El factor de movimiento (acelerómetro) se lee ANTES de estimar porque
+      // gobierna el ancla temporal del posicionador, la puerta direccional y la
+      // ventana de mediana del RSSI.
       _factorMovimiento = _movimiento.factorMovimiento;
 
-      // Rumbo de la brújula llevado al marco del PLANO (se descuenta la
-      // rotación del mapa, igual que en _buildOrientacion) y expresado como
-      // versor en coordenadas normalizadas de pantalla (x→derecha, y→abajo):
+      // Δt REAL entre muestras: el scan BLE no entrega a ritmo constante.
+      // Se calcula ACÁ ARRIBA (antes se calculaba después de estimar) porque
+      // ahora también lo necesita la puerta direccional, que convierte el
+      // desplazamiento del ciclo en una velocidad en m/s.
+      final ahoraMuestra = DateTime.now();
+      final dt = _ultimaMuestraPos == null
+          ? 0.0
+          : ahoraMuestra.difference(_ultimaMuestraPos!).inMicroseconds / 1e6;
+      _ultimaMuestraPos = ahoraMuestra;
+
+      // ── ¿SE PUEDE USAR EL RUMBO PARA RESTRINGIR EL MOVIMIENTO? ───────────
+      //
+      // Tres condiciones, y las tres importan:
+      //
+      //  1. Hay brújula y ya entregó un heading.
+      //
+      //  2. El heading es ESTABLE ([OrientacionService.calidadRumbo]). En
+      //     interiores el campo magnético está distorsionado por estructura
+      //     metálica, ascensores y tableros. Un heading basura no "restringe"
+      //     el movimiento: clava la posición sobre un eje EQUIVOCADO, que es
+      //     peor que no restringir nada. Esta condición no existía antes y es
+      //     una de las razones por las que el sistema andaba de forma errática:
+      //     bastaba pasar cerca de una columna con hierro para que el eje
+      //     privilegiado se fuera 40° y la posición quedara trabada de costado.
+      //
+      //  3. Hay acelerómetro. Sin él, [DetectorMovimiento] devuelve un factor
+      //     fijo de 0.45 y no se puede distinguir "caminando" de "parado".
+      //     "Dirección de marcha" de alguien que quizás no está marchando no
+      //     significa nada, así que se prefiere el ancla isotrópica.
+      //
+      // El rumbo se lleva al marco del PLANO (se descuenta la rotación del
+      // mapa, igual que en _buildOrientacion) y se expresa como versor en
+      // coordenadas normalizadas de pantalla (x→derecha, y→abajo):
       //   rumbo 0° = arriba en pantalla = (0, -1).
-      // Con esto el posicionador restringe el movimiento al eje del rumbo
-      // (blando a lo largo, duro en perpendicular) y deja de irse de costado.
       Offset? rumboPlano;
-      if (_compassDisponible) {
+      if (_compassDisponible &&
+          _movimiento.disponible &&
+          _orientacion.calidadRumbo >= _calidadRumboMinima) {
         final h = _orientacion.heading;
         if (h != null) {
           final hp = ((h - _rotacionMapaEfectiva) % 360 + 360) % 360;
@@ -580,10 +720,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       // Multilateración RECURSIVA: se le pasa la posición filtrada previa
       // como ancla temporal y arranque en caliente. Eso mata los saltos
       // (un outlier de un frame ya no la mueve) y estabiliza geometrías
-      // malas, sin reintroducir el sesgo al centro. El rumbo restringe la
-      // deriva lateral. El One Euro de abajo sigue puliendo, pero ahora
-      // sobre una entrada ya estable.
-      final nuevaPosicionRaw = Posicionador.estimar(
+      // malas, sin reintroducir el sesgo al centro. El rumbo sólo SESGA acá
+      // (ver el comentario de _factorPerpMax en Posicionador); la decisión
+      // dura la toma la puerta de abajo.
+      var nuevaPosicionRaw = Posicionador.estimar(
         observaciones,
         metrosX: _grilla.metrosX,
         metrosY: _grilla.metrosY,
@@ -592,17 +732,31 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         rumboPlano: rumboPlano,
       );
 
+      // ── PUERTA DIRECCIONAL ───────────────────────────────────────────────
+      // Descompone el desplazamiento propuesto en "a lo largo del rumbo" y
+      // "perpendicular", y deja pasar el lateral sólo si viene sostenido en el
+      // mismo sentido durante ~1 s (ver [PuertaRumbo]). El ruido BLE alterna
+      // de signo ciclo a ciclo, así que nunca junta esa evidencia; una persona
+      // que se corre de verdad hacia el costado, sí.
+      if (rumboPlano != null && _posicionFiltrada != null) {
+        nuevaPosicionRaw = _puertaRumbo.aplicar(
+          posPrevia: _posicionFiltrada!,
+          candidata: nuevaPosicionRaw,
+          rumboPlano: rumboPlano,
+          metrosX: _grilla.metrosX,
+          metrosY: _grilla.metrosY,
+          factorMovimiento: _factorMovimiento,
+          dt: dt,
+          velocidadAngularGrados: _orientacion.velocidadAngularGrados,
+        );
+      } else {
+        // Sin rumbo confiable la puerta no debe conservar evidencia vieja: al
+        // volver a haber brújula, esa evidencia pertenecería a otro eje.
+        _puertaRumbo.resetear();
+      }
+
       // ── FILTRO ONE EURO GOBERNADO POR EL ACELERÓMETRO ────────────────────
       //
-      // Δt REAL entre muestras: el scan BLE no entrega a ritmo constante y el
-      // α del pasa-bajos depende del Δt. Usar un Δt nominal haría que el
-      // suavizado cambiara solo, según cuántos callbacks llegaran.
-      final ahoraMuestra = DateTime.now();
-      final dt = _ultimaMuestraPos == null
-          ? 0.0
-          : ahoraMuestra.difference(_ultimaMuestraPos!).inMicroseconds / 1e6;
-      _ultimaMuestraPos = ahoraMuestra;
-
       // La ventana de mediana del RSSI también se acorta al caminar: es la
       // mayor fuente de latencia de todo el pipeline (3 s de ventana ≈ 1.5 s
       // de retardo de grupo, ~1.8 m a paso normal).
@@ -614,30 +768,62 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         factorMovimiento: _factorMovimiento,
       );
 
-      // Defensa anti-spike: limitar cuánto puede moverse la posición en un
-      // ciclo. El tope se escala con el movimiento — con el usuario detenido
-      // un salto grande es siempre ruido.
-      final maxPaso = _maxPasoQuieto +
-          (_maxPasoMoviendo - _maxPasoQuieto) * _factorMovimiento;
-
       Offset nuevaPosicionFiltrada;
       if (_posicionFiltrada == null) {
         nuevaPosicionFiltrada = filtrada;
       } else {
-        final delta = filtrada - _posicionFiltrada!;
-        final distDelta = delta.distance;
-        if (distDelta > maxPaso) {
-          nuevaPosicionFiltrada = _posicionFiltrada! + delta * (maxPaso / distDelta);
+        // ── TOPE DE PASO POR CICLO, EN METROS Y ANISOTRÓPICO ───────────────
+        // Es la última defensa anti-spike, por debajo de la puerta. Antes era
+        // isotrópico y en unidades normalizadas, así que "deshacía" parte de la
+        // anisotropía que el rumbo había logrado más arriba: un pico lateral
+        // que el solver había frenado seguía teniendo permiso de moverse tanto
+        // de costado como hacia adelante.
+        final dtPaso =
+            (dt.isFinite && dt > 0) ? dt.clamp(0.05, 1.0) : 0.18;
+        final velMax = _velMaxQuietoMs +
+            (_velMaxMoviendoMs - _velMaxQuietoMs) * _factorMovimiento;
+        final topeAlong = velMax * dtPaso;
+
+        double dxM = (filtrada.dx - _posicionFiltrada!.dx) * _grilla.metrosX;
+        double dyM = (filtrada.dy - _posicionFiltrada!.dy) * _grilla.metrosY;
+
+        if (rumboPlano != null) {
+          // Versor del rumbo en marco métrico (mx≠my ⇒ hay que renormalizar).
+          double hx = rumboPlano.dx * _grilla.metrosX;
+          double hy = rumboPlano.dy * _grilla.metrosY;
+          final hn = sqrt(hx * hx + hy * hy);
+          if (hn > 1e-6) {
+            hx /= hn;
+            hy /= hn;
+            final nx = -hy, ny = hx;
+            final topePerp = topeAlong *
+                (1.0 + (_facTopePerp - 1.0) * _factorMovimiento);
+            final a = (dxM * hx + dyM * hy).clamp(-topeAlong, topeAlong);
+            final l = (dxM * nx + dyM * ny).clamp(-topePerp, topePerp);
+            dxM = a * hx + l * nx;
+            dyM = a * hy + l * ny;
+          }
         } else {
-          nuevaPosicionFiltrada = filtrada;
+          final dm = sqrt(dxM * dxM + dyM * dyM);
+          if (dm > topeAlong) {
+            final s = topeAlong / dm;
+            dxM *= s;
+            dyM *= s;
+          }
         }
+
+        nuevaPosicionFiltrada = Offset(
+          _posicionFiltrada!.dx + dxM / _grilla.metrosX,
+          _posicionFiltrada!.dy + dyM / _grilla.metrosY,
+        );
 
         // Zona muerta con el usuario detenido: por debajo de este
         // desplazamiento no se mueve nada. Es lo que termina de eliminar el
         // parpadeo del ícono cuando la persona está parada. Se desactiva de
         // forma progresiva apenas el acelerómetro detecta movimiento.
         if (_factorMovimiento < 0.25) {
-          final movMetros = _distanciaMetros(_posicionFiltrada!, nuevaPosicionFiltrada);
+          final movMetros =
+              _distanciaMetros(_posicionFiltrada!, nuevaPosicionFiltrada);
           if (movMetros < _zonaMuertaQuietoMetros) {
             nuevaPosicionFiltrada = _posicionFiltrada!;
           }

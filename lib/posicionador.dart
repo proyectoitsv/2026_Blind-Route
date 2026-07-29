@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'dart:ui';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 /// Una observación de rango: la posición (normalizada) de un beacon y la
 /// distancia (m) que se le estimó a partir de su RSSI filtrado.
@@ -25,18 +26,7 @@ class ObservacionRango {
 /// El método anterior calculaba `posición = Σ(pos_beaconᵢ · wᵢ) / Σwᵢ`, con
 /// `wᵢ = 1/dᵢ²`. Eso es un **promedio de las posiciones de los beacons**: por
 /// más que se afine el peso, el resultado NUNCA puede salirse del interior de
-/// la nube de beacons, y de hecho tiende a su centro. Consecuencia:
-///
-///   • Pegado a un beacon → ese beacon domina el peso y la posición "se pega"
-///     a él: sale bien. (Por eso andaba bien cerca de un beacon.)
-///   • En el medio, equidistante de varios → todos los pesos se parecen y la
-///     posición COLAPSA al centro geométrico del layout, sin relación con
-///     dónde está la persona realmente. (Por eso andaba mal "en el medio".)
-///
-/// Medido en simulación (ruido BLE post-mediana ≈ 1,5 dBm), el centroide
-/// ponderado arrastra un **sesgo sistemático hacia el centro** que crece con la
-/// distancia al centroide: ~0,2 m a 3 m del centro, ~1,3 m a 7 m. La
-/// multilateración baja ese error a ~0,3 m en los mismos puntos.
+/// la nube de beacons, y de hecho tiende a su centro.
 ///
 /// La multilateración usa las distancias como **restricciones geométricas**
 /// (circunferencias de radio dᵢ centradas en cada beacon) y busca el punto que
@@ -46,18 +36,13 @@ class ObservacionRango {
 /// ── CÓMO ────────────────────────────────────────────────────────────────
 /// • Se resuelve en **metros**, no en normalizado: las distancias del modelo
 ///   log solo tienen sentido geométrico en un marco métrico, y los ejes pueden
-///   tener escalas muy distintas (metrosX ≠ metrosY). Se convierte a metros,
-///   se resuelve, y se vuelve a normalizar al final.
-/// • **Gauss-Newton** (pocas iteraciones; converge rápido) inicializado en el
-///   centroide ponderado: es un arranque robusto y barato, y además sirve de
-///   fallback si la geometría es mala.
+///   tener escalas muy distintas (metrosX ≠ metrosY).
+/// • **Gauss-Newton** inicializado en el centroide ponderado (arranque robusto
+///   y barato, y fallback si la geometría es mala).
 /// • **IRLS con peso de Huber** sobre el residuo de rango: un beacon con
-///   multipath (rango espurio, típicamente "más cerca" de lo real) se descarta
-///   solo, sin arruinar la solución. Sin esto, un rebote fuerte tironea la
-///   posición como lo hacía el centroide.
+///   multipath se descarta solo, sin arruinar la solución.
 /// • **Amortiguación Levenberg-Marquardt** (λI en la normal) para que el
-///   sistema 2×2 no se vuelva singular con geometrías degeneradas (beacons casi
-///   colineales, o sólo 2 visibles).
+///   sistema 2×2 no se vuelva singular con geometrías degeneradas.
 class Posicionador {
   /// Umbral de Huber (m): por encima de este residuo de rango, la observación
   /// empieza a descartarse progresivamente (robustez ante multipath).
@@ -71,37 +56,48 @@ class Posicionador {
   /// La multilateración pura resuelve cada frame DE CERO: con rangos RSSI
   /// ruidosos y geometrías malas (dilución de precisión) un solo pico de
   /// multipath, o que entre/salga un beacon del set visible, la manda lejos.
-  /// El One Euro no puede taparlo —ante un salto grande SUBE su corte y lo deja
-  /// pasar—: la robustez tiene que estar acá. Se agrega un término que tira la
-  /// solución hacia la posición ANTERIOR (regularización de Tikhonov hacia esa
-  /// ancla). Efectos:
-  ///   • un outlier de un frame ya no puede mover la posición: el ancla la
-  ///     sostiene;
-  ///   • estabiliza geometrías degeneradas (suma un término bien condicionado a
-  ///     la normal → no hay "flips" por GDOP);
-  ///   • NO reintroduce el sesgo al centro: el ancla es la posición previa, no
-  ///     el centroide.
-  /// El peso del ancla lo gobierna el acelerómetro, igual que el One Euro:
-  /// fuerte con el usuario quieto (nada debería moverse, todo salto es ruido) y
-  /// suave al caminar (para poder seguir el movimiento real). Se expresa como
-  /// múltiplo del peso total de los rangos → es independiente de cuántos
-  /// beacons haya visibles en el frame.
+  /// Se agrega un término que tira la solución hacia la posición ANTERIOR
+  /// (regularización de Tikhonov hacia esa ancla). Efectos:
+  ///   • un outlier de un frame ya no puede mover la posición;
+  ///   • estabiliza geometrías degeneradas (no hay "flips" por GDOP);
+  ///   • NO reintroduce el sesgo al centro: el ancla es la posición previa.
+  /// El peso lo gobierna el acelerómetro: fuerte con el usuario quieto y suave
+  /// al caminar. Se expresa como múltiplo del peso total de los rangos → es
+  /// independiente de cuántos beacons haya visibles en el frame.
   static const double _priorQuieto = 3.0;
   static const double _priorMoviendo = 0.25;
 
-  /// ── RESTRICCIÓN ANISOTRÓPICA POR RUMBO (brújula) ─────────────────────────
-  /// La persona camina en la dirección en que mira: el rumbo define un EJE de
-  /// movimiento permitido. A lo largo de ese eje el ancla es BLANDA (deja
-  /// avanzar/retroceder siguiendo el paso real); en la dirección PERPENDICULAR
-  /// es DURA (frena la deriva lateral —el avatar yéndose de este a oeste sin que
-  /// la persona se desplace ni mire para allá—, que es puro ruido BLE). Si la
-  /// persona gira, el eje rota con el rumbo, así que esto NO bloquea los giros:
-  /// lo que un instante fue "lateral" pasa a ser "a lo largo" en el rumbo nuevo.
-  /// Es la histéresis direccional que pediste. Sólo aplica si hay rumbo válido;
-  /// sin brújula, se cae al ancla isotrópica de arriba (sin cambios).
-  static const double _priorAlongQuieto = 1.8;
-  static const double _priorAlongMoviendo = 0.2;
-  static const double _priorPerp = 3.0;
+  /// ── SESGO ANISOTRÓPICO POR RUMBO (brújula) ───────────────────────────────
+  ///
+  /// OJO con qué hace y qué NO hace este término, porque la versión anterior le
+  /// pedía algo que un prior cuadrático no puede dar.
+  ///
+  /// El ancla es un término cuadrático alrededor de la posición previa. Su
+  /// efecto sobre el desplazamiento de un ciclo es una **ganancia lineal**:
+  /// `Δsalida ≈ Δmedición / (1 + k)`. Es decir, un pasa-bajos direccional. Eso
+  /// atenúa por igual al ruido y al movimiento real y, como es recursivo,
+  /// cualquier empuje lateral SOSTENIDO termina pasando entero en unos pocos
+  /// ciclos. Un prior cuadrático **no puede** distinguir "ruido" de "señal
+  /// fuerte y persistente": las trata igual, sólo que más lento.
+  ///
+  /// Por eso acá el rumbo hace únicamente lo que un prior sí sabe hacer:
+  /// condicionar el problema, favoreciendo levemente las soluciones que
+  /// explican los rangos moviéndose a lo largo del eje de marcha. La decisión
+  /// "esto es ruido lateral / esto es movimiento lateral real" se toma después,
+  /// en [PuertaRumbo], que sí tiene memoria y sí puede medir persistencia.
+  ///
+  /// El factor se aplica SOLO en la dirección perpendicular y **escala con el
+  /// movimiento**: con el usuario detenido no existe una "dirección de marcha"
+  /// que privilegiar (todo desplazamiento es ruido en cualquier eje) y el ancla
+  /// vuelve a ser isotrópica. La versión anterior hacía justo lo contrario
+  /// —ablandaba el eje longitudinal a 1.8 con el usuario quieto, contra 3.0 del
+  /// ancla isotrópica—, así que activar la brújula dejaba la posición MÁS
+  /// suelta hacia adelante y atrás que no tenerla.
+  ///
+  /// Se lo mantiene deliberadamente moderado (×2.5 como máximo): si se lo sube
+  /// mucho, el solver borra la evidencia lateral y [PuertaRumbo] se queda ciega
+  /// —nunca vería el desplazamiento lateral real que tiene que dejar pasar—.
+  static const double _factorPerpMax = 2.5;
 
   /// Tope de paso por iteración (m): evita que una iteración de Gauss-Newton
   /// "teletransporte" la solución si el sistema está mal condicionado.
@@ -117,12 +113,11 @@ class Posicionador {
     // temporal y el arranque en caliente del solver. `null` en el primer frame.
     Offset? posPrevia,
     // Factor de movimiento del acelerómetro (0 = quieto, 1 = caminando).
-    // Gobierna la fuerza del ancla: quieto ancla fuerte, moviéndose ancla suave.
     double factorMovimiento = 1.0,
     // Rumbo del usuario en el marco del PLANO, como versor en coordenadas
     // normalizadas de pantalla (x→derecha, y→abajo). Es la dirección de la
     // brújula ya descontada la rotación del mapa. Si no hay brújula, `null` y
-    // el ancla vuelve a ser isotrópica.
+    // el ancla es isotrópica.
     Offset? rumboPlano,
     int maxIter = 12,
   }) {
@@ -139,11 +134,9 @@ class Posicionador {
     final centroide =
         sw > 0 ? Offset(sx / sw, sy / sw) : const Offset(0.5, 0.5);
 
-    // Con menos de 3 rangos la multilateración es ambigua (2 circunferencias se
-    // cortan en 0/1/2 puntos). En vez de saltar al centroide (que se mueve
-    // bruscamente cada vez que cambia el set de beacons visibles), se avanza
-    // suavemente desde la posición previa hacia el centroide: quieto casi no se
-    // mueve, caminando cede más. Sin previa (primer frame), el centroide.
+    // Con menos de 3 rangos la multilateración es ambigua. En vez de saltar al
+    // centroide (que se mueve bruscamente cada vez que cambia el set visible),
+    // se avanza suavemente desde la posición previa hacia el centroide.
     if (obs.length < 3) {
       if (posPrevia == null) return centroide;
       final a = (0.12 + 0.4 * fMov).clamp(0.0, 1.0);
@@ -157,8 +150,7 @@ class Posicionador {
     final my = (metrosY.isFinite && metrosY > 0) ? metrosY : 1.0;
 
     // Arranque EN CALIENTE desde la posición previa: da continuidad temporal y
-    // evita que el solver caiga en un mínimo local distinto de un frame al otro
-    // (fuente típica de saltos). Sin previa, arranca en el centroide.
+    // evita que el solver caiga en un mínimo local distinto de un frame al otro.
     final inicio = posPrevia ?? centroide;
     double x = inicio.dx * mx;
     double y = inicio.dy * my;
@@ -183,36 +175,36 @@ class Posicionador {
     }
 
     // ── Ancla temporal: matriz de rigidez 2×2 (pa11, pa12, pa22) ────────────
-    // Es un término cuadrático alrededor de la posición previa. Sin rumbo es
-    // isotrópico (pa11=pa22=kIso, pa12=0) → idéntico al ancla anterior. Con
-    // rumbo se hace ANISOTRÓPICO: blando a lo largo del eje del rumbo, duro en
-    // perpendicular. Las entradas no dependen de (x,y), se calculan una vez.
+    // Las entradas no dependen de (x,y): se calculan una sola vez.
     double pa11 = 0, pa12 = 0, pa22 = 0;
     if (tienePrevia) {
+      final kIso =
+          sumWc * (_priorQuieto + (_priorMoviendo - _priorQuieto) * fMov);
+
       // Versor del rumbo en marco MÉTRICO: un mismo desplazamiento normalizado
       // mide distinto en cada eje (mx≠my), así que hay que llevarlo a metros y
       // renormalizar para que "a lo largo" sea la dirección física real.
       double? hx, hy;
       if (rumboPlano != null) {
-        double hmx = rumboPlano.dx * mx, hmy = rumboPlano.dy * my;
+        final double hmx = rumboPlano.dx * mx, hmy = rumboPlano.dy * my;
         final hn = sqrt(hmx * hmx + hmy * hmy);
         if (hn > 1e-6) {
           hx = hmx / hn;
           hy = hmy / hn;
         }
       }
+
       if (hx != null && hy != null) {
-        // Con rumbo: eje blando (kAlong) + perpendicular duro (kPerp).
-        final kAlong = sumWc *
-            (_priorAlongQuieto + (_priorAlongMoviendo - _priorAlongQuieto) * fMov);
-        final kPerp = sumWc * _priorPerp;
+        // A lo largo del rumbo se conserva EXACTAMENTE la rigidez isotrópica
+        // (nunca queda más suelto que sin brújula); sólo se endurece el eje
+        // perpendicular, y de forma proporcional al movimiento.
+        final kAlong = kIso;
+        final kPerp = kIso * (1.0 + (_factorPerpMax - 1.0) * fMov);
         // H = kAlong·h·hᵀ + kPerp·n·nᵀ,  con n = (−hy, hx) perpendicular.
         pa11 = kAlong * hx * hx + kPerp * hy * hy;
         pa12 = (kAlong - kPerp) * hx * hy;
         pa22 = kAlong * hy * hy + kPerp * hx * hx;
       } else {
-        // Sin rumbo válido: ancla isotrópica (comportamiento anterior).
-        final kIso = sumWc * (_priorQuieto + (_priorMoviendo - _priorQuieto) * fMov);
         pa11 = kIso;
         pa22 = kIso;
       }
@@ -221,9 +213,6 @@ class Posicionador {
     for (int it = 0; it < maxIter; it++) {
       // Normal 2×2 (JᵀWJ) y gradiente (JᵀW r), con amortiguación LM en la
       // diagonal. Se arma a mano para evitar asignaciones en el hot path.
-      // Arranca con el término del ANCLA (matriz de rigidez pa·· + su gradiente
-      // pa·(x−ancla)): eso tira la solución hacia la posición previa, blando a
-      // lo largo del rumbo y duro en perpendicular.
       final dxp = x - pxPrev, dyp = y - pyPrev;
       double a11 = _lambda + pa11, a12 = pa12, a22 = _lambda + pa22;
       double g1 = pa11 * dxp + pa12 * dyp, g2 = pa12 * dxp + pa22 * dyp;
@@ -247,8 +236,6 @@ class Posicionador {
       // Paso de Gauss-Newton: (JᵀWJ)·paso = JᵀW r  →  x ← x − paso.
       double pasoX = (a22 * g1 - a12 * g2) / det;
       double pasoY = (a11 * g2 - a12 * g1) / det;
-      // Tope de paso por iteración: si el sistema está mal condicionado, un paso
-      // enorme teletransportaría la solución. Se recorta manteniendo dirección.
       final pasoN = sqrt(pasoX * pasoX + pasoY * pasoY);
       if (pasoN > _maxPasoIterM) {
         final s = _maxPasoIterM / pasoN;
@@ -267,5 +254,201 @@ class Posicionador {
     final ny = (y / my).clamp(0.0, 1.0);
     if (!nx.isFinite || !ny.isFinite) return centroide; // por las dudas
     return Offset(nx, ny);
+  }
+}
+
+/// ═══════════════════════════════════════════════════════════════════════════
+/// PUERTA DIRECCIONAL POR RUMBO
+/// ═══════════════════════════════════════════════════════════════════════════
+///
+/// Acá vive de verdad la regla "la persona se mueve hacia donde mira; lo demás
+/// es ruido, salvo que sea fuerte y persistente".
+///
+/// ── POR QUÉ NO ALCANZABA CON EL PRIOR DEL SOLVER ───────────────────────────
+/// Un prior cuadrático (ver [Posicionador]) es un pasa-bajos: aplica la misma
+/// ganancia `1/(1+k)` al ruido y al movimiento real. No tiene memoria, así que
+/// no puede evaluar "persistencia", que es justamente la palabra clave del
+/// requisito.
+///
+/// ── EL DISCRIMINADOR QUE SÍ SIRVE: EL SIGNO ────────────────────────────────
+/// El ruido BLE lateral **cambia de signo** ciclo a ciclo (es aproximadamente
+/// de media cero): si se promedia el desplazamiento lateral CON SIGNO sobre un
+/// par de segundos, el ruido se cancela solo. El movimiento lateral real, en
+/// cambio, mantiene el signo mientras dura. Esa es toda la idea:
+///
+///   • [_evidenciaLateral] = EMA del desplazamiento lateral CON SIGNO,
+///     expresado como velocidad (m/s). Ruido → tiende a 0. Movimiento real →
+///     tiende a la velocidad real de la persona.
+///   • Además se exige que el signo sea CONSISTENTE durante
+///     [_minCiclosConsistentes] ciclos seguidos, así una ráfaga de multipath
+///     que casualmente empuje para el mismo lado tiene que sostenerse ~1 s.
+///
+/// Con la puerta CERRADA el desplazamiento lateral pasa al 10 %; con la puerta
+/// ABIERTA pasa entero. Apertura y cierre son rampas (constante de tiempo
+/// [_tauAperturaSeg]) para que no haya un salto visible al conmutar, y el
+/// cierre usa un umbral más bajo que la apertura (histéresis anti-titileo).
+///
+/// ── ASIMETRÍA ADELANTE / ATRÁS ─────────────────────────────────────────────
+/// El prior del solver es simétrico por construcción (`h·hᵀ` no distingue `+h`
+/// de `−h`), así que en la versión anterior "caminar hacia atrás" quedaba tan
+/// permitido como caminar hacia adelante. La gente casi nunca camina de
+/// espaldas: el retroceso a lo largo del eje se deja pasar sólo al 35 %.
+///
+/// ── GIROS ──────────────────────────────────────────────────────────────────
+/// La restricción se apaga mientras la persona gira rápido: durante un giro el
+/// eje de referencia está rotando, "lateral" y "longitudinal" se intercambian,
+/// y cualquier evidencia acumulada en el marco viejo es basura en el nuevo.
+///
+/// ── ESCALA CON EL MOVIMIENTO ───────────────────────────────────────────────
+/// Toda la anisotropía se multiplica por el factor del acelerómetro: con el
+/// usuario detenido la puerta es la identidad y mandan el ancla isotrópica del
+/// solver, el One Euro y la zona muerta (que ya congelan bien la posición). No
+/// tiene sentido hablar de "dirección de marcha" de alguien que no marcha.
+class PuertaRumbo {
+  /// Fracción del desplazamiento HACIA ATRÁS (contra el rumbo) que se deja
+  /// pasar cuando la anisotropía está al máximo.
+  static const double _facAtras = 0.35;
+
+  /// Fracción del desplazamiento LATERAL que se deja pasar con la puerta
+  /// cerrada y la anisotropía al máximo.
+  static const double _gLateralCerrada = 0.10;
+
+  /// Constante de tiempo del acumulador de evidencia lateral (s). Larga a
+  /// propósito: es lo que promedia el ruido de signo alterno hasta cancelarlo.
+  /// Con 2 s a ~5.5 Hz promedia ~11 muestras → divide el ruido por ~3.3.
+  static const double _tauEvidenciaSeg = 2.0;
+
+  /// Deriva lateral sostenida (m/s) necesaria para ABRIR la puerta. Una persona
+  /// que se corre de verdad hacia el costado va a ~0.8–1.2 m/s; el ruido, ya
+  /// promediado con signo, se queda bien por debajo de 0.5 m/s.
+  static const double _umbralAbrirMs = 0.55;
+
+  /// Umbral de CIERRE, más bajo que el de apertura (histéresis anti-titileo).
+  static const double _umbralCerrarMs = 0.30;
+
+  /// Ciclos consecutivos con el desplazamiento lateral en el MISMO sentido que
+  /// la evidencia acumulada. A ~5.5 Hz, 5 ciclos ≈ 0.9 s.
+  static const int _minCiclosConsistentes = 5;
+
+  /// Desplazamiento lateral (m) por debajo del cual el ciclo no cuenta como
+  /// evidencia: evita que el ruido chiquito sume "consistencia" gratis.
+  static const double _pisoCicloMetros = 0.05;
+
+  /// Constante de tiempo de la rampa de apertura/cierre (s).
+  static const double _tauAperturaSeg = 0.45;
+
+  /// Velocidad angular (°/s) por encima de la cual se considera que la persona
+  /// está girando y se suspende toda la restricción.
+  static const double _giroRapidoGradosSeg = 60.0;
+
+  double _evidenciaLateral = 0.0;
+  int _ciclosConsistentes = 0;
+  double _apertura = 0.0;
+  bool _abierta = false;
+
+  /// Evidencia lateral acumulada, con signo, en m/s. Diagnóstico.
+  double get evidenciaLateralMs => _evidenciaLateral;
+
+  /// Apertura efectiva de la puerta lateral en `[0,1]`. Diagnóstico.
+  double get apertura => _apertura;
+
+  /// `true` si la puerta lateral está habilitada (deriva fuerte y persistente).
+  bool get lateralHabilitado => _abierta;
+
+  /// Aplica la restricción direccional al desplazamiento propuesto por el
+  /// solver.
+  ///
+  /// - [posPrevia] y [candidata]: posiciones normalizadas `[0,1]`.
+  /// - [rumboPlano]: versor del rumbo en el marco del plano (el mismo que
+  ///   recibe [Posicionador.estimar]).
+  /// - [factorMovimiento]: 0 = quieto (la puerta es la identidad),
+  ///   1 = caminando (restricción plena).
+  /// - [dt]: segundos reales desde el ciclo anterior.
+  /// - [velocidadAngularGrados]: velocidad de giro del rumbo, en °/s.
+  Offset aplicar({
+    required Offset posPrevia,
+    required Offset candidata,
+    required Offset rumboPlano,
+    required double metrosX,
+    required double metrosY,
+    required double factorMovimiento,
+    required double dt,
+    double velocidadAngularGrados = 0.0,
+  }) {
+    if (!dt.isFinite || dt <= 0) return candidata;
+    final mx = (metrosX.isFinite && metrosX > 0) ? metrosX : 1.0;
+    final my = (metrosY.isFinite && metrosY > 0) ? metrosY : 1.0;
+
+    // Versor del rumbo en marco métrico (ver la nota en Posicionador.estimar:
+    // una dirección normalizada NO es la misma dirección física si mx ≠ my).
+    double hx = rumboPlano.dx * mx;
+    double hy = rumboPlano.dy * my;
+    final hn = sqrt(hx * hx + hy * hy);
+    if (!hn.isFinite || hn < 1e-6) return candidata;
+    hx /= hn;
+    hy /= hn;
+    final nx = -hy, ny = hx; // perpendicular al rumbo
+
+    // Desplazamiento propuesto por el solver, en metros, descompuesto en el eje
+    // de marcha (a) y el eje lateral (l).
+    final dxM = (candidata.dx - posPrevia.dx) * mx;
+    final dyM = (candidata.dy - posPrevia.dy) * my;
+    final double a = dxM * hx + dyM * hy;
+    final double l = dxM * nx + dyM * ny;
+
+    final fMov = factorMovimiento.clamp(0.0, 1.0);
+
+    if (velocidadAngularGrados.abs() > _giroRapidoGradosSeg) {
+      // El eje de referencia está rotando: la evidencia acumulada pertenece a
+      // un marco que ya no existe. Se descarta y se deja pasar todo.
+      resetear();
+      return candidata;
+    }
+
+    // ── Evidencia lateral CON SIGNO ─────────────────────────────────────────
+    final alphaEv = dt / (_tauEvidenciaSeg + dt);
+    _evidenciaLateral += alphaEv * (l / dt - _evidenciaLateral);
+
+    if (l.abs() > _pisoCicloMetros && l * _evidenciaLateral > 0) {
+      _ciclosConsistentes++;
+    } else {
+      _ciclosConsistentes = 0;
+    }
+
+    final umbral = _abierta ? _umbralCerrarMs : _umbralAbrirMs;
+    final abiertaAhora = _evidenciaLateral.abs() > umbral &&
+        _ciclosConsistentes >= _minCiclosConsistentes;
+    if (abiertaAhora != _abierta) {
+      _abierta = abiertaAhora;
+      debugPrint('[Rumbo] Puerta lateral ${_abierta ? "ABIERTA" : "cerrada"} '
+          '(evidencia ${_evidenciaLateral.toStringAsFixed(2)} m/s, '
+          '$_ciclosConsistentes ciclos consistentes)');
+    }
+    final alphaAp = dt / (_tauAperturaSeg + dt);
+    _apertura += alphaAp * ((_abierta ? 1.0 : 0.0) - _apertura);
+
+    // ── Ganancias por eje ───────────────────────────────────────────────────
+    // aniso = 0 → la puerta es la identidad (usuario detenido).
+    // aniso = 1 → restricción direccional plena (usuario caminando).
+    final aniso = fMov;
+    const double gAdelante = 1.0;
+    final double gAtras = 1.0 + (_facAtras - 1.0) * aniso;
+    final double gLatBase = 1.0 + (_gLateralCerrada - 1.0) * aniso;
+    final double gLateral = gLatBase + _apertura * (gAdelante - gLatBase);
+
+    final aSalida = a * (a >= 0 ? gAdelante : gAtras);
+    final lSalida = l * gLateral;
+
+    return Offset(
+      posPrevia.dx + (aSalida * hx + lSalida * nx) / mx,
+      posPrevia.dy + (aSalida * hy + lSalida * ny) / my,
+    );
+  }
+
+  void resetear() {
+    _evidenciaLateral = 0.0;
+    _ciclosConsistentes = 0;
+    _apertura = 0.0;
+    _abierta = false;
   }
 }

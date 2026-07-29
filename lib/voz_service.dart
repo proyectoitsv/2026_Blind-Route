@@ -20,6 +20,18 @@ class VozService {
   bool _sttDisponible = false;
   bool _escuchando = false;
  
+  // ── DUEÑO ACTUAL ──────────────────────────────────────────────────────────
+  // VozService es un singleton, así que `limpiar()` de una pantalla detiene el
+  // TTS de TODAS. Flutter destruye la pantalla saliente después de construir la
+  // entrante, así que ese `limpiar()` tardío cortaba el anuncio de la pantalla
+  // nueva. Con un token de dueño, la limpieza tardía se vuelve inofensiva.
+  Object? _dueno;
+
+  /// Registra a [dueno] como pantalla activa de voz.
+  void registrarDueno(Object dueno) => _dueno = dueno;
+
+  bool esDueno(Object candidato) => identical(_dueno, candidato);
+
   // Control de instrucciones repetidas
   String _ultimaInstruccion = '';
   DateTime? _ultimaVezHablado;
@@ -270,7 +282,11 @@ class VozService {
     }
   }
  
-  void limpiar() {
+  /// Detiene TTS y STT. Si se pasa [dueno], la limpieza se ignora cuando ese
+  /// objeto ya no es la pantalla de voz activa (ver [_dueno]).
+  void limpiar({Object? dueno}) {
+    if (dueno != null && !esDueno(dueno)) return;
+    _dueno = null;
     _tts.stop();
     _hablando = false;
     _stt.stop();
