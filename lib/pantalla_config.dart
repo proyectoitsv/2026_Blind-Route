@@ -215,7 +215,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void dispose() {
     _etiquetaCalCtrl.dispose();
     _compassConfigSub?.cancel();
-    BluetoothHelper.detenerScanSeguro();
+    BluetoothHelper.detenerScanSeguro(dueno: this);
     super.dispose();
   }
 
@@ -336,7 +336,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   void _conmutarEscaner() async {
     if (_escaneando) {
-      await BluetoothHelper.detenerScanSeguro();
+      await BluetoothHelper.detenerScanSeguro(dueno: this);
       if (mounted) setState(() => _escaneando = false);
       return;
     }
@@ -354,6 +354,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (mounted) setState(() => _escaneando = true);
 
     final scanOk = await BluetoothHelper.iniciarScanSeguro(
+      dueno: this,
       onResultados: (resultados) {
         if (!mounted) return;
         setState(() => _dispositivosCercanos = resultados);
@@ -824,6 +825,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
     if (mounted) setState(() => _escaneando = true);
     final scanOk = await BluetoothHelper.iniciarScanSeguro(
+      dueno: this,
       onResultados: (resultados) {
         if (!mounted) return;
         setState(() => _dispositivosCercanos = resultados);

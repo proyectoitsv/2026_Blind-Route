@@ -39,7 +39,7 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     // NO detenemos el scan aqui - PantallaNavegacion lo necesita activo
     // Solo cancelamos si no navegamos
     if (!_navegando) {
-      BluetoothHelper.detenerScanSeguro();
+      BluetoothHelper.detenerScanSeguro(dueno: this);
     }
     super.dispose();
   }
@@ -58,6 +58,7 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     }
  
     final scanOk = await BluetoothHelper.iniciarScanSeguro(
+      dueno: this,
       onResultados: (resultados) => _procesarResultados(resultados),
       onError: (e) {
         if (mounted) {

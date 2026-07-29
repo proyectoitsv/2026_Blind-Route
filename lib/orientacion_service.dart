@@ -7,48 +7,77 @@ import 'package:flutter/material.dart';
 /// Usa flutter_compass para obtener el heading del celular y lo suaviza con
 /// una media circular sobre una ventana deslizante. Esta pensado para usarse
 /// con el celular en mano.
+///
+/// Ademas del heading suavizado expone dos medidas que el pipeline de
+/// posicionamiento necesita para decidir si puede CONFIAR en ese heading:
+///   • [calidadRumbo]        — que tan coherentes son las muestras de la ventana.
+///   • [velocidadAngularGrados] — que tan rapido esta girando el usuario.
+/// Ver el comentario de cada getter.
 class OrientacionService {
 
   static const int _ventanaHeading = 8;
   final Queue<double> _historialHeading = Queue();
 
-  // Deadband mínimo: solo filtra el ruido digital de ±0.1° del ADC.
-  // No tiene sentido un deadband mayor cuando la ventana ya suaviza.
-  static const double _umbralCambioBrujula = 0.5;
-  double? _ultimoHeadingReportado;
-
   double? _headingActual;
+
+  /// Longitud del vector resultante de la media circular, en `[0,1]`.
+  /// 1 = todas las muestras apuntan igual; 0 = dispersion total.
+  double _resultante = 0.0;
+
+  /// Velocidad angular suavizada del heading, en grados/segundo (con signo).
+  double _velocidadAngular = 0.0;
+  DateTime? _tUltimaMuestra;
+
+  /// Constante de tiempo del suavizado de la velocidad angular (s).
+  static const double _tauVelAngularSeg = 0.25;
 
   // ── Actualización de datos ──────────────────────────────────────────────────
 
   /// Actualiza el heading con la brujula.
+  ///
+  /// NOTA (cambio respecto de la version anterior): antes habia un deadband de
+  /// 0.5 grados que descartaba la muestra ENTERA — no entraba a la ventana ni
+  /// actualizaba nada. Con el usuario quieto y apuntando estable eso dejaba la
+  /// ventana congelada con muestras viejas, y cualquier medida derivada de ella
+  /// (calidad, velocidad angular) quedaba mirando el pasado. Ahora la ventana se
+  /// alimenta SIEMPRE; el antitiliteo de la UI ya lo resuelve el chequeo de 1
+  /// grado del timer de refresco en la pantalla de navegacion.
   void actualizarHeadingBrujula(double heading) {
-    final double headingNorm = heading % 360 < 0 ? heading % 360 + 360 : heading % 360;
+    final double headingNorm = ((heading % 360) + 360) % 360;
 
-    final bool esNuevoValor = _ultimoHeadingReportado == null ||
-        _diferenciaAngular(headingNorm, _ultimoHeadingReportado!).abs() >
-            _umbralCambioBrujula;
+    final ahora = DateTime.now();
+    final anterior = _headingActual;
 
-    if (esNuevoValor) {
-      _ultimoHeadingReportado = headingNorm;
+    final suavizado = _actualizarVentanaHeading(headingNorm);
+    if (suavizado == null) return;
 
-      // Suavizar con ventana circular antes de asignar.
-      final suavizado = _actualizarVentanaHeading(headingNorm);
-      if (suavizado != null) _headingActual = suavizado;
+    // Velocidad angular sobre el heading YA suavizado: sobre el crudo seria
+    // puro ruido del magnetometro.
+    if (anterior != null && _tUltimaMuestra != null) {
+      final dt = ahora.difference(_tUltimaMuestra!).inMicroseconds / 1e6;
+      if (dt > 1e-3 && dt < 1.0) {
+        final tasa = _diferenciaAngular(suavizado, anterior) / dt;
+        final a = dt / (_tauVelAngularSeg + dt);
+        _velocidadAngular += a * (tasa - _velocidadAngular);
+      }
     }
+    _tUltimaMuestra = ahora;
+    _headingActual = suavizado;
   }
 
   // ── Helpers internos ────────────────────────────────────────────────────────
 
-  /// Agrega [heading] a la ventana circular y devuelve la media circular si la
-  /// ventana tiene al menos 2 muestras, o null si no.
+  /// Agrega [heading] a la ventana circular, actualiza [_resultante] y devuelve
+  /// la media circular si la ventana tiene al menos 2 muestras, o null si no.
   double? _actualizarVentanaHeading(double heading) {
     _historialHeading.addLast(heading);
     while (_historialHeading.length > _ventanaHeading) {
       _historialHeading.removeFirst();
     }
     if (_historialHeading.length < 2) return null;
-    return mediaCircular(_historialHeading.toList());
+    final r = _mediaYResultante(_historialHeading);
+    _resultante = r.$2;
+    return r.$1;
   }
 
   static double _diferenciaAngular(double a, double b) {
@@ -60,23 +89,63 @@ class OrientacionService {
     return d;
   }
 
-  /// Media circular de una lista de ángulos en grados.
-  static double mediaCircular(List<double> angulos) {
-    if (angulos.isEmpty) return 0;
+  /// Media circular y longitud resultante de una lista de angulos en grados.
+  static (double, double) _mediaYResultante(Iterable<double> angulos) {
     double sumSin = 0, sumCos = 0;
+    int n = 0;
     for (final a in angulos) {
       final rad = a * pi / 180;
       sumSin += sin(rad);
       sumCos += cos(rad);
+      n++;
     }
-    double media = atan2(sumSin / angulos.length, sumCos / angulos.length) * (180 / pi);
+    if (n == 0) return (0.0, 0.0);
+    sumSin /= n;
+    sumCos /= n;
+    double media = atan2(sumSin, sumCos) * (180 / pi);
     if (media < 0) media += 360;
-    return media;
+    return (media, sqrt(sumSin * sumSin + sumCos * sumCos));
+  }
+
+  /// Media circular de una lista de angulos en grados.
+  static double mediaCircular(List<double> angulos) {
+    if (angulos.isEmpty) return 0;
+    return _mediaYResultante(angulos).$1;
   }
 
   // ── Getters ─────────────────────────────────────────────────────────────────
 
   double? get heading => _headingActual;
+
+  /// Velocidad angular del rumbo en grados/segundo (positiva = horario).
+  /// La usa la puerta direccional para suspender la restriccion mientras el
+  /// usuario gira: durante un giro el eje "adelante/lateral" esta rotando y
+  /// cualquier restriccion referida al eje viejo es incorrecta.
+  double get velocidadAngularGrados => _velocidadAngular;
+
+  /// Confiabilidad del rumbo en `[0,1]`, derivada de la dispersion angular de
+  /// la ventana.
+  ///
+  /// POR QUE HACE FALTA: en interiores el campo magnetico esta severamente
+  /// distorsionado por estructura metalica, ascensores, tableros electricos y
+  /// maquinaria. Un heading basura no "restringe" el movimiento: clava la
+  /// posicion sobre un eje EQUIVOCADO, que es bastante peor que no restringir
+  /// nada. Antes de dejar que el rumbo mande sobre el posicionamiento hay que
+  /// poder decir cuanto se le cree.
+  ///
+  /// Se usa la longitud resultante R de la media circular: con muestras
+  /// coherentes (±2–3 grados de ruido) R queda por encima de 0.999; con
+  /// interferencia fuerte (±15 grados o mas) cae por debajo de 0.97. La ventana
+  /// tiene que estar llena para que el numero signifique algo.
+  ///
+  /// Nota: durante un giro genuino R tambien baja, y eso esta bien — es
+  /// exactamente cuando conviene no restringir.
+  double get calidadRumbo {
+    if (_historialHeading.length < _ventanaHeading) return 0.0;
+    const double rMalo = 0.97;
+    const double rBueno = 0.999;
+    return ((_resultante - rMalo) / (rBueno - rMalo)).clamp(0.0, 1.0);
+  }
 
   // ── Helpers estáticos ───────────────────────────────────────────────────────
 
@@ -125,9 +194,6 @@ class OrientacionService {
     // "arriba" apunta a rotacionMapa grados del mundo real (0 = Norte, etc.).
     // Sumando rotacionMapa convertimos el ángulo del mapa a ángulo real-mundo,
     // para que sea comparable con headingUsuario (que viene de la brújula).
-    // Nota: atan2 devuelve valores en [-180, 180], y el operador % de Dart
-    // preserva el signo, por eso usamos la doble-módulo ((x % 360 + 360) % 360)
-    // para garantizar [0, 360) antes de calcular _diferenciaAngular.
     double anguloDestino = atan2(dxM, -dyM) * (180 / pi);
     anguloDestino = ((anguloDestino + rotacionMapa) % 360 + 360) % 360;
 
@@ -189,7 +255,9 @@ class OrientacionService {
   void limpiar() {
     _historialHeading.clear();
     _headingActual = null;
-    _ultimoHeadingReportado = null;
+    _resultante = 0.0;
+    _velocidadAngular = 0.0;
+    _tUltimaMuestra = null;
   }
 }
 
