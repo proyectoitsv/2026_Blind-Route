@@ -1,5 +1,65 @@
 import 'dart:math';
+import 'dart:ui' show Offset;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'calibracion_model.dart';
+import 'grilla_nav.dart';
+
+/// Modelo log-distancia AJUSTADO para un beacon concreto: ordenada al origen
+/// ([txPower], RSSI a 1 m) y pendiente ([n], exponente de perdida).
+///
+/// -- POR QUE HACE FALTA AJUSTAR n Y NO SOLO txPower ------------------------
+/// El modelo es `rssi = txPower - 10*n*log10(d)`. Tiene DOS grados de libertad
+/// y la calibracion anterior estimaba solo uno: fijaba n = 2.7 y despejaba
+/// txPower en cada punto, para despues PROMEDIAR los txPower obtenidos. Si el
+/// n real del sitio no es 2.7, cada punto de calibracion devuelve un txPower
+/// distinto (absorbe el error de pendiente a SU distancia) y el promedio solo
+/// acierta a la distancia media de las calibraciones.
+///
+/// El efecto es una COMPRESION del rango dinamico de las distancias: si el n
+/// modelado es mayor que el real, `d_est = d_real^(n_real/n)`, o sea que las
+/// distancias cortas se INFLAN y las largas se ACHICAN. Medido con n_real =
+/// 2.0 y calibraciones a 2/5/8 m:
+///   d_real 0.3 m -> 0.60 m (+100 %)   ...   d_real 20 m -> 13.4 m (-33 %)
+/// Y eso es exactamente el sintoma doble reportado en campo:
+///   - parado JUNTO a un beacon el rango minimo estimado ronda 1 m, asi que la
+///     multilateracion nunca puede poner al usuario encima del beacon;
+///   - FUERA de la nube de beacons todos los rangos vienen achicados, asi que
+///     la solucion que mejor los explica cae DENTRO de la nube.
+/// No es un bug de la trilateracion: la trilateracion resuelve correctamente
+/// una geometria que le llega deformada.
+///
+/// Con tres o mas calibraciones a distancias distintas se pueden ajustar AMBOS
+/// parametros por minimos cuadrados sobre `rssi` vs `log10(d)`, que es lineal.
+/// Sobre los datos del ejemplo la regresion recupera n = 2.00 y txPower = -60
+/// exactos, y el error de rango se vuelve nulo en todo el recorrido.
+class ModeloRangoBeacon {
+  /// RSSI de referencia a 1 m (dBm).
+  final double txPower;
+
+  /// Exponente de perdida de propagacion.
+  final double n;
+
+  /// `true` si [n] salio de una regresion real; `false` si es el valor por
+  /// defecto porque no habia calibraciones suficientes.
+  final bool ajustado;
+
+  /// Cantidad de puntos de calibracion usados en el ajuste.
+  final int puntos;
+
+  const ModeloRangoBeacon({
+    required this.txPower,
+    required this.n,
+    this.ajustado = false,
+    this.puntos = 0,
+  });
+
+  /// Distancia (m) para un RSSI ya filtrado.
+  double distancia(double rssiFiltrado) {
+    if (rssiFiltrado >= 0) return 0.1;
+    final d = pow(10.0, (txPower - rssiFiltrado) / (10.0 * n)).toDouble();
+    return d.clamp(0.1, 30.0);
+  }
+}
 
 class ProcesadorSenal {
   // ─── VENTANA DE MEDIANAS ──────────────────────────────────────────────────
@@ -133,6 +193,133 @@ class ProcesadorSenal {
   }
 
   double varianzaBeacon(String mac) => _varianzaRssi[mac] ?? 999.0;
+
+  // --- AJUSTE DEL MODELO DE RANGO POR BEACON --------------------------------
+
+  /// Minimo de puntos de calibracion para intentar la regresion. Con 2 puntos
+  /// la recta pasa exacta por ambos y cualquier error de medicion se convierte
+  /// integro en error de pendiente; con 3 ya hay algo de promediado.
+  static const int _minPuntosAjuste = 3;
+
+  /// Expuesto para que la UI/los logs puedan decir cuantas calibraciones faltan.
+  static int get minPuntosAjuste => _minPuntosAjuste;
+
+  /// Separacion minima entre el punto mas cercano y el mas lejano, en decadas
+  /// de distancia (0.3 ~ un factor 2). Si todas las calibraciones se tomaron a
+  /// distancias parecidas la pendiente no esta observada, y ajustarla seria
+  /// amplificar ruido: se cae al modelo por defecto.
+  static const double _minRangoLog = 0.3;
+
+  /// Limites fisicos de n. Fuera de esto la regresion vio mas ruido que senal
+  /// (interferencia, cuerpo del operador, beacon mal posicionado en el plano).
+  static const double _nMin = 1.5;
+  static const double _nMax = 4.5;
+
+  /// Distancia minima de un punto de calibracion para entrar en la regresion.
+  /// Por debajo de ~0.5 m el modelo log deja de valer (campo cercano) y el RSSI
+  /// se satura: esos puntos sesgan la pendiente.
+  static const double _dMinAjuste = 0.5;
+
+  /// Ajusta ([txPower], [n]) por beacon con minimos cuadrados sobre las
+  /// calibraciones guardadas.
+  ///
+  /// Cada [CalibracionRegistro] aporta un punto por beacon: la celda donde
+  /// estaba parado el operador da la distancia REAL al beacon, y `lecturasBle`
+  /// el RSSI medido ahi. Eso es todo lo que hace falta para la regresion; los
+  /// datos ya se venian guardando, solo no se estaban aprovechando.
+  ///
+  /// Si un beacon no tiene datos suficientes se devuelve el modelo por defecto
+  /// (n fijo y el txPower promediado de [txPowerCalibrado]), o sea el
+  /// comportamiento anterior: el ajuste nunca empeora el punto de partida.
+  static Map<String, ModeloRangoBeacon> ajustarModelosRango({
+    required List<CalibracionRegistro> calibraciones,
+    required Map<String, Offset> posicionesBeacons,
+    required GrillaNav grilla,
+  }) {
+    final modelos = <String, ModeloRangoBeacon>{};
+
+    // Puntos (log10 d, rssi) por beacon.
+    final puntos = <String, List<({double x, double y})>>{};
+    for (final cal in calibraciones) {
+      final cx = grilla.centroX(cal.celdaIx);
+      final cy = grilla.centroY(cal.celdaIy);
+      for (final lectura in cal.lecturasBle) {
+        final mac = lectura['mac'] as String?;
+        final rssi = (lectura['rssi'] as num?)?.toDouble();
+        if (mac == null || rssi == null || rssi >= 0 || rssi <= -100) continue;
+        final pos = posicionesBeacons[mac];
+        if (pos == null) continue;
+        final dxm = (pos.dx - cx) * grilla.metrosX;
+        final dym = (pos.dy - cy) * grilla.metrosY;
+        final d = sqrt(dxm * dxm + dym * dym);
+        if (!d.isFinite || d < _dMinAjuste) continue;
+        puntos.putIfAbsent(mac, () => []).add((x: log(d) / ln10, y: rssi));
+      }
+    }
+
+    ModeloRangoBeacon porDefecto(String mac, int n) => ModeloRangoBeacon(
+          txPower: txPowerCalibrado(mac, calibraciones),
+          n: _pathLossExponent,
+          puntos: n,
+        );
+
+    for (final mac in posicionesBeacons.keys) {
+      final pts = puntos[mac] ?? const <({double x, double y})>[];
+
+      if (pts.length < _minPuntosAjuste) {
+        modelos[mac] = porDefecto(mac, pts.length);
+        continue;
+      }
+
+      double minX = pts.first.x, maxX = pts.first.x;
+      double sx = 0, sy = 0;
+      for (final p in pts) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        sx += p.x;
+        sy += p.y;
+      }
+      if (maxX - minX < _minRangoLog) {
+        modelos[mac] = porDefecto(mac, pts.length);
+        continue;
+      }
+
+      final mediaX = sx / pts.length, mediaY = sy / pts.length;
+      double sxy = 0, sxx = 0;
+      for (final p in pts) {
+        final dx = p.x - mediaX;
+        sxy += dx * (p.y - mediaY);
+        sxx += dx * dx;
+      }
+      if (sxx < 1e-9) {
+        modelos[mac] = porDefecto(mac, pts.length);
+        continue;
+      }
+
+      // rssi = tx + pendiente*log10(d),  con pendiente = -10*n.
+      final pendiente = sxy / sxx;
+      final nAjustado = -pendiente / 10.0;
+      if (!nAjustado.isFinite || nAjustado < _nMin || nAjustado > _nMax) {
+        debugPrint('[Rango] $mac: n ajustado fuera de rango '
+            '(${nAjustado.toStringAsFixed(2)}); se usa el modelo por defecto.');
+        modelos[mac] = porDefecto(mac, pts.length);
+        continue;
+      }
+
+      final txAjustado = mediaY - pendiente * mediaX;
+      modelos[mac] = ModeloRangoBeacon(
+        txPower: txAjustado,
+        n: nAjustado,
+        ajustado: true,
+        puntos: pts.length,
+      );
+      debugPrint('[Rango] $mac: n=${nAjustado.toStringAsFixed(2)} '
+          'tx=${txAjustado.toStringAsFixed(1)} dBm '
+          '(${pts.length} calibraciones)');
+    }
+
+    return modelos;
+  }
 
   // ─── UTILIDADES ───────────────────────────────────────────────────────────
 

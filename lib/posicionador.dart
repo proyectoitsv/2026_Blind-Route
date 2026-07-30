@@ -134,17 +134,21 @@ class Posicionador {
     final centroide =
         sw > 0 ? Offset(sx / sw, sy / sw) : const Offset(0.5, 0.5);
 
-    // Con menos de 3 rangos la multilateración es ambigua. En vez de saltar al
-    // centroide (que se mueve bruscamente cada vez que cambia el set visible),
-    // se avanza suavemente desde la posición previa hacia el centroide.
-    if (obs.length < 3) {
-      if (posPrevia == null) return centroide;
-      final a = (0.12 + 0.4 * fMov).clamp(0.0, 1.0);
-      return Offset(
-        posPrevia.dx + (centroide.dx - posPrevia.dx) * a,
-        posPrevia.dy + (centroide.dy - posPrevia.dy) * a,
-      );
-    }
+    // ── POR QUE YA NO SE INTERPOLA HACIA EL CENTROIDE ───────────────────────
+    // Con menos de 3 rangos la multilateracion es ambigua POR SI SOLA, pero el
+    // ancla temporal la regulariza: dos circunferencias mas un prior cuadratico
+    // alrededor de la posicion previa es un problema bien puesto (2 ecuaciones
+    // + 2 de regularizacion para 2 incognitas). Antes, en cambio, se
+    // interpolaba hacia el CENTROIDE, y un centroide es una combinacion CONVEXA
+    // de las posiciones de los beacons: el resultado no puede salir de la
+    // envolvente de la nube ni acercarse a un beacon mas de lo que permitan los
+    // pesos de los demas. Ese camino se tomaba justo en el borde de la
+    // cobertura —donde los beacons lejanos caen por debajo del umbral de RSSI y
+    // quedan 2 visibles—, o sea EXACTAMENTE cuando el usuario sale de la nube,
+    // que es uno de los dos sintomas reportados. Ahora el solver corre siempre
+    // que haya una posicion previa que lo ancle, y el centroide queda solo como
+    // arranque del primer frame.
+    if (obs.length < 3 && posPrevia == null) return centroide;
 
     final mx = (metrosX.isFinite && metrosX > 0) ? metrosX : 1.0;
     final my = (metrosY.isFinite && metrosY > 0) ? metrosY : 1.0;
@@ -306,29 +310,46 @@ class Posicionador {
 /// tiene sentido hablar de "dirección de marcha" de alguien que no marcha.
 class PuertaRumbo {
   /// Fracción del desplazamiento HACIA ATRÁS (contra el rumbo) que se deja
-  /// pasar cuando la anisotropía está al máximo.
-  static const double _facAtras = 0.35;
+  /// pasar cuando la anisotropía está al máximo. RECALIBRADO 0.35 → 0.15: al
+  /// ser una ganancia POR CICLO sobre un lazo recursivo, 0.35 dejaba pasar un
+  /// sesgo sostenido hacia atrás en ~1 s. Con 0.15 tarda ~4 s; caminar de
+  /// espaldas de verdad sigue pasando, solo con más latencia.
+  static const double _facAtras = 0.15;
 
   /// Fracción del desplazamiento LATERAL que se deja pasar con la puerta
-  /// cerrada y la anisotropía al máximo.
-  static const double _gLateralCerrada = 0.10;
+  /// cerrada y la anisotropía al máximo. RECALIBRADO 0.10 → 0.03: con 0.10 un
+  /// sesgo lateral FIJO (multipath/geometría de beacons) igual convergía en
+  /// ~3-5 s aunque la puerta nunca abriera. En esta app el usuario camina
+  /// mirando hacia donde va, así que "lateral en el marco del rumbo" es casi
+  /// siempre sesgo; se lo frena fuerte y el eje se corrige solo al girar
+  /// (el marco rota con la brújula).
+  static const double _gLateralCerrada = 0.03;
 
-  /// Constante de tiempo del acumulador de evidencia lateral (s). Larga a
-  /// propósito: es lo que promedia el ruido de signo alterno hasta cancelarlo.
-  /// Con 2 s a ~5.5 Hz promedia ~11 muestras → divide el ruido por ~3.3.
-  static const double _tauEvidenciaSeg = 2.0;
+  /// Constante de tiempo del acumulador de evidencia lateral (s).
+  /// RECALIBRADO 2.0 → 3.5: la ventana de mediana del RSSI correlaciona el
+  /// ruido de posición durante ~1 s, así que con τ=2 s una racha correlacionada
+  /// alcanzaba para inflar la EMA hasta 0.6-0.8 m/s (visto en campo caminando
+  /// en línea recta). Con 3.5 s la racha se diluye antes de llegar al umbral.
+  static const double _tauEvidenciaSeg = 3.5;
 
-  /// Deriva lateral sostenida (m/s) necesaria para ABRIR la puerta. Una persona
-  /// que se corre de verdad hacia el costado va a ~0.8–1.2 m/s; el ruido, ya
-  /// promediado con signo, se queda bien por debajo de 0.5 m/s.
-  static const double _umbralAbrirMs = 0.55;
+  /// Deriva lateral sostenida (m/s) necesaria para ABRIR la puerta.
+  /// RECALIBRADO 0.55 → 0.90: en campo, un sesgo lateral fijo de multipath
+  /// producía evidencia de 0.6-0.8 m/s caminando EN LÍNEA RECTA (con el signo
+  /// invirtiéndose en cada media vuelta — la firma de un sesgo fijo al mapa,
+  /// no de movimiento real). El umbral tiene que quedar por encima de ese
+  /// piso de sesgo del venue; un desplazamiento lateral humano real
+  /// (~1-1.2 m/s) sigue superándolo.
+  static const double _umbralAbrirMs = 0.90;
 
   /// Umbral de CIERRE, más bajo que el de apertura (histéresis anti-titileo).
-  static const double _umbralCerrarMs = 0.30;
+  static const double _umbralCerrarMs = 0.45;
 
   /// Ciclos consecutivos con el desplazamiento lateral en el MISMO sentido que
-  /// la evidencia acumulada. A ~5.5 Hz, 5 ciclos ≈ 0.9 s.
-  static const int _minCiclosConsistentes = 5;
+  /// la evidencia acumulada. RECALIBRADO 5 → 12 (~2.2 s a 5.5 Hz): la mediana
+  /// del RSSI correlaciona el ruido ~1 s, así que 5 ciclos (0.9 s) los cumplía
+  /// una simple racha de ruido correlacionado. La consistencia exigida tiene
+  /// que ser claramente MÁS LARGA que esa correlación para significar algo.
+  static const int _minCiclosConsistentes = 12;
 
   /// Desplazamiento lateral (m) por debajo del cual el ciclo no cuenta como
   /// evidencia: evita que el ruido chiquito sume "consistencia" gratis.
@@ -416,8 +437,16 @@ class PuertaRumbo {
     }
 
     final umbral = _abierta ? _umbralCerrarMs : _umbralAbrirMs;
+    // La exigencia de ciclos consecutivos aplica SOLO para ABRIR. Antes se
+    // exigía también para mantener abierta, y como un único ciclo con
+    // |l| < _pisoCicloMetros (o con el signo invertido por ruido) resetea el
+    // contador a 0, la puerta se cerraba de golpe en plena marcha lateral y
+    // tardaba otros ~0.9 s en reabrir: exactamente el titileo que la
+    // histéresis de umbrales (0.55/0.30) debía evitar. El cierre lo gobierna
+    // la EMA de evidencia (τ = 2 s), que decae sola al terminar el
+    // desplazamiento lateral real.
     final abiertaAhora = _evidenciaLateral.abs() > umbral &&
-        _ciclosConsistentes >= _minCiclosConsistentes;
+        (_abierta || _ciclosConsistentes >= _minCiclosConsistentes);
     if (abiertaAhora != _abierta) {
       _abierta = abiertaAhora;
       debugPrint('[Rumbo] Puerta lateral ${_abierta ? "ABIERTA" : "cerrada"} '

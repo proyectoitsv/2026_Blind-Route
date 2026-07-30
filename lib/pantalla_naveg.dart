@@ -63,6 +63,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   List<ZonaNoTransitable> _zonas = [];
   List<LugarInteres> _lugares = [];
   List<CalibracionRegistro> _calibraciones = [];
+
+  /// Modelo de rango (txPower y n) AJUSTADO por beacon a partir de las
+  /// calibraciones guardadas. Ver [ProcesadorSenal.ajustarModelosRango]: es lo
+  /// que corrige la compresion de distancias que impedia tanto pararse encima
+  /// de un beacon como salir de la nube. Se calcula una sola vez al iniciar.
+  Map<String, ModeloRangoBeacon> _modelosRango = {};
  
   // ── Posición ──────────────────────────────────────────────────────────────
   //
@@ -94,6 +100,17 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   /// sobre un eje equivocado, que es peor que no restringir nada.
   static const double _calidadRumboMinima = 0.35;
 
+  /// Umbral de APAGADO del rumbo, mas bajo que el de encendido (histeresis).
+  /// Sin esto, con la calidad oscilando alrededor de _calidadRumboMinima el
+  /// rumbo entraba y salia ciclo a ciclo; y cada salida ademas reseteaba la
+  /// puerta direccional (evidencia y apertura a cero), asi que la restriccion
+  /// quedaba efectivamente apagada aunque "en promedio" hubiera calidad.
+  static const double _calidadRumboApagar = 0.15;
+  bool _rumboActivo = false;
+
+  /// Throttle del log de diagnostico del rumbo (~cada 2 s).
+  DateTime? _ultimoLogRumbo;
+
   /// Timestamp de la muestra anterior: el One Euro necesita el Δt REAL de cada
   /// muestra, porque los callbacks BLE no llegan a ritmo constante.
   DateTime? _ultimaMuestraPos;
@@ -119,7 +136,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   /// Fraccion del tope longitudinal que se le permite al eje PERPENDICULAR al
   /// rumbo cuando el usuario camina. Es la ultima linea de defensa contra la
   /// deriva lateral, por debajo de la puerta direccional.
-  static const double _facTopePerp = 0.35;
+  /// RECALIBRADO 0.35 → 0.25: con la puerta bien cerrada este tope es la
+  /// cota dura de cuán rápido puede deslizarse el ícono de costado
+  /// (0.25 × 3.0 m/s = 0.75 m/s caminando).
+  static const double _facTopePerp = 0.25;
 
   /// Zona muerta (en metros) con el usuario detenido: si la posición filtrada
   /// se movería menos que esto, se deja clavada. Elimina el jitter residual
@@ -215,6 +235,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   // real de actualización de posición. El setState de UI ya tiene su propio
   // throttle de 250 ms por encima de este.
   DateTime? _ultimoPosicionamiento;
+
+  /// Velocidad de decaimiento del RSSI de un beacon que dejo de aparecer, en
+  /// dBm por segundo. A 8 dB/s, un beacon a -70 dBm tarda ~2.5 s en cruzar el
+  /// umbral de -90: mas que el removeIfGone de 4 s no tiene sentido, y mucho
+  /// menos lo deja caer por un hueco momentaneo de un par de lotes.
+  static const double _decaimientoDbPorSeg = 8.0;
+  DateTime? _ultimoDecaimiento;
   static const Duration _intervaloPosicionamiento = Duration(milliseconds: 180);
 
   // Cooldown de reintento de ruta: cuando el pathfinder devuelve null (origen o
@@ -307,6 +334,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         _rotacionMapaEfectiva = rotacionDb;
       });
  
+      // Ajuste del modelo de rango por beacon. Va DESPUES del setState que
+      // carga beacons y calibraciones, y una sola vez: es una regresion sobre
+      // datos que no cambian durante la navegacion.
+      _modelosRango = ProcesadorSenal.ajustarModelosRango(
+        calibraciones: _calibraciones,
+        posicionesBeacons: {
+          for (final b in _beaconsEnElMapa.values) b.mac: b.posicion,
+        },
+        grilla: _grilla,
+      );
+      final ajustados = _modelosRango.values.where((m) => m.ajustado).length;
+      debugPrint('[Rango] Modelos ajustados por regresion: $ajustados/'
+          '${_modelosRango.length}. Los no ajustados usan n por defecto '
+          '(hacen falta ${ProcesadorSenal.minPuntosAjuste}+ calibraciones a '
+          'distancias distintas por beacon).');
+
       _resolvedor.inicializar(_zonas, grilla: _grilla);
       _resolvedorListo = true;
       // Acelerómetro: si el dispositivo no lo expone, el detector devuelve un
@@ -581,10 +624,29 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     // Decaimiento suave: si un beacon no aparece en este ciclo, su RSSI baja
     // gradualmente en lugar de caer a -100 de golpe. removeIfGone (4s) se
     // encarga de limpiar los que realmente desaparecen.
+    //
+    // FIX: antes el decaimiento era de 2 dBm por CALLBACK. El ritmo de
+    // callbacks de flutter_blue_plus con continuousUpdates es variable (5-50
+    // por segundo segun el trafico BLE del ambiente), asi que la velocidad de
+    // caida no era una propiedad del beacon sino del ruido de fondo del lugar:
+    // en un ambiente concurrido un beacon que se perdia dos o tres lotes
+    // seguidos (normal por sombra del cuerpo) caia decenas de dBm y quedaba
+    // por debajo de _umbralRSSI. Al descartarse, el set visible bajaba a 2
+    // beacons y el posicionamiento perdia geometria justo cuando mas la
+    // necesitaba. Ahora el decaimiento es en dBm por SEGUNDO real.
+    final ahoraSenales = DateTime.now();
+    final dtDecaimiento = _ultimoDecaimiento == null
+        ? 0.0
+        : ahoraSenales.difference(_ultimoDecaimiento!).inMicroseconds / 1e6;
+    _ultimoDecaimiento = ahoraSenales;
     final macsEnEsteCiclo = resultados.map((r) => r.device.remoteId.str).toSet();
-    for (var beacon in _beaconsEnElMapa.values) {
-      if (!macsEnEsteCiclo.contains(beacon.mac)) {
-        beacon.rssiFiltrado = (beacon.rssiFiltrado - 2.0).clamp(-100.0, 0.0);
+    if (dtDecaimiento > 0 && dtDecaimiento < 5.0) {
+      final caida = _decaimientoDbPorSeg * dtDecaimiento;
+      for (var beacon in _beaconsEnElMapa.values) {
+        if (!macsEnEsteCiclo.contains(beacon.mac)) {
+          beacon.rssiFiltrado =
+              (beacon.rssiFiltrado - caida).clamp(-100.0, 0.0);
+        }
       }
     }
  
@@ -600,9 +662,18 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       }
     }
  
-    if (_contadorLecturas % 10 == 0 && mounted) {
+    // Solo mientras todavía NO hay posición: una vez que el pipeline publica
+    // "Ubicacion estable...", este setState (a ~3-5 Hz según el ritmo de
+    // callbacks BLE) peleaba con aquel texto, alternando los dos mensajes y
+    // forzando rebuilds completos de la pantalla por fuera del throttle de UI
+    // de 250 ms. Además el _estadoScan está dentro de un Semantics liveRegion:
+    // el titileo de texto se traducía en anuncios repetidos de TalkBack.
+    if (_contadorLecturas % 10 == 0 && mounted && _posicionFinal == null) {
       final activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > _umbralRSSI).length;
-      setState(() => _estadoScan = 'Beacons detectados: $activos / ${_beaconsEnElMapa.length}');
+      final texto = 'Beacons detectados: $activos / ${_beaconsEnElMapa.length}';
+      if (texto != _estadoScan) {
+        setState(() => _estadoScan = texto);
+      }
     }
 
     // Throttle: no ejecutar el pipeline de posicionamiento más de una vez
@@ -657,8 +728,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       // y las mediciones. Se sigue usando el txPower CALIBRADO por beacon.
       final observaciones = <ObservacionRango>[];
       for (var b in activos) {
-        final txPower = ProcesadorSenal.txPowerCalibrado(b.mac, _calibraciones);
-        final d = ProcesadorSenal.rssiADistanciaConTx(b.rssiFiltrado, txPower);
+        // Modelo de rango AJUSTADO (txPower + n por beacon). Si un beacon no
+        // tiene calibraciones suficientes, ajustarModelosRango ya devolvio el
+        // modelo por defecto, asi que este camino es siempre valido.
+        final modelo = _modelosRango[b.mac];
+        final d = modelo != null
+            ? modelo.distancia(b.rssiFiltrado)
+            : ProcesadorSenal.rssiADistanciaConTx(
+                b.rssiFiltrado,
+                ProcesadorSenal.txPowerCalibrado(b.mac, _calibraciones),
+              );
         // Beacon más cercano = rango más confiable: el error en metros del
         // modelo log crece con la distancia, así que pesa menos lo lejano.
         final confianza = 1.0 / (d + 1.0);
@@ -702,18 +781,38 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       //     significa nada, así que se prefiere el ancla isotrópica.
       //
       // El rumbo se lleva al marco del PLANO (se descuenta la rotación del
-      // mapa, igual que en _buildOrientacion) y se expresa como versor en
-      // coordenadas normalizadas de pantalla (x→derecha, y→abajo):
-      //   rumbo 0° = arriba en pantalla = (0, -1).
+      // mapa, igual que en _buildOrientacion) y se expresa como DIRECCIÓN en
+      // coordenadas normalizadas de pantalla (x→derecha, y→abajo), que es el
+      // contrato de Posicionador.estimar / PuertaRumbo.aplicar.
+      //
+      // FIX (bug vectorial): la dirección física del rumbo, en METROS, es
+      // (sin hp, -cos hp). Antes se pasaba ese versor físico tal cual, pero
+      // los tres consumidores (prior anisotrópico, puerta direccional y tope
+      // de paso) esperan una dirección en coordenadas NORMALIZADAS y la
+      // multiplican por (metrosX, metrosY) para volver al marco métrico. Con
+      // un plano rectangular (metrosX ≠ metrosY) esa doble conversión rotaba
+      // el eje privilegiado: en un plano de 100×25 m, mirar a 45° hacía que
+      // todo el filtro trabajara sobre un eje de 76° (31° de error). El eje
+      // "adelante" quedaba mal, el movimiento real se frenaba como si fuera
+      // lateral y el ruido lateral pasaba como si fuera marcha. Para expresar
+      // la dirección física en normalizado hay que dividir cada componente
+      // por la escala de su eje (la magnitud no importa: los consumidores
+      // renormalizan después de volver a metros).
+      final calidadRumbo = _orientacion.calidadRumbo;
+      _rumboActivo = _rumboActivo
+          ? calidadRumbo >= _calidadRumboApagar
+          : calidadRumbo >= _calidadRumboMinima;
+
       Offset? rumboPlano;
-      if (_compassDisponible &&
-          _movimiento.disponible &&
-          _orientacion.calidadRumbo >= _calidadRumboMinima) {
+      if (_compassDisponible && _movimiento.disponible && _rumboActivo) {
         final h = _orientacion.heading;
         if (h != null) {
           final hp = ((h - _rotacionMapaEfectiva) % 360 + 360) % 360;
           final rad = hp * pi / 180.0;
-          rumboPlano = Offset(sin(rad), -cos(rad));
+          rumboPlano = Offset(
+            sin(rad) / _grilla.metrosX,
+            -cos(rad) / _grilla.metrosY,
+          );
         }
       }
 
@@ -753,6 +852,26 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         // Sin rumbo confiable la puerta no debe conservar evidencia vieja: al
         // volver a haber brújula, esa evidencia pertenecería a otro eje.
         _puertaRumbo.resetear();
+      }
+
+      // ── DIAGNOSTICO DEL RUMBO (cada ~2 s) ────────────────────────────────
+      // La restriccion direccional tiene varios interruptores que la apagan
+      // POR COMPLETO (calidad de brujula, acelerometro, giro rapido) y una
+      // escala global (factorMovimiento) que puede dejarla en identidad. Si
+      // "los parametros no hacen nada", esta linea dice cual interruptor esta
+      // cortando. Leer con `adb logcat | grep Rumbo` o desde flutter run.
+      final ahoraLog = DateTime.now();
+      if (_ultimoLogRumbo == null ||
+          ahoraLog.difference(_ultimoLogRumbo!).inMilliseconds > 2000) {
+        _ultimoLogRumbo = ahoraLog;
+        debugPrint('[Rumbo] activo=${rumboPlano != null} '
+            'calidad=${calidadRumbo.toStringAsFixed(2)} '
+            '(R=${_orientacion.resultante.toStringAsFixed(3)}) '
+            'compass=$_compassDisponible acel=${_movimiento.disponible} '
+            'mov=${_factorMovimiento.toStringAsFixed(2)} '
+            'velAng=${_orientacion.velocidadAngularGrados.toStringAsFixed(0)}°/s '
+            'puerta(apertura=${_puertaRumbo.apertura.toStringAsFixed(2)}, '
+            'evid=${_puertaRumbo.evidenciaLateralMs.toStringAsFixed(2)} m/s)');
       }
 
       // ── FILTRO ONE EURO GOBERNADO POR EL ACELERÓMETRO ────────────────────

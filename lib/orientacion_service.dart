@@ -117,6 +117,10 @@ class OrientacionService {
 
   double? get heading => _headingActual;
 
+  /// Longitud resultante R de la media circular, en `[0,1]`. Diagnostico:
+  /// permite ver en el log POR QUE calidadRumbo da lo que da.
+  double get resultante => _resultante;
+
   /// Velocidad angular del rumbo en grados/segundo (positiva = horario).
   /// La usa la puerta direccional para suspender la restriccion mientras el
   /// usuario gira: durante un giro el eje "adelante/lateral" esta rotando y
@@ -133,17 +137,25 @@ class OrientacionService {
   /// nada. Antes de dejar que el rumbo mande sobre el posicionamiento hay que
   /// poder decir cuanto se le cree.
   ///
-  /// Se usa la longitud resultante R de la media circular: con muestras
-  /// coherentes (±2–3 grados de ruido) R queda por encima de 0.999; con
-  /// interferencia fuerte (±15 grados o mas) cae por debajo de 0.97. La ventana
-  /// tiene que estar llena para que el numero signifique algo.
+  /// Se usa la longitud resultante R de la media circular (R ≈ exp(−σ²/2)).
+  /// La ventana tiene que estar llena para que el numero signifique algo.
+  ///
+  /// RECALIBRADO: los umbrales anteriores (rMalo=0.97, rBueno=0.999) estaban
+  /// pensados para un telefono apoyado (±2–3° de ruido). Con el telefono EN LA
+  /// MANO y caminando, el heading oscila ±10–20° por el braceo y los pasos:
+  ///   ±10° → R=0.985 (calidad vieja 0.51)   ±15° → R=0.966 (calidad vieja 0!)
+  /// Con calidad 0 el rumbo quedaba por debajo de _calidadRumboMinima y TODA
+  /// la restriccion direccional se apagaba justo mientras el usuario caminaba
+  /// — que es cuando mas se la necesita. Los umbrales nuevos toleran el ruido
+  /// de mano (±10° → 1.0, ±15° → 0.78, ±20° → 0.48) y siguen rechazando la
+  /// dispersion realmente mala (±25° o mas → ~0).
   ///
   /// Nota: durante un giro genuino R tambien baja, y eso esta bien — es
   /// exactamente cuando conviene no restringir.
   double get calidadRumbo {
     if (_historialHeading.length < _ventanaHeading) return 0.0;
-    const double rMalo = 0.97;
-    const double rBueno = 0.999;
+    const double rMalo = 0.90;   // antes 0.97
+    const double rBueno = 0.985; // antes 0.999
     return ((_resultante - rMalo) / (rBueno - rMalo)).clamp(0.0, 1.0);
   }
 
