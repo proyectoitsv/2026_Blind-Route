@@ -25,7 +25,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 8, // v8: rotacion_mapa en pisos (calibración de brújula por piso)
+      version: 9, // v9: es_fingerprint en calibraciones (puntos clave)
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -109,6 +109,7 @@ class DatabaseHelper {
       tx_power_ajustado TEXT NOT NULL DEFAULT '{}',
       timestamp TEXT NOT NULL,
       etiqueta TEXT,
+      es_fingerprint INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
     )
   ''';
@@ -165,6 +166,23 @@ class DatabaseHelper {
       await db.execute(
         'ALTER TABLE pisos ADD COLUMN rotacion_mapa REAL NOT NULL DEFAULT 0',
       );
+    }
+    if (oldVersion < 9) {
+      // v9: marca de PUNTO CLAVE (fingerprint) en las calibraciones.
+      //
+      // Ojo con el orden respecto de la v7: una instalacion que venga de una
+      // version < 7 ya creo la tabla con el DDL de _sqlCrearCalibraciones, que
+      // arriba YA incluye es_fingerprint. En ese caso este ALTER fallaria por
+      // columna duplicada, asi que se consulta el esquema antes de tocar nada.
+      final cols = await db.rawQuery('PRAGMA table_info(calibraciones)');
+      final tieneColumna =
+          cols.any((c) => (c['name'] as String?) == 'es_fingerprint');
+      if (!tieneColumna) {
+        await db.execute(
+          'ALTER TABLE calibraciones ADD COLUMN es_fingerprint '
+          'INTEGER NOT NULL DEFAULT 0',
+        );
+      }
     }
   }
 
@@ -347,6 +365,26 @@ class DatabaseHelper {
   Future<void> guardarCalibracion(CalibracionRegistro c) async {
     final db = await instance.database;
     await db.insert('calibraciones', c.toJson());
+  }
+
+  /// Borra las calibraciones duplicadas de un piso y devuelve cuantas elimino.
+  ///
+  /// Se consideran duplicadas las filas con la MISMA celda y las MISMAS
+  /// lecturas BLE (el JSON identico), que es la firma de la reentrada del
+  /// callback de scan: varias inserciones del mismo `_acumCal`. De cada grupo
+  /// se conserva la de menor id. Dos calibraciones reales de la misma celda
+  /// tomadas en momentos distintos jamas dan el JSON identico al dBm.
+  Future<int> eliminarCalibracionesDuplicadas(int pisoId) async {
+    final db = await instance.database;
+    return await db.rawDelete('''
+      DELETE FROM calibraciones
+      WHERE piso_id = ?
+        AND id NOT IN (
+          SELECT MIN(id) FROM calibraciones
+          WHERE piso_id = ?
+          GROUP BY celda_ix, celda_iy, lecturas_ble, es_fingerprint
+        )
+    ''', [pisoId, pisoId]);
   }
 
   Future<List<CalibracionRegistro>> obtenerCalibracionesPorPiso(int pisoId) async {

@@ -69,6 +69,59 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   /// que corrige la compresion de distancias que impedia tanto pararse encima
   /// de un beacon como salir de la nube. Se calcula una sola vez al iniciar.
   Map<String, ModeloRangoBeacon> _modelosRango = {};
+
+  // ── FINGERPRINTING DE PUNTOS CLAVE ────────────────────────────────────────
+  //
+  // Los puntos clave (esquinas donde hay que doblar, puertas) se miden en el
+  // modo calibracion durante mucho mas tiempo y guardan el VECTOR de RSSI de
+  // esa celda. Aca se compara ese patron contra las lecturas vivas: cuando
+  // coincide, se corrige la posicion hacia la celda del punto clave.
+  //
+  // Por que ayuda donde la multilateracion no puede: la multilateracion
+  // convierte cada RSSI en una distancia con el modelo log y despues resuelve
+  // una geometria, asi que hereda los errores del modelo — y muy cerca de un
+  // beacon el modelo es justo donde peor anda, porque el RSSI se satura. El
+  // fingerprint no estima ninguna distancia: reconoce un patron.
+  //
+  // La correccion se aplica ANTES del One Euro y del tope de paso, no despues:
+  // asi pasa por las mismas defensas anti-salto que todo lo demas y un match
+  // espurio no puede teletransportar el icono.
+
+  /// Ciclos seguidos que el mismo punto clave tiene que ganar antes de que se
+  /// empiece a corregir. A ~5.5 Hz, 3 ciclos ~ 0.55 s. Evita que un unico
+  /// frame ruidoso mueva la posicion.
+  static const int _fpCiclosParaAplicar = 3;
+
+  /// Ganancia maxima por ciclo de la correccion hacia el punto clave, con
+  /// confianza 1. Con 0.35 la posicion cubre ~90 % de la distancia en 6 ciclos
+  /// (~1.1 s): rapido para el usuario, lento para no ser un salto.
+  static const double _fpGananciaMax = 0.35;
+
+  /// Radio maximo (m) entre la celda del punto clave y la posicion que ya
+  /// calculo la multilateracion, para que la correccion se aplique.
+  ///
+  /// ESTE ES EL FILTRO QUE DE VERDAD ACOTA EL ERROR. Medido, con el fading
+  /// tipico de 2.4 GHz (5 dB por beacon) la distancia en dB apenas separa la
+  /// celda correcta de una a 6 m: ningun umbral absoluto en dB puede resolver
+  /// metros. Entonces el fingerprint NO se usa para ubicar desde cero, sino
+  /// para refinar el ultimo tramo de una posicion que la multilateracion ya
+  /// dejo cerca. Con 4 m, el peor error que puede introducir un match
+  /// equivocado esta acotado por el propio radio.
+  static const double _fpRadioMaxMetros = 4.0;
+
+  /// Constante de suavizado (ciclos) de la distancia en dB del candidato.
+  /// Promediar la distancia y despues mapear a confianza es mas estable que
+  /// promediar confianzas ya saturadas.
+  static const double _fpTauCiclos = 6.0;
+
+  ({int ix, int iy})? _fpCeldaCandidata;
+  int _fpCiclosConsistentes = 0;
+
+  /// Distancia en dB del candidato actual, suavizada en el tiempo.
+  double? _fpRmsSuavizado;
+
+  /// Etiqueta del ultimo punto clave anunciado por voz, para no repetirlo.
+  String? _fpUltimoAnunciado;
  
   // ── Posición ──────────────────────────────────────────────────────────────
   //
@@ -852,6 +905,90 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         // Sin rumbo confiable la puerta no debe conservar evidencia vieja: al
         // volver a haber brújula, esa evidencia pertenecería a otro eje.
         _puertaRumbo.resetear();
+      }
+
+      // ── CORRECCION POR PUNTO CLAVE (FINGERPRINT) ─────────────────────────
+      // Se compara el vector de RSSI vivo contra los puntos clave guardados.
+      // Si uno gana con confianza y sin ambiguedad durante varios ciclos
+      // seguidos, la posicion se corrige hacia su celda.
+      final coincidencia = ProcesadorSenal.compararFingerprints(
+        lecturasVivas: {
+          for (final b in _beaconsEnElMapa.values)
+            if (b.rssiFiltrado > _umbralRSSI) b.mac: b.rssiFiltrado,
+        },
+        calibraciones: _calibraciones,
+      );
+
+      // Radio espacial: el punto clave tiene que estar cerca de lo que ya dice
+      // la multilateracion. Sin esto, y con umbrales en dB tolerantes al
+      // fading, un match flojo podria tironear la posicion desde lejos.
+      Offset? objetivoFp;
+      if (coincidencia != null) {
+        final centro = Offset(
+          _grilla.centroX(coincidencia.celdaIx),
+          _grilla.centroY(coincidencia.celdaIy),
+        );
+        final dxm = (centro.dx - nuevaPosicionRaw.dx) * _grilla.metrosX;
+        final dym = (centro.dy - nuevaPosicionRaw.dy) * _grilla.metrosY;
+        if (sqrt(dxm * dxm + dym * dym) <= _fpRadioMaxMetros) {
+          objetivoFp = centro;
+        }
+      }
+
+      if (coincidencia == null || objetivoFp == null) {
+        _fpCeldaCandidata = null;
+        _fpCiclosConsistentes = 0;
+        _fpRmsSuavizado = null;
+        _fpUltimoAnunciado = null;
+      } else {
+        final celda = (ix: coincidencia.celdaIx, iy: coincidencia.celdaIy);
+        if (_fpCeldaCandidata != null &&
+            _fpCeldaCandidata!.ix == celda.ix &&
+            _fpCeldaCandidata!.iy == celda.iy) {
+          _fpCiclosConsistentes++;
+          // EMA de la distancia en dB: promedia el fading ciclo a ciclo.
+          final a = 1.0 / _fpTauCiclos;
+          _fpRmsSuavizado =
+              _fpRmsSuavizado! * (1 - a) + coincidencia.distanciaDb * a;
+        } else {
+          _fpCeldaCandidata = celda;
+          _fpCiclosConsistentes = 1;
+          _fpRmsSuavizado = coincidencia.distanciaDb;
+        }
+
+        if (_fpCiclosConsistentes >= _fpCiclosParaAplicar) {
+          final objetivo = objetivoFp;
+          // La confianza sale del rms SUAVIZADO, no del instantaneo.
+          final confianza =
+              ProcesadorSenal.confianzaFingerprint(_fpRmsSuavizado!);
+          final g = (_fpGananciaMax * confianza).clamp(0.0, 1.0);
+          nuevaPosicionRaw = Offset(
+            nuevaPosicionRaw.dx + (objetivo.dx - nuevaPosicionRaw.dx) * g,
+            nuevaPosicionRaw.dy + (objetivo.dy - nuevaPosicionRaw.dy) * g,
+          );
+
+          // Aviso por voz una sola vez por punto clave: para una persona ciega,
+          // saber que llego a la esquina es mas util que cualquier correccion
+          // en el mapa. Solo si el operador le puso etiqueta.
+          final etiqueta = coincidencia.etiqueta;
+          if (etiqueta != null &&
+              etiqueta.isNotEmpty &&
+              etiqueta != _fpUltimoAnunciado) {
+            _fpUltimoAnunciado = etiqueta;
+            _voz.hablarSinEsperar('Estás en $etiqueta.');
+          }
+
+          if (_ultimoLogRumbo == null ||
+              DateTime.now().difference(_ultimoLogRumbo!).inMilliseconds >
+                  2000) {
+            debugPrint('[Fingerprint] ${etiqueta ?? "(sin etiqueta)"} '
+                'celda(${celda.ix},${celda.iy}) '
+                'rms=${coincidencia.distanciaDb.toStringAsFixed(1)} dB '
+                '(suav ${_fpRmsSuavizado!.toStringAsFixed(1)}) '
+                'conf=${confianza.toStringAsFixed(2)} '
+                '${coincidencia.beaconsComunes} beacons');
+          }
+        }
       }
 
       // ── DIAGNOSTICO DEL RUMBO (cada ~2 s) ────────────────────────────────

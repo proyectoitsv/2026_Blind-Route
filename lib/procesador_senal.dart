@@ -194,6 +194,186 @@ class ProcesadorSenal {
 
   double varianzaBeacon(String mac) => _varianzaRssi[mac] ?? 999.0;
 
+  // --- FINGERPRINTING DE PUNTOS CLAVE ---------------------------------------
+
+  /// Beacons en comun (fingerprint vs lectura viva) para considerar valida una
+  /// comparacion. Con menos de 3 el patron no identifica una celda: cualquier
+  /// punto del pasillo da parecido.
+  static const int _fpMinComunes = 3;
+
+  /// Distancia robusta (dB) por debajo de la cual la coincidencia se considera
+  /// perfecta.
+  ///
+  /// CALIBRADO CONTRA EL FADING REAL, no contra el ruido termico. A 2.4 GHz la
+  /// longitud de onda es 12.5 cm, asi que moverse 30 cm —sin salir de la
+  /// celda— cambia por completo la interferencia multicamino y puede correr el
+  /// RSSI de un beacon 5 a 10 dB. Y no es algo que el promediado temporal
+  /// arregle: el patron de fading es una propiedad del PUNTO, no del instante;
+  /// parado dentro de un nulo de interferencia, se promedia el nulo.
+  ///
+  /// Medido con desviacion de 5 dB por beacon, parado en la celda CORRECTA:
+  ///   metrica RMS simple  -> mediana 5.68 dB, percentil 90 8.71 dB
+  ///   metrica robusta     -> mediana 3.85 dB, percentil 90 6.68 dB
+  /// El corte anterior de 6.0 dB rechazaba mas o menos la mitad de las
+  /// coincidencias buenas. Estos valores dejan pasar hasta el percentil 90.
+  static const double _fpDbBueno = 4.0;
+
+  /// Distancia robusta (dB) por encima de la cual no hay coincidencia alguna.
+  ///
+  /// Es un FILTRO DE COHERENCIA, no el discriminador de posicion: sirve para
+  /// descartar un patron absurdo (otro piso, beacon caido), no para decidir en
+  /// que celda esta el usuario. Quien discrimina la posicion es la combinacion
+  /// de [_fpMargenDb] (comparacion relativa entre puntos clave, donde el ruido
+  /// del vector vivo se cancela porque es el mismo en ambas comparaciones) y
+  /// el radio espacial que aplica quien consume esto. Ver la nota grande en
+  /// [compararFingerprints] sobre por que un umbral absoluto no puede resolver
+  /// metros con este nivel de fading.
+  static const double _fpDbMalo = 10.0;
+
+  /// Ventaja minima (dB) del mejor fingerprint sobre el mejor de OTRA celda.
+  /// Sin este margen, dos puntos clave parecidos se turnarian el match y la
+  /// posicion saltaria entre ellos.
+  static const double _fpMargenDb = 2.0;
+
+  /// Piso de RSSI para que una lectura viva entre en la comparacion.
+  static const double _fpRssiMinimo = -95.0;
+
+  /// Convierte una distancia robusta en dB a confianza `[0,1]`.
+  ///
+  /// Expuesto para que el consumidor pueda suavizar el rms en el tiempo antes
+  /// de convertirlo: promediar la distancia y despues mapear es mas estable que
+  /// promediar confianzas ya saturadas en 0 o en 1.
+  static double confianzaFingerprint(double rms) =>
+      ((_fpDbMalo - rms) / (_fpDbMalo - _fpDbBueno)).clamp(0.0, 1.0);
+
+  /// Compara las [lecturasVivas] (mac -> RSSI filtrado) contra los
+  /// fingerprints guardados y devuelve la mejor coincidencia, o `null`.
+  ///
+  /// ── POR QUE ESTO NO ES "OTRA TRILATERACION" ───────────────────────────────
+  /// La multilateracion convierte cada RSSI en una DISTANCIA usando el modelo
+  /// log y despues resuelve una geometria. Eso hereda todos los errores del
+  /// modelo, y muy cerca de un beacon el modelo es justamente donde peor anda
+  /// (el RSSI se satura y deja de seguir la ley logaritmica).
+  ///
+  /// El fingerprinting no estima ninguna distancia: compara el VECTOR completo
+  /// de RSSI contra un patron medido en esa misma celda. Si el patron coincide,
+  /// se sabe donde esta el usuario sin haber modelado nada. Por eso es la
+  /// herramienta correcta para las celdas singulares —una esquina donde hay que
+  /// doblar, una puerta— donde acertar importa mas que el promedio.
+  ///
+  /// ── LA METRICA ES DIFERENCIAL Y ROBUSTA ───────────────────────────────────
+  /// Se descuenta primero el desplazamiento COMUN (la MEDIANA de las
+  /// diferencias) y despues se descarta el beacon que mas se aparta, antes de
+  /// calcular el RMS con los que quedan. Las dos cosas atacan fuentes de error
+  /// distintas:
+  ///
+  /// 1. El offset comun es la POSTURA: el cuerpo, la mano y la altura del
+  ///    telefono atenuan todos los beacons a la vez. Medido, una atenuacion
+  ///    uniforme de 10 dB daba RMS 10 dB (match perdido) y con la resta da 0.
+  ///
+  /// 2. Descartar el peor beacon es contra el FADING PROFUNDO. El multicamino
+  ///    afecta a cada beacon de forma independiente, y basta un beacon metido
+  ///    en un nulo de interferencia para arruinar un RMS (que eleva al
+  ///    cuadrado). Medido con 5 dB de desviacion por beacon, parado en la
+  ///    celda correcta: RMS simple mediana 5.68 dB, robusta 3.85 dB.
+  ///
+  /// Es el mismo criterio que ya usa esta clase para el RSSI (mediana truncada)
+  /// y que usa el solver para los rangos (perdida de Huber): no dejar que una
+  /// sola medicion mala decida.
+  ///
+  /// ── LO QUE ESTA METRICA NO PUEDE HACER ────────────────────────────────────
+  /// Con fading de 5 dB por beacon, la distancia robusta apenas separa la celda
+  /// correcta de una a 6 m (mediana 3.85 vs 4.94 dB, con solapamiento enorme).
+  /// Promediar 15 ciclos deja todavia ~50 % de solape. La conclusion medida es
+  /// que NINGUN umbral absoluto en dB puede resolver metros: la senal de
+  /// distancia es mas chica que el fading.
+  ///
+  /// Lo que si discrimina es la comparacion RELATIVA: al enfrentar el MISMO
+  /// vector vivo contra dos patrones, el fading del vector vivo es identico en
+  /// ambas cuentas y se cancela en la diferencia. De ahi que se exija que el
+  /// ganador le saque [_fpMargenDb] al mejor candidato de OTRA celda: si dos
+  /// puntos clave dan parecido, la respuesta honesta es "no se". Y de ahi
+  /// tambien que quien consume esto deba acotar el resultado con un radio
+  /// espacial alrededor de la posicion que ya calculo la multilateracion: el
+  /// fingerprint refina el ultimo metro, no ubica desde cero.
+  static CoincidenciaFingerprint? compararFingerprints({
+    required Map<String, double> lecturasVivas,
+    required List<CalibracionRegistro> calibraciones,
+  }) {
+    CoincidenciaFingerprint? mejor;
+    double mejorDb = double.infinity;
+    double mejorOtraCeldaDb = double.infinity;
+
+    for (final cal in calibraciones) {
+      if (!cal.esFingerprint) continue;
+
+      // Diferencias vivo - guardado sobre los beacons comunes.
+      final difs = <double>[];
+      for (final lectura in cal.lecturasBle) {
+        final mac = lectura['mac'] as String?;
+        final rssiGuardado = (lectura['rssi'] as num?)?.toDouble();
+        if (mac == null || rssiGuardado == null) continue;
+        final viva = lecturasVivas[mac];
+        if (viva == null || viva <= _fpRssiMinimo || viva >= 0) continue;
+        difs.add(viva - rssiGuardado);
+      }
+      final comunes = difs.length;
+      if (comunes < _fpMinComunes) continue;
+
+      // Offset comun robusto (mediana, no media: la media se corre si un
+      // beacon esta en fading profundo).
+      final ordenadas = List<double>.from(difs)..sort();
+      final mitad = ordenadas.length ~/ 2;
+      final mediana = ordenadas.length.isOdd
+          ? ordenadas[mitad]
+          : (ordenadas[mitad - 1] + ordenadas[mitad]) / 2.0;
+
+      // Desvios respecto del offset comun, de mayor a menor.
+      final desvios = difs.map((d) => (d - mediana).abs()).toList()
+        ..sort((a, b) => b.compareTo(a));
+
+      // Se descarta el peor beacon (fading profundo) siempre que queden al
+      // menos 3 para el calculo.
+      final usados = desvios.length >= 4
+          ? desvios.sublist(1)
+          : desvios;
+
+      double suma = 0;
+      for (final d in usados) {
+        suma += d * d;
+      }
+      final rms = sqrt(suma / usados.length);
+      if (rms < mejorDb) {
+        // El anterior mejor pasa a ser "el mejor de otra celda" solo si
+        // efectivamente era otra celda.
+        if (mejor != null &&
+            (mejor.celdaIx != cal.celdaIx || mejor.celdaIy != cal.celdaIy)) {
+          mejorOtraCeldaDb = mejorDb;
+        }
+        mejorDb = rms;
+        mejor = CoincidenciaFingerprint(
+          celdaIx: cal.celdaIx,
+          celdaIy: cal.celdaIy,
+          etiqueta: cal.etiqueta,
+          distanciaDb: rms,
+          confianza: confianzaFingerprint(rms),
+          beaconsComunes: comunes,
+        );
+      } else if (mejor != null &&
+          (mejor.celdaIx != cal.celdaIx || mejor.celdaIy != cal.celdaIy) &&
+          rms < mejorOtraCeldaDb) {
+        mejorOtraCeldaDb = rms;
+      }
+    }
+
+    if (mejor == null || mejor.confianza <= 0) return null;
+    if (mejorOtraCeldaDb.isFinite &&
+        (mejorOtraCeldaDb - mejor.distanciaDb) < _fpMargenDb) {
+      return null; // ambiguo entre dos puntos clave
+    }
+    return mejor;
+  }
+
   // --- AJUSTE DEL MODELO DE RANGO POR BEACON --------------------------------
 
   /// Minimo de puntos de calibracion para intentar la regresion. Con 2 puntos
@@ -328,4 +508,33 @@ class ProcesadorSenal {
     _varianzaRssi.clear();
     _ventanaEfectiva = _tamVentana;
   }
+}
+
+/// Resultado de comparar las lecturas actuales contra los fingerprints
+/// guardados. Ver [ProcesadorSenal.compararFingerprints].
+class CoincidenciaFingerprint {
+  /// Celda del punto clave reconocido.
+  final int celdaIx;
+  final int celdaIy;
+
+  /// Etiqueta que el operador le puso al punto clave (p. ej. "Esquina norte").
+  final String? etiqueta;
+
+  /// Distancia RMS en dB entre el patron guardado y el vector vivo.
+  final double distanciaDb;
+
+  /// Confianza en `[0,1]` derivada de [distanciaDb].
+  final double confianza;
+
+  /// Beacons que participaron de la comparacion.
+  final int beaconsComunes;
+
+  const CoincidenciaFingerprint({
+    required this.celdaIx,
+    required this.celdaIy,
+    required this.etiqueta,
+    required this.distanciaDb,
+    required this.confianza,
+    required this.beaconsComunes,
+  });
 }

@@ -21,6 +21,24 @@ class CalibracionRegistro {
   final DateTime timestamp;
   final String? etiqueta;
 
+  /// `true` si este registro es un PUNTO CLAVE (fingerprint): una celda
+  /// singular —una esquina donde hay que doblar, la puerta de un aula, el pie
+  /// de una escalera— medida durante mucho mas tiempo para que su vector de
+  /// RSSI sea un patron confiable.
+  ///
+  /// Los fingerprints se usan de forma distinta al resto de las calibraciones:
+  /// una calibracion comun alimenta el ajuste del modelo de rango
+  /// (ProcesadorSenal.ajustarModelosRango); un fingerprint ADEMAS se compara en
+  /// vivo contra las lecturas actuales, y si el patron coincide se corrige la
+  /// posicion hacia esa celda. Ver [ProcesadorSenal.compararFingerprints].
+  ///
+  /// La diferencia importa porque el fingerprinting no depende del modelo
+  /// log-distancia: no estima una distancia y despues resuelve una geometria,
+  /// sino que reconoce un patron completo. Por eso funciona justo donde la
+  /// multilateracion es debil (muy cerca de un beacon, donde el modelo log se
+  /// satura) y donde mas importa acertar (una esquina donde hay que doblar).
+  final bool esFingerprint;
+
   const CalibracionRegistro({
     this.id,
     required this.pisoId,
@@ -30,6 +48,7 @@ class CalibracionRegistro {
     required this.txPowerAjustado,
     required this.timestamp,
     this.etiqueta,
+    this.esFingerprint = false,
   });
 
   /// Fila lista para `db.insert`. Omite `id` cuando es null (autoincrement).
@@ -42,6 +61,7 @@ class CalibracionRegistro {
         'tx_power_ajustado': jsonEncode(txPowerAjustado),
         'timestamp': timestamp.toIso8601String(),
         'etiqueta': etiqueta,
+        'es_fingerprint': esFingerprint ? 1 : 0,
       };
 
   factory CalibracionRegistro.fromJson(Map<String, dynamic> row) {
@@ -59,6 +79,9 @@ class CalibracionRegistro {
           txRaw.map((k, v) => MapEntry(k, (v as num).toDouble())),
       timestamp: DateTime.parse(row['timestamp'] as String),
       etiqueta: row['etiqueta'] as String?,
+      // Instalaciones anteriores a la v9 no tienen la columna: se lee como
+      // null y equivale a "calibracion comun".
+      esFingerprint: ((row['es_fingerprint'] as int?) ?? 0) == 1,
     );
   }
 }
