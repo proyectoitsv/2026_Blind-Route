@@ -83,7 +83,40 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   // promedía con la misma mediana truncada que el modo navegación.
   bool _tomandoMuestras = false;
   int _muestrasAcumuladas = 0;
-  static const int _totalMuestras = 30; // ~5 s a 6 Hz
+
+  /// BUG CORREGIDO: antes la toma terminaba a los 30
+  /// "ciclos de scan", con el comentario "~5 s a 6 Hz". Pero el scan corre con
+  /// `continuousUpdates: true`, y ese callback NO dispara a 6 Hz: dispara cada
+  /// vez que llega un lote de advertisements, que en un ambiente con trafico
+  /// BLE son decenas por segundo. Por eso la toma terminaba en ~1 s en vez de
+  /// los 5 s previstos, y con muchas menos muestras independientes de las que
+  /// se creia. La duracion ahora se mide en TIEMPO REAL, que es lo unico que
+  /// no depende del ambiente.
+  DateTime? _inicioToma;
+
+  /// Duracion de una calibracion comun. Alimenta el ajuste del modelo de rango.
+  static const Duration _duracionCalibracion = Duration(seconds: 10);
+
+  /// Duracion de un PUNTO CLAVE (fingerprint). Mas larga a proposito: el
+  /// patron guardado se compara despues en vivo contra lecturas ruidosas, asi
+  /// que cuanto mejor promediado este, mas confiable es el reconocimiento. A
+  /// ~6 advertisements/s por beacon son ~150 muestras por beacon.
+  static const Duration _duracionFingerprint = Duration(seconds: 25);
+
+  /// Si la proxima toma se guarda como punto clave (fingerprint).
+  bool _tomaEsFingerprint = false;
+
+  Duration get _duracionTomaActual =>
+      _tomaEsFingerprint ? _duracionFingerprint : _duracionCalibracion;
+
+  /// Progreso de la toma en `[0,1]`, por tiempo transcurrido.
+  double get _progresoToma {
+    final inicio = _inicioToma;
+    if (inicio == null) return 0;
+    final t = DateTime.now().difference(inicio).inMilliseconds /
+        _duracionTomaActual.inMilliseconds;
+    return t.clamp(0.0, 1.0);
+  }
   // Acumulador: mac → lista de lecturas RSSI durante la toma
   final Map<String, List<double>> _acumCal = {};
 
@@ -393,10 +426,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       }
     }
 
-    // Contar ciclos de scan (no eventos individuales) como "muestras".
+    // La toma termina por TIEMPO transcurrido, no por cantidad de callbacks
+    // (ver la nota en _inicioToma). _muestrasAcumuladas se sigue llevando, pero
+    // ahora solo como dato informativo de cuantos lotes entraron.
     if (_tomandoMuestras) {
       setState(() => _muestrasAcumuladas++);
-      if (_muestrasAcumuladas >= _totalMuestras) {
+      final inicio = _inicioToma;
+      if (inicio != null &&
+          DateTime.now().difference(inicio) >= _duracionTomaActual) {
         _guardarCalibracionAcumulada();
       }
     }
@@ -863,12 +900,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   // -- Calibración de posición: toma multi-muestra ---------------------------
 
-  /// Inicia la acumulación de [_totalMuestras] lecturas BLE por beacon.
+  /// Inicia la acumulación de lecturas BLE por beacon durante
+  /// [_duracionTomaActual].
   /// Cada llamada a [_actualizarSenales] incrementa el contador mientras
   /// [_tomandoMuestras] es true.
   void _iniciarTomaCalibracion() {
     if (_celdaCalSeleccionada == null) return;
     _acumCal.clear();
+    _inicioToma = DateTime.now();
     if (mounted) {
       setState(() {
         _tomandoMuestras = true;
@@ -881,9 +920,35 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// acumuladas. Calcula la mediana truncada por beacon (igual que
   /// [ProcesadorSenal.filtrarYPromediar]) para obtener un RSSI representativo
   /// y luego deriva el txPower con el modelo log-distancia.
+  /// BUG CORREGIDO (la calibracion "se trababa" tras cargar varias):
+  /// [_guardarCalibracionAcumulada] se llama desde el callback de scan SIN
+  /// await y no tenia guardia de reentrada. `_tomandoMuestras` recien pasaba a
+  /// false DESPUES de los dos awaits (insert + relectura de la tabla), asi que
+  /// durante esa ventana cada nuevo callback —decenas por segundo con
+  /// `continuousUpdates`— volvia a entrar y disparaba OTRO insert de la misma
+  /// medicion. Una sola toma generaba decenas de filas duplicadas.
+  ///
+  /// Y el problema se realimentaba: cuantas mas filas tenia la tabla, mas
+  /// tardaba `obtenerCalibracionesPorPiso`, mas larga era la ventana de
+  /// reentrada y mas duplicados se insertaban. Con la cola de sqflite saturada
+  /// y el hilo de UI decodificando cientos de filas JSON por segundo, la
+  /// pantalla se congelaba y la toma nunca llegaba a "guardada". Por eso
+  /// aparecia recien "tras haber cargado unas cuantas".
+  ///
+  /// Se arregla con dos cosas: una guardia [_guardandoCalibracion] y, sobre
+  /// todo, apagar `_tomandoMuestras` de forma SINCRONICA antes del primer
+  /// await, que es lo que cierra la ventana de raiz.
+  bool _guardandoCalibracion = false;
+
   Future<void> _guardarCalibracionAcumulada() async {
+    if (_guardandoCalibracion) return;
     final celda = _celdaCalSeleccionada;
     if (celda == null || _acumCal.isEmpty) return;
+
+    // Antes de cualquier await: el callback de scan no puede volver a entrar.
+    _guardandoCalibracion = true;
+    _tomandoMuestras = false;
+    _inicioToma = null;
 
     final cx = _grilla.centroX(celda.ix);
     final cy = _grilla.centroY(celda.iy);
@@ -919,9 +984,35 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
 
     if (lecturas.isEmpty) {
+      _guardandoCalibracion = false;
       if (mounted) {
+        setState(() {
+          _muestrasAcumuladas = 0;
+          _acumCal.clear();
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('No se acumularon lecturas válidas. Activá el escáner.')),
+        );
+      }
+      return;
+    }
+
+    // Un fingerprint con pocos beacons no identifica una celda: cualquier punto
+    // del pasillo daria parecido. Mejor rechazarlo que guardar un patron que
+    // despues va a mandar la posicion a la celda equivocada.
+    if (_tomaEsFingerprint && lecturas.length < 3) {
+      _guardandoCalibracion = false;
+      if (mounted) {
+        setState(() {
+          _muestrasAcumuladas = 0;
+          _acumCal.clear();
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(
+            'Punto clave NO guardado: solo ${lecturas.length} beacon(s) '
+            'visibles y hacen falta 3. Probá desde una celda con mejor '
+            'cobertura.',
+          )),
         );
       }
       return;
@@ -936,6 +1027,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       txPowerAjustado: txAjustado,
       timestamp: DateTime.now(),
       etiqueta: etiqueta.isEmpty ? null : etiqueta,
+      esFingerprint: _tomaEsFingerprint,
     );
 
     try {
@@ -944,7 +1036,6 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       if (mounted) {
         setState(() {
           _calibraciones = nuevas;
-          _tomandoMuestras = false;
           _acumCal.clear();
           _muestrasAcumuladas = 0;
         });
@@ -957,9 +1048,42 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _tomandoMuestras = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error guardando calibración: $e')),
+        );
+      }
+    } finally {
+      // Pase lo que pase, la guardia se libera: si quedara trabada en true,
+      // no se podria calibrar nunca mas sin reiniciar la pantalla.
+      _guardandoCalibracion = false;
+    }
+  }
+
+  /// Elimina las filas duplicadas que dejo el bug de reentrada descrito en
+  /// [_guardarCalibracionAcumulada].
+  ///
+  /// Los duplicados son identicos en celda y en lecturas (salen del mismo
+  /// `_acumCal`), solo cambia el id y el timestamp por milisegundos. Se conserva
+  /// el de menor id de cada grupo. Dos calibraciones legitimas de la misma
+  /// celda tomadas en momentos distintos NUNCA tienen lecturas identicas al
+  /// dBm, asi que no corren riesgo.
+  Future<void> _limpiarCalibracionesDuplicadas() async {
+    try {
+      final borradas = await DatabaseHelper.instance
+          .eliminarCalibracionesDuplicadas(widget.pisoId);
+      final nuevas = await DatabaseHelper.instance
+          .obtenerCalibracionesPorPiso(widget.pisoId);
+      if (!mounted) return;
+      setState(() => _calibraciones = nuevas);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(borradas == 0
+            ? 'No había duplicados.'
+            : 'Se eliminaron $borradas calibraciones duplicadas.')),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error limpiando duplicados: $e')),
         );
       }
     }
@@ -1801,6 +1925,56 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                         }),
                       const SizedBox(height: 12),
 
+                      // ── PUNTO CLAVE (fingerprint) ───────────────────────
+                      // Vive dentro del propio modo calibracion: un punto clave
+                      // ES una calibracion, solo que medida mas tiempo y
+                      // marcada para que ademas se use como patron en vivo.
+                      Container(
+                        decoration: BoxDecoration(
+                          color: _tomaEsFingerprint
+                              ? TemaApp.acentoSuave
+                              : TemaApp.fondoSurface,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: _tomaEsFingerprint
+                                ? TemaApp.acento.withValues(alpha: 0.5)
+                                : Colors.transparent,
+                          ),
+                        ),
+                        child: Column(
+                          children: [
+                            SwitchListTile(
+                              dense: true,
+                              value: _tomaEsFingerprint,
+                              onChanged: _tomandoMuestras
+                                  ? null
+                                  : (v) => setState(() => _tomaEsFingerprint = v),
+                              secondary: Icon(
+                                Icons.push_pin,
+                                color: _tomaEsFingerprint
+                                    ? TemaApp.acento
+                                    : TemaApp.textoSecundario,
+                              ),
+                              title: const Text(
+                                'Punto clave (fingerprint)',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.w600, fontSize: 14),
+                              ),
+                              subtitle: Text(
+                                _tomaEsFingerprint
+                                    ? 'Medición larga (${_duracionFingerprint.inSeconds} s). '
+                                        'En navegación, cuando el patrón de señal coincida, '
+                                        'la posición se corrige hacia esta celda.'
+                                    : 'Activalo en esquinas donde hay que doblar, puertas '
+                                        'o el pie de una escalera.',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+
                       // ── Toma multi-muestra ──────────────────────────────
                       if (_tomandoMuestras) ...[
                         // Barra de progreso y botón cancelar
@@ -1811,12 +1985,18 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    'Tomando muestras: $_muestrasAcumuladas / $_totalMuestras',
+                                    _tomaEsFingerprint
+                                        ? 'Midiendo punto clave: '
+                                            '${(_progresoToma * _duracionTomaActual.inSeconds).round()}'
+                                            ' / ${_duracionTomaActual.inSeconds} s'
+                                        : 'Tomando muestras: '
+                                            '${(_progresoToma * _duracionTomaActual.inSeconds).round()}'
+                                            ' / ${_duracionTomaActual.inSeconds} s',
                                     style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
                                   ),
                                   const SizedBox(height: 6),
                                   LinearProgressIndicator(
-                                    value: _muestrasAcumuladas / _totalMuestras,
+                                    value: _progresoToma,
                                     backgroundColor: TemaApp.fondoSurface,
                                     color: TemaApp.acento,
                                     minHeight: 8,
@@ -1833,6 +2013,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                     _tomandoMuestras = false;
                                     _muestrasAcumuladas = 0;
                                     _acumCal.clear();
+                                    _inicioToma = null;
                                   });
                                 }
                               },
@@ -1843,20 +2024,32 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                           ],
                         ),
                         const SizedBox(height: 6),
-                        const Text(
-                          '¡No te muevas de la celda! El sistema promedia las lecturas automáticamente.',
-                          style: TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
+                        Text(
+                          _tomaEsFingerprint
+                              ? '¡No te muevas de la celda! Quedate quieto y con el teléfono '
+                                  'en la misma mano y altura que vas a usar al navegar: el patrón '
+                                  'se compara después contra esa misma postura. '
+                                  '($_muestrasAcumuladas lotes)'
+                              : '¡No te muevas de la celda! El sistema promedia las lecturas '
+                                  'automáticamente. ($_muestrasAcumuladas lotes)',
+                          style: const TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
                         ),
                       ] else ...[
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton.icon(
                             onPressed: _escaneando ? _iniciarTomaCalibracion : null,
-                            icon: const Icon(Icons.add_location_alt),
+                            icon: Icon(_tomaEsFingerprint
+                                ? Icons.push_pin
+                                : Icons.add_location_alt),
                             label: Text(
-                              _escaneando
-                                  ? 'Iniciar toma de calibración (~5 s)'
-                                  : 'Activá el escáner primero',
+                              !_escaneando
+                                  ? 'Activá el escáner primero'
+                                  : _tomaEsFingerprint
+                                      ? 'Medir punto clave '
+                                          '(${_duracionFingerprint.inSeconds} s)'
+                                      : 'Iniciar toma de calibración '
+                                          '(${_duracionCalibracion.inSeconds} s)',
                             ),
                           ),
                         ),
@@ -1876,12 +2069,34 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                 title: Text('Todavía no hay calibraciones.'),
                               )
                             ]
-                          : _calibraciones.map((c) {
+                          : <Widget>[
+                              ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.cleaning_services,
+                                    color: TemaApp.textoSecundario),
+                                title: const Text('Quitar duplicados',
+                                    style: TextStyle(fontSize: 14)),
+                                subtitle: const Text(
+                                  'Borra las copias idénticas de una misma toma.',
+                                  style: TextStyle(fontSize: 11),
+                                ),
+                                onTap: _limpiarCalibracionesDuplicadas,
+                              ),
+                              const Divider(height: 1),
+                            ] + _calibraciones.map((c) {
                               return ListTile(
                                 dense: true,
-                                leading: const Icon(Icons.check_circle, color: Colors.green),
+                                leading: Icon(
+                                  c.esFingerprint
+                                      ? Icons.push_pin
+                                      : Icons.check_circle,
+                                  color: c.esFingerprint
+                                      ? TemaApp.acento
+                                      : Colors.green,
+                                ),
                                 title: Text(c.etiqueta ?? 'Celda (${c.celdaIx},${c.celdaIy})'),
                                 subtitle: Text(
+                                    '${c.esFingerprint ? "PUNTO CLAVE · " : ""}'
                                     '${c.lecturasBle.length} beacons · ${_formatearTimestamp(c.timestamp)}'),
                                 trailing: IconButton(
                                   icon: const Icon(Icons.delete, color: Colors.red),
