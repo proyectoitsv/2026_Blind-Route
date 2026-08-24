@@ -39,6 +39,27 @@ class CalibracionRegistro {
   /// satura) y donde mas importa acertar (una esquina donde hay que doblar).
   final bool esFingerprint;
 
+  /// Rumbo CRUDO de la brujula (grados, 0-360) hacia el que miraba el operador
+  /// mientras se tomaba el fingerprint. `null` si no habia brujula disponible
+  /// o si el registro es anterior a la v10 de la base.
+  ///
+  /// Se guarda porque el cuerpo del usuario NO atenua a todos los beacons por
+  /// igual: tapa los que quedan detras y deja libres los de adelante. Esa
+  /// atenuacion desigual se parece a estar en otro lado, y no la cancela la
+  /// resta del offset comun (que solo elimina lo que afecta a todos los
+  /// beacons a la vez) ni el descarte del peor beacon (no es un outlier
+  /// aislado, es la mitad trasera del conjunto).
+  ///
+  /// Medido, con hasta 12 dB de sombra corporal, la distancia robusta en la
+  /// celda CORRECTA empeora de 3.85 dB (sin sombra) a 5.63 dB si la
+  /// orientacion es cualquiera; comparando solo contra patrones tomados con un
+  /// rumbo parecido (+/- 45 grados) baja a 4.19 dB.
+  ///
+  /// Se guarda el rumbo CRUDO (sin restar la rotacion del mapa) porque la
+  /// comparacion es relativa entre dos lecturas de la misma brujula: meter la
+  /// rotacion del piso solo agregaria una fuente de error comun a ambas.
+  final double? rumboCaptura;
+
   const CalibracionRegistro({
     this.id,
     required this.pisoId,
@@ -49,6 +70,7 @@ class CalibracionRegistro {
     required this.timestamp,
     this.etiqueta,
     this.esFingerprint = false,
+    this.rumboCaptura,
   });
 
   /// Fila lista para `db.insert`. Omite `id` cuando es null (autoincrement).
@@ -62,6 +84,7 @@ class CalibracionRegistro {
         'timestamp': timestamp.toIso8601String(),
         'etiqueta': etiqueta,
         'es_fingerprint': esFingerprint ? 1 : 0,
+        'rumbo_captura': rumboCaptura,
       };
 
   factory CalibracionRegistro.fromJson(Map<String, dynamic> row) {
@@ -82,6 +105,9 @@ class CalibracionRegistro {
       // Instalaciones anteriores a la v9 no tienen la columna: se lee como
       // null y equivale a "calibracion comun".
       esFingerprint: ((row['es_fingerprint'] as int?) ?? 0) == 1,
+      // Instalaciones anteriores a la v10 no tienen la columna: queda null y
+      // el fingerprint simplemente no filtra por rumbo.
+      rumboCaptura: (row['rumbo_captura'] as num?)?.toDouble(),
     );
   }
 }

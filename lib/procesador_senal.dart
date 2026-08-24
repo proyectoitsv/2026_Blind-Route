@@ -238,6 +238,33 @@ class ProcesadorSenal {
   /// Piso de RSSI para que una lectura viva entre en la comparacion.
   static const double _fpRssiMinimo = -95.0;
 
+  /// Tolerancia angular (grados) entre el rumbo actual y el rumbo con el que se
+  /// capturo el fingerprint.
+  ///
+  /// El cuerpo del usuario tapa los beacons que quedan DETRAS y deja libres los
+  /// de adelante, asi que la atenuacion es desigual y no la cancela la resta del
+  /// offset comun. Medido con hasta 12 dB de sombra corporal, distancia robusta
+  /// parado en la celda CORRECTA:
+  ///   orientacion cualquiera -> mediana 5.63 dB (p90 9.54)
+  ///   dentro de +/- 90 grados -> mediana 4.65 dB (p90 7.94)
+  ///   dentro de +/- 45 grados -> mediana 4.19 dB (p90 7.10)
+  ///   dentro de +/- 20 grados -> mediana 3.98 dB (p90 6.84)
+  /// La referencia sin sombra era 3.85 dB: con +/- 45 se recupera casi todo el
+  /// terreno perdido. Y lo que mas mejora es la separacion contra un falso
+  /// positivo a 6 m, que pasa de 0.82 dB a 1.50 dB de brecha.
+  ///
+  /// Bajarlo afina mas pero exige capturar mas orientaciones por celda; subirlo
+  /// deja pasar mas sombra corporal.
+  static const double _fpToleranciaRumbo = 45.0;
+
+  /// Diferencia angular minima con signo entre dos rumbos, en `[-180, 180]`.
+  static double _difRumbo(double a, double b) {
+    var d = (a - b) % 360.0;
+    if (d > 180.0) d -= 360.0;
+    if (d < -180.0) d += 360.0;
+    return d;
+  }
+
   /// Convierte una distancia robusta en dB a confianza `[0,1]`.
   ///
   /// Expuesto para que el consumidor pueda suavizar el rms en el tiempo antes
@@ -281,6 +308,16 @@ class ProcesadorSenal {
   /// y que usa el solver para los rangos (perdida de Huber): no dejar que una
   /// sola medicion mala decida.
   ///
+  /// 3. Lo que NINGUNA de las dos arregla es la SOMBRA CORPORAL, porque no es
+  ///    comun (no afecta a todos los beacons) ni es un solo outlier (afecta a
+  ///    todos los que quedan detras del usuario). Para eso esta la puerta
+  ///    angular [_fpToleranciaRumbo]: un patron solo compite si fue capturado
+  ///    mirando hacia donde el usuario mira ahora. Es la razon por la que una
+  ///    esquina a la que se llega desde dos direcciones necesita DOS
+  ///    fingerprints en la misma celda, uno por sentido. Dos patrones de la
+  ///    misma celda no compiten entre si: el margen se mide contra el mejor de
+  ///    OTRA celda.
+  ///
   /// ── LO QUE ESTA METRICA NO PUEDE HACER ────────────────────────────────────
   /// Con fading de 5 dB por beacon, la distancia robusta apenas separa la celda
   /// correcta de una a 6 m (mediana 3.85 vs 4.94 dB, con solapamiento enorme).
@@ -299,6 +336,7 @@ class ProcesadorSenal {
   static CoincidenciaFingerprint? compararFingerprints({
     required Map<String, double> lecturasVivas,
     required List<CalibracionRegistro> calibraciones,
+    double? rumboVivo,
   }) {
     CoincidenciaFingerprint? mejor;
     double mejorDb = double.infinity;
@@ -306,6 +344,19 @@ class ProcesadorSenal {
 
     for (final cal in calibraciones) {
       if (!cal.esFingerprint) continue;
+
+      // Puerta angular: el patron solo compite si fue capturado mirando en una
+      // direccion parecida a la actual. Si falta cualquiera de los dos rumbos
+      // (brujula no disponible ahora, o fingerprint viejo anterior a la v10) no
+      // se filtra: se degrada al comportamiento anterior en vez de dejar de
+      // funcionar. El error que puede introducir un match asi sigue acotado por
+      // el radio espacial que aplica el consumidor.
+      final rumboGuardado = cal.rumboCaptura;
+      if (rumboVivo != null && rumboGuardado != null) {
+        if (_difRumbo(rumboVivo, rumboGuardado).abs() > _fpToleranciaRumbo) {
+          continue;
+        }
+      }
 
       // Diferencias vivo - guardado sobre los beacons comunes.
       final difs = <double>[];
