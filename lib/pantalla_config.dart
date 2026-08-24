@@ -106,6 +106,23 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// Si la proxima toma se guarda como punto clave (fingerprint).
   bool _tomaEsFingerprint = false;
 
+  /// Acumuladores de la MEDIA CIRCULAR del rumbo durante la toma.
+  ///
+  /// No se puede promediar grados directamente: el promedio aritmetico de 350 y
+  /// 10 da 180 (exactamente el sentido opuesto) en vez de 0. Se acumulan seno y
+  /// coseno y al final se hace atan2, que es la forma correcta de promediar
+  /// angulos. Es el mismo criterio que usa OrientacionService.
+  double _sumSenoRumbo = 0;
+  double _sumCosRumbo = 0;
+  int _muestrasRumbo = 0;
+
+  /// Rumbo medio de la toma, o `null` si no hubo lecturas de brujula.
+  double? get _rumboMedioToma {
+    if (_muestrasRumbo == 0) return null;
+    final a = atan2(_sumSenoRumbo / _muestrasRumbo, _sumCosRumbo / _muestrasRumbo);
+    return (a * 180 / pi + 360) % 360;
+  }
+
   Duration get _duracionTomaActual =>
       _tomaEsFingerprint ? _duracionFingerprint : _duracionCalibracion;
 
@@ -430,6 +447,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     // (ver la nota en _inicioToma). _muestrasAcumuladas se sigue llevando, pero
     // ahora solo como dato informativo de cuantos lotes entraron.
     if (_tomandoMuestras) {
+      // Acumular el rumbo mientras dura la toma (media circular).
+      final h = _headingEnVivo;
+      if (h != null) {
+        final r = h * pi / 180;
+        _sumSenoRumbo += sin(r);
+        _sumCosRumbo += cos(r);
+        _muestrasRumbo++;
+      }
       setState(() => _muestrasAcumuladas++);
       final inicio = _inicioToma;
       if (inicio != null &&
@@ -908,6 +933,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (_celdaCalSeleccionada == null) return;
     _acumCal.clear();
     _inicioToma = DateTime.now();
+    _sumSenoRumbo = 0;
+    _sumCosRumbo = 0;
+    _muestrasRumbo = 0;
     if (mounted) {
       setState(() {
         _tomandoMuestras = true;
@@ -1028,6 +1056,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       timestamp: DateTime.now(),
       etiqueta: etiqueta.isEmpty ? null : etiqueta,
       esFingerprint: _tomaEsFingerprint,
+      // Solo tiene sentido en un punto clave: en una calibracion comun el
+      // rumbo no se usa para nada.
+      rumboCaptura: _tomaEsFingerprint ? _rumboMedioToma : null,
     );
 
     try {
@@ -1497,7 +1528,15 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                   if (!mounted) return;
                   final nuevoModo = s.first;
                   // Detener brújula si salimos del modo brujula.
-                  if (_modo == _ModoEdicion.brujula && nuevoModo != _ModoEdicion.brujula) {
+                  // La brujula hace falta en el modo brujula Y en calibracion
+                  // (los puntos clave guardan el rumbo de captura), asi que solo
+                  // se apaga al salir hacia un modo que no la usa.
+                  const usanBrujula = {
+                    _ModoEdicion.brujula,
+                    _ModoEdicion.calibracion,
+                  };
+                  if (usanBrujula.contains(_modo) &&
+                      !usanBrujula.contains(nuevoModo)) {
                     _detenerCompass();
                   }
                   // Al salir del modo calibración: liberar el anclado de posición.
@@ -1527,6 +1566,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                   // Las lecturas en vivo de calibración necesitan el escáner activo.
                   if (nuevoModo == _ModoEdicion.calibracion) {
                     _asegurarEscaneando();
+                    _iniciarCompass();
                   }
                   // Iniciar brújula en vivo al entrar al modo brujula.
                   if (nuevoModo == _ModoEdicion.brujula) {
@@ -1961,12 +2001,19 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                     fontWeight: FontWeight.w600, fontSize: 14),
                               ),
                               subtitle: Text(
-                                _tomaEsFingerprint
-                                    ? 'Medición larga (${_duracionFingerprint.inSeconds} s). '
-                                        'En navegación, cuando el patrón de señal coincida, '
-                                        'la posición se corrige hacia esta celda.'
-                                    : 'Activalo en esquinas donde hay que doblar, puertas '
-                                        'o el pie de una escalera.',
+                                !_tomaEsFingerprint
+                                    ? 'Activalo en esquinas donde hay que doblar, puertas '
+                                        'o el pie de una escalera.'
+                                    : _headingEnVivo == null
+                                        ? 'Medición larga (${_duracionFingerprint.inSeconds} s). '
+                                            'SIN BRÚJULA: el patrón se va a guardar sin rumbo y '
+                                            'va a ser menos preciso, porque tu cuerpo tapa los '
+                                            'beacons que quedan detrás tuyo.'
+                                        : 'Medición larga (${_duracionFingerprint.inSeconds} s). '
+                                            'Poné el cuerpo mirando hacia donde vas a venir '
+                                            'caminando (ahora: ${_headingEnVivo!.toStringAsFixed(0)}°). '
+                                            'Si a esta esquina se llega desde dos lados, '
+                                            'tomá un punto clave por cada sentido.',
                                 style: const TextStyle(fontSize: 12),
                               ),
                             ),
@@ -2026,10 +2073,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                         const SizedBox(height: 6),
                         Text(
                           _tomaEsFingerprint
-                              ? '¡No te muevas de la celda! Quedate quieto y con el teléfono '
-                                  'en la misma mano y altura que vas a usar al navegar: el patrón '
-                                  'se compara después contra esa misma postura. '
-                                  '($_muestrasAcumuladas lotes)'
+                              ? '¡No te muevas ni gires! Mantené el teléfono en la misma mano '
+                                  'y altura que vas a usar al navegar, y el cuerpo mirando para '
+                                  'el mismo lado: el patrón se compara después contra esa misma '
+                                  'postura y ese mismo rumbo. '
+                                  '(${_rumboMedioToma == null ? "sin brújula" : "rumbo ${_rumboMedioToma!.toStringAsFixed(0)}°"}'
+                                  ' · $_muestrasAcumuladas lotes)'
                               : '¡No te muevas de la celda! El sistema promedia las lecturas '
                                   'automáticamente. ($_muestrasAcumuladas lotes)',
                           style: const TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
@@ -2097,6 +2146,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                 title: Text(c.etiqueta ?? 'Celda (${c.celdaIx},${c.celdaIy})'),
                                 subtitle: Text(
                                     '${c.esFingerprint ? "PUNTO CLAVE · " : ""}'
+                                    '${c.esFingerprint && c.rumboCaptura != null ? "rumbo ${c.rumboCaptura!.toStringAsFixed(0)}° · " : ""}'
+                                    '${c.esFingerprint && c.rumboCaptura == null ? "sin rumbo · " : ""}'
                                     '${c.lecturasBle.length} beacons · ${_formatearTimestamp(c.timestamp)}'),
                                 trailing: IconButton(
                                   icon: const Icon(Icons.delete, color: Colors.red),

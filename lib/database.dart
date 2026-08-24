@@ -25,7 +25,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 9, // v9: es_fingerprint en calibraciones (puntos clave)
+      version: 10, // v10: rumbo_captura en calibraciones (fingerprint direccional)
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -110,6 +110,7 @@ class DatabaseHelper {
       timestamp TEXT NOT NULL,
       etiqueta TEXT,
       es_fingerprint INTEGER NOT NULL DEFAULT 0,
+      rumbo_captura REAL,
       FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
     )
   ''';
@@ -181,6 +182,21 @@ class DatabaseHelper {
         await db.execute(
           'ALTER TABLE calibraciones ADD COLUMN es_fingerprint '
           'INTEGER NOT NULL DEFAULT 0',
+        );
+      }
+    }
+    if (oldVersion < 10) {
+      // v10: rumbo de la brujula al capturar el fingerprint. Mismo cuidado que
+      // en la v9: si la tabla se creo recien con el DDL nuevo, la columna ya
+      // existe y el ALTER fallaria.
+      final cols = await db.rawQuery('PRAGMA table_info(calibraciones)');
+      final tieneRumbo =
+          cols.any((c) => (c['name'] as String?) == 'rumbo_captura');
+      if (!tieneRumbo) {
+        // Sin NOT NULL: null significa "se tomo sin brujula", que es
+        // exactamente el estado de todos los fingerprints ya guardados.
+        await db.execute(
+          'ALTER TABLE calibraciones ADD COLUMN rumbo_captura REAL',
         );
       }
     }

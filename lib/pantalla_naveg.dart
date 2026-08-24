@@ -917,6 +917,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
             if (b.rssiFiltrado > _umbralRSSI) b.mac: b.rssiFiltrado,
         },
         calibraciones: _calibraciones,
+        // Rumbo CRUDO de la brujula, igual que el guardado en la calibracion.
+        // Solo se pasa si la brujula esta siendo confiable: con _rumboActivo en
+        // false, mandar el rumbo filtraria patrones por un dato malo.
+        rumboVivo: _rumboActivo ? _orientacion.heading : null,
       );
 
       // Radio espacial: el punto clave tiene que estar cerca de lo que ya dice
