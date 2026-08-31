@@ -86,6 +86,31 @@ class ProcesadorSenal {
   final Map<String, List<double>> _ventanaRssi = {};
   final Map<String, double> _varianzaRssi = {};
 
+  /// MACs que el pipeline considera relevantes (los beacons configurados del
+  /// piso). Si está vacío se rastrean TODAS (comportamiento histórico).
+  ///
+  /// POR QUÉ HACE FALTA: el scan BLE ve TODOS los dispositivos del ambiente
+  /// —celulares, TVs, auriculares, otras balizas ajenas— y [filtrarYPromediar]
+  /// se llamaba para cada uno. Como el resultado de un MAC que no es beacon
+  /// nunca se usa (los consumidores solo leen beacons configurados), lo único
+  /// que lograba era acumular una entrada por cada MAC visto en [_ventanaRssi]
+  /// y [_varianzaRssi] que no se limpiaba jamás. En un edificio concurrido
+  /// (una terminal, un shopping) eso es una fuga de memoria y de CPU (un sort
+  /// por dispositivo ajeno en cada callback) que crece durante toda la sesión.
+  /// Con la lista definida, los MAC ajenos se descartan antes de asignar nada.
+  Set<String> _macsRelevantes = const {};
+
+  /// Declara qué MACs son beacons configurados. A partir de acá
+  /// [filtrarYPromediar] ignora cualquier MAC ajeno, y se sueltan las entradas
+  /// ya acumuladas que no correspondan a un beacon (p. ej. las que dejó
+  /// sembradas el modo automático mientras todavía no sabía el piso).
+  void definirBeaconsRelevantes(Iterable<String> macs) {
+    _macsRelevantes = macs.toSet();
+    if (_macsRelevantes.isEmpty) return;
+    _ventanaRssi.removeWhere((mac, _) => !_macsRelevantes.contains(mac));
+    _varianzaRssi.removeWhere((mac, _) => !_macsRelevantes.contains(mac));
+  }
+
   /// Cantidad de muestras (las más recientes del buffer) que efectivamente se
   /// promedian. La controla [ajustarPorMovimiento].
   int _ventanaEfectiva = _tamVentana;
@@ -150,6 +175,13 @@ class ProcesadorSenal {
   // ─── FILTRADO PRINCIPAL ───────────────────────────────────────────────────
 
   double? filtrarYPromediar(String mac, int rssiActual) {
+    // Descartar de entrada los MAC que no son beacons configurados: sin esto,
+    // el historial de cada dispositivo ajeno del ambiente se acumulaba para
+    // siempre (ver [definirBeaconsRelevantes]). Con la lista vacía no filtra
+    // nada, así que el comportamiento por defecto no cambia.
+    if (_macsRelevantes.isNotEmpty && !_macsRelevantes.contains(mac)) {
+      return null;
+    }
     if (rssiActual > -20 || rssiActual < -110) return null;
 
     _ventanaRssi.putIfAbsent(mac, () => []);

@@ -429,13 +429,20 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     for (var res in resultados) {
       try {
         String mac = res.device.remoteId.str;
+        // Solo procesar beacons ya marcados. El scan ve TODOS los dispositivos
+        // del ambiente; filtrar los ajenos solo llenaba las ventanas del
+        // ProcesadorSenal con MAC cuyo resultado nunca se lee (fuga de
+        // memoria/CPU). La lista de dispositivos para marcar nuevos beacons se
+        // muestra aparte, desde `_dispositivosCercanos` (resultados crudos).
+        if (!_beaconsEnElMapa.containsKey(mac)) continue;
+
         double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
-        if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
+        if (rssiSuave != null) {
           setState(() => _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave);
         }
 
         // Acumulación de muestras para calibración multi-muestra.
-        if (_tomandoMuestras && _beaconsEnElMapa.containsKey(mac)) {
+        if (_tomandoMuestras) {
           _acumCal.putIfAbsent(mac, () => []).add(res.rssi.toDouble());
         }
       } catch (e) {
