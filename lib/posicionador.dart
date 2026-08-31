@@ -296,7 +296,7 @@ class Posicionador {
 /// El prior del solver es simétrico por construcción (`h·hᵀ` no distingue `+h`
 /// de `−h`), así que en la versión anterior "caminar hacia atrás" quedaba tan
 /// permitido como caminar hacia adelante. La gente casi nunca camina de
-/// espaldas: el retroceso a lo largo del eje se deja pasar sólo al 35 %.
+/// espaldas: el retroceso a lo largo del eje se deja pasar sólo al 15 %.
 ///
 /// ── GIROS ──────────────────────────────────────────────────────────────────
 /// La restricción se apaga mientras la persona gira rápido: durante un giro el
@@ -442,8 +442,8 @@ class PuertaRumbo {
     // |l| < _pisoCicloMetros (o con el signo invertido por ruido) resetea el
     // contador a 0, la puerta se cerraba de golpe en plena marcha lateral y
     // tardaba otros ~0.9 s en reabrir: exactamente el titileo que la
-    // histéresis de umbrales (0.55/0.30) debía evitar. El cierre lo gobierna
-    // la EMA de evidencia (τ = 2 s), que decae sola al terminar el
+    // histéresis de umbrales (0.90/0.45) debía evitar. El cierre lo gobierna
+    // la EMA de evidencia (τ = 3.5 s), que decae sola al terminar el
     // desplazamiento lateral real.
     final abiertaAhora = _evidenciaLateral.abs() > umbral &&
         (_abierta || _ciclosConsistentes >= _minCiclosConsistentes);

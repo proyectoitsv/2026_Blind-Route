@@ -387,6 +387,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         _rotacionMapaEfectiva = rotacionDb;
       });
  
+      // Solo los beacons configurados de este piso son relevantes para el
+      // filtro: el scan BLE ve todos los dispositivos del ambiente y, sin esto,
+      // sus MAC se acumulaban para siempre en el ProcesadorSenal (fuga de
+      // memoria/CPU que crecia durante toda la sesion de navegacion). Ademas,
+      // si venimos del modo automatico con un procesador compartido, esto
+      // suelta las entradas ajenas que quedaron sembradas durante la busqueda.
+      // Va antes de que arranque el scan, asi ningun callback ajeno se procesa.
+      _procesador.definirBeaconsRelevantes(_beaconsEnElMapa.keys);
+
       // Ajuste del modelo de rango por beacon. Va DESPUES del setState que
       // carga beacons y calibraciones, y una sola vez: es una regresion sobre
       // datos que no cambian durante la navegacion.
