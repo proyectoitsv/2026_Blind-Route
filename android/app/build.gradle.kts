@@ -42,3 +42,17 @@ android {
 flutter {
     source = "../.."
 }
+
+flavorDimensions "app"
+productFlavors {
+    user {
+        dimension "app"
+        applicationId "com.tuorg.blindroute"
+        resValue "string", "app_name", "BlindRoute"
+    }
+    admin {
+        dimension "app"
+        applicationId "com.tuorg.blindroute.admin"
+        resValue "string", "app_name", "BlindRoute Admin"
+    }
+}

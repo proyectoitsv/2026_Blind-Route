@@ -15,6 +15,8 @@ import 'bluetooth_helper.dart';
 import 'grilla_nav.dart';
 import 'asistente_trazo.dart';
 import 'calibracion_model.dart';
+import 'supabase_service.dart';
+import 'supabase_config.dart';
 import 'tema.dart';
 
 enum _ModoEdicion { beacons, zonas, lugares, escala, calibracion, brujula }
@@ -50,6 +52,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   List<ScanResult> _dispositivosCercanos = [];
   ScanResult? _seleccionado;
   bool _escaneando = false;
+  bool _publicando = false;
+  String? _remoteIdPublicado;
   Offset? _posicionUsuario;
 
   _ModoEdicion _modo = _ModoEdicion.beacons;
@@ -278,8 +282,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
       // Leer rotación del mapa guardada.
       final db = await DatabaseHelper.instance.database;
-      final filas = await db.query('pisos', columns: ['rotacion_mapa'], where: 'id = ?', whereArgs: [widget.pisoId], limit: 1);
+      final filas = await db.query('pisos', columns: ['rotacion_mapa', 'remote_id'], where: 'id = ?', whereArgs: [widget.pisoId], limit: 1);
       final rotGuardada = filas.isNotEmpty ? ((filas.first['rotacion_mapa'] as num?)?.toDouble() ?? 0.0) : 0.0;
+      final remoteId = filas.isNotEmpty ? filas.first['remote_id'] as String? : null;
 
       if (mounted) {
         setState(() {
@@ -288,6 +293,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           _lugares = lugares;
           _calibraciones = calibraciones;
           _rotacionMapa = rotGuardada;
+          _remoteIdPublicado = remoteId;
         });
       }
     } catch (e) {
@@ -308,6 +314,130 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           SnackBar(content: Text('Error guardando beacons: $e')),
         );
       }
+    }
+  }
+
+  // -- Publicar a la nube (Supabase) -----------------------------------------
+
+  /// Sube este piso completo (plano + beacons + zonas + lugares + calibraciones)
+  /// a la nube para que los usuarios lo puedan descargar. Idempotente: si el
+  /// piso ya se había publicado, reemplaza su versión remota (no duplica).
+  Future<void> _publicarPiso() async {
+    if (_publicando) return;
+
+    if (!SupabaseService.instance.configurado) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Falta configurar Supabase (supabase_config.dart) para publicar.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (_beaconsEnElMapa.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cargá al menos un beacon antes de publicar el mapa.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _publicando = true);
+    try {
+      // Asegurar que lo último quede persistido localmente antes de subir.
+      await _sincronizarBeacons();
+
+      final info =
+          await DatabaseHelper.instance.obtenerPisoConEdificio(widget.pisoId);
+      if (info == null) throw Exception('No se encontró el piso.');
+
+      final remoteId = await SupabaseService.instance.publicarPiso(
+        edificioNombre: (info['edificio_nombre'] as String?) ?? 'Edificio',
+        pisoNombre: (info['nombre_piso'] as String?) ?? 'Piso',
+        rutaImagen: widget.rutaImagen,
+        escalaX: _escalaX,
+        escalaY: _escalaY,
+        tamCelda: _tamCelda,
+        rotacion: _rotacionMapa,
+        beacons: _beaconsEnElMapa.values,
+        zonas: _zonas,
+        lugares: _lugares,
+        calibraciones: _calibraciones,
+        remoteIdExistente: info['remote_id'] as String?,
+      );
+
+      await DatabaseHelper.instance
+          .guardarRemoteIdPiso(widget.pisoId, remoteId);
+
+      if (!mounted) return;
+      final republicado = (info['remote_id'] as String?) != null;
+      setState(() => _remoteIdPublicado = remoteId);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(republicado
+              ? 'Mapa actualizado en la nube'
+              : 'Mapa publicado. Ya se puede descargar.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al publicar: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _publicando = false);
+    }
+  }
+
+  /// Borra de la nube el mapa que este admin publicó. El servidor sólo lo
+  /// permite si es el dueño; si es de otro administrador, devuelve error.
+  Future<void> _eliminarMapaPublicado() async {
+    final remoteId = _remoteIdPublicado;
+    if (remoteId == null || _publicando) return;
+
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar de la nube'),
+        content: const Text(
+          'Se quitará este mapa del catálogo. Los usuarios ya no podrán '
+          'descargarlo (quienes ya lo tienen lo conservan).\n\n¿Continuar?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmar != true) return;
+
+    setState(() => _publicando = true);
+    try {
+      await SupabaseService.instance.eliminarMapa(remoteId);
+      await DatabaseHelper.instance.limpiarRemoteIdPiso(widget.pisoId);
+      if (!mounted) return;
+      setState(() => _remoteIdPublicado = null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Mapa eliminado de la nube')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al eliminar: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _publicando = false);
     }
   }
 
@@ -429,20 +559,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     for (var res in resultados) {
       try {
         String mac = res.device.remoteId.str;
-        // Solo procesar beacons ya marcados. El scan ve TODOS los dispositivos
-        // del ambiente; filtrar los ajenos solo llenaba las ventanas del
-        // ProcesadorSenal con MAC cuyo resultado nunca se lee (fuga de
-        // memoria/CPU). La lista de dispositivos para marcar nuevos beacons se
-        // muestra aparte, desde `_dispositivosCercanos` (resultados crudos).
-        if (!_beaconsEnElMapa.containsKey(mac)) continue;
-
         double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
-        if (rssiSuave != null) {
+        if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
           setState(() => _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave);
         }
 
         // Acumulación de muestras para calibración multi-muestra.
-        if (_tomandoMuestras) {
+        if (_tomandoMuestras && _beaconsEnElMapa.containsKey(mac)) {
           _acumCal.putIfAbsent(mac, () => []).add(res.rssi.toDouble());
         }
       } catch (e) {
@@ -1487,6 +1610,35 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         backgroundColor: TemaApp.fondo,
         appBar: AppBar(
           title: const Text('Configuración de Piso'),
+          actions: [
+            if (_publicando)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 18),
+                child: Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.4,
+                      color: TemaApp.acento,
+                    ),
+                  ),
+                ),
+              )
+            else ...[
+              if (_remoteIdPublicado != null)
+                IconButton(
+                  onPressed: _eliminarMapaPublicado,
+                  icon: const Icon(Icons.cloud_off_rounded),
+                  tooltip: 'Eliminar mapa de la nube',
+                ),
+              IconButton(
+                onPressed: _publicarPiso,
+                icon: const Icon(Icons.cloud_upload_rounded),
+                tooltip: 'Publicar mapa a la nube',
+              ),
+            ],
+          ],
         ),
         body: Column(
         children: [

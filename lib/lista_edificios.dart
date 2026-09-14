@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'database.dart';
 import 'lista_pisos.dart';
+import 'pantalla_login_admin.dart';
+import 'pantalla_mapas_admin.dart';
+import 'supabase_config.dart';
+import 'supabase_service.dart';
 import 'tema.dart';
 
 class ListaEdificios extends StatefulWidget {
@@ -86,6 +91,34 @@ class _ListaEdificiosState extends State<ListaEdificios> {
         backgroundColor: TemaApp.fondo,
         appBar: AppBar(
           title: const Text('Blind Route — Edificios'),
+          actions: [
+            if (SupabaseConfig.configurado)
+              IconButton(
+                tooltip: 'Mapas publicados en la nube',
+                icon: const Icon(Icons.cloud_rounded),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const PantallaMapasAdmin()),
+                  );
+                },
+              ),
+            if (SupabaseConfig.configurado)
+              IconButton(
+                tooltip: 'Cerrar sesión',
+                icon: const Icon(Icons.logout_rounded),
+                onPressed: () async {
+                  await Supabase.instance.client.auth.signOut();
+                  if (!context.mounted) return;
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const PantallaLoginAdmin()),
+                  );
+                },
+              ),
+          ],
         ),
         body: _edificios.isEmpty
             ? const Center(
@@ -106,21 +139,52 @@ class _ListaEdificiosState extends State<ListaEdificios> {
                   return Dismissible(
                     key: Key(edificio['id'].toString()),
                     direction: DismissDirection.endToStart,
-                    confirmDismiss: (direction) => _confirmarBorradoEdificio(context, edificio['nombre']),
+                    confirmDismiss: (direction) async {
+                      final confirmado = await _confirmarBorradoEdificio(
+                          context, edificio['nombre']);
+                      if (confirmado != true) return false;
+
+                      // Un edificio arrastra a sus pisos. Antes de borrarlo,
+                      // se quitan de la nube todos sus mapas publicados. Si
+                      // alguno falla (offline o de otro dueño), se aborta y no
+                      // se borra nada local, para no dejar mapas huérfanos.
+                      if (SupabaseService.instance.configurado) {
+                        final remoteIds = await DatabaseHelper.instance
+                            .obtenerRemoteIdsDeEdificio(edificio['id']);
+                        for (final remoteId in remoteIds) {
+                          try {
+                            await SupabaseService.instance
+                                .eliminarMapa(remoteId);
+                          } catch (e) {
+                            if (!mounted) return false;
+                            ScaffoldMessenger.of(this.context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                    'No se pudo quitar un mapa de la nube: $e\nNo se eliminó el edificio.'),
+                              ),
+                            );
+                            return false;
+                          }
+                        }
+                      }
+
+                      await DatabaseHelper.instance
+                          .eliminarEdificioCompleto(edificio['id']);
+                      if (!mounted) return true;
+                      ScaffoldMessenger.of(this.context).showSnackBar(
+                        SnackBar(
+                            content: Text(
+                                "Se eliminó ${edificio['nombre']} y todos sus datos")),
+                      );
+                      return true;
+                    },
                     background: Container(
                       color: TemaApp.zonaRestringidaRelleno,
                       alignment: Alignment.centerRight,
                       padding: const EdgeInsets.only(right: 20),
                       child: const Icon(Icons.delete_sweep, color: Colors.white, size: 28),
                     ),
-                    onDismissed: (direction) async {
-                      await DatabaseHelper.instance.eliminarEdificioCompleto(edificio['id']);
-                      _refrescarEdificios();
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(this.context).showSnackBar(
-                        SnackBar(content: Text("Se eliminó ${edificio['nombre']} y todos sus datos")),
-                      );
-                    },
+                    onDismissed: (direction) => _refrescarEdificios(),
                     child: Container(
                       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                       decoration: BoxDecoration(
