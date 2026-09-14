@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'database.dart';
 import 'pantalla_config.dart';
+import 'supabase_service.dart';
 import 'tema.dart';
 
 class ListaPisos extends StatefulWidget {
@@ -125,21 +126,46 @@ class _ListaPisosState extends State<ListaPisos> {
                   return Dismissible(
                     key: Key(piso['id'].toString()),
                     direction: DismissDirection.endToStart,
-                    confirmDismiss: (direction) => _confirmarBorrado(context, piso['nombre_piso']),
+                    confirmDismiss: (direction) async {
+                      final confirmado =
+                          await _confirmarBorrado(context, piso['nombre_piso']);
+                      if (confirmado != true) return false;
+
+                      // Si el piso está publicado, primero se quita de la nube.
+                      // Si eso falla (offline o no sos el dueño), NO se borra
+                      // localmente, para no dejar el mapa huérfano en la nube.
+                      final remoteId = piso['remote_id'] as String?;
+                      if (remoteId != null &&
+                          SupabaseService.instance.configurado) {
+                        try {
+                          await SupabaseService.instance.eliminarMapa(remoteId);
+                        } catch (e) {
+                          if (!mounted) return false;
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                  'No se pudo quitar de la nube: $e\nNo se eliminó el piso.'),
+                            ),
+                          );
+                          return false;
+                        }
+                      }
+
+                      await DatabaseHelper.instance.eliminarPiso(piso['id']);
+                      if (!mounted) return true;
+                      ScaffoldMessenger.of(this.context).showSnackBar(
+                        SnackBar(
+                            content: Text("${piso['nombre_piso']} eliminado")),
+                      );
+                      return true;
+                    },
                     background: Container(
                       color: TemaApp.zonaRestringidaRelleno,
                       alignment: Alignment.centerRight,
                       padding: const EdgeInsets.only(right: 20),
                       child: const Icon(Icons.delete, color: Colors.white),
                     ),
-                    onDismissed: (direction) async {
-                      await DatabaseHelper.instance.eliminarPiso(piso['id']);
-                      _refrescarPisos();
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(this.context).showSnackBar(
-                        SnackBar(content: Text("${piso['nombre_piso']} eliminado")),
-                      );
-                    },
+                    onDismissed: (direction) => _refrescarPisos(),
                     child: Container(
                       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                       decoration: BoxDecoration(
