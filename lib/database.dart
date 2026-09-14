@@ -25,7 +25,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 11, // v11: pisos.remote_id (id del mapa publicado en Supabase)
+      version: 12, // v12: pisos.remote_actualizado (versión descargada del mapa)
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -55,6 +55,7 @@ class DatabaseHelper {
         tam_celda_metros REAL NOT NULL DEFAULT 1.0,
         rotacion_mapa REAL NOT NULL DEFAULT 0,
         remote_id TEXT,
+        remote_actualizado TEXT,
         FOREIGN KEY (edificio_id) REFERENCES edificios (id) ON DELETE CASCADE
       )
     ''');
@@ -214,6 +215,16 @@ class DatabaseHelper {
         await db.execute('ALTER TABLE pisos ADD COLUMN remote_id TEXT');
       }
     }
+    if (oldVersion < 12) {
+      // v12: fecha de actualización del mapa remoto al momento de descargarlo.
+      // Permite avisar al usuario cuando el admin publicó una versión más nueva.
+      final cols = await db.rawQuery('PRAGMA table_info(pisos)');
+      final tiene =
+          cols.any((c) => (c['name'] as String?) == 'remote_actualizado');
+      if (!tiene) {
+        await db.execute('ALTER TABLE pisos ADD COLUMN remote_actualizado TEXT');
+      }
+    }
   }
 
   // --- Edificios ---
@@ -317,6 +328,25 @@ class DatabaseHelper {
     return r.map((row) => row['remote_id'] as String).toSet();
   }
 
+  /// Mapa de remote_id → fecha de la versión descargada (parseada). Sirve para
+  /// que el catálogo compare con la nube y marque "Nuevo" / "Actualizado".
+  /// El valor es null si el mapa se descargó antes de guardar la versión (v12).
+  Future<Map<String, DateTime?>> obtenerMapasDescargados() async {
+    final db = await instance.database;
+    final r = await db.query(
+      'pisos',
+      columns: ['remote_id', 'remote_actualizado'],
+      where: 'remote_id IS NOT NULL',
+    );
+    final res = <String, DateTime?>{};
+    for (final row in r) {
+      final id = row['remote_id'] as String;
+      final raw = row['remote_actualizado'] as String?;
+      res[id] = raw == null ? null : DateTime.tryParse(raw)?.toLocal();
+    }
+    return res;
+  }
+
   /// Importa un mapa descargado de la nube a la base local, en UNA transacción.
   ///
   /// - Reutiliza el edificio local con el mismo nombre si ya existe; si no, lo
@@ -340,6 +370,7 @@ class DatabaseHelper {
     required List<dynamic> zonas,
     required List<dynamic> lugares,
     required List<dynamic> calibraciones,
+    String? remoteActualizado,
   }) async {
     final db = await instance.database;
     return await db.transaction<int>((txn) async {
@@ -368,6 +399,7 @@ class DatabaseHelper {
         'tam_celda_metros': tamCelda,
         'rotacion_mapa': rotacion,
         'remote_id': remoteId,
+        'remote_actualizado': remoteActualizado,
       };
 
       int pisoId;
@@ -511,6 +543,7 @@ class DatabaseHelper {
     final result = await db.rawQuery('''
       SELECT pisos.id, pisos.ruta_imagen, pisos.escala_metros, pisos.escala_metros_alto,
              pisos.tam_celda_metros, pisos.rotacion_mapa,
+             pisos.remote_id, pisos.remote_actualizado,
              edificios.nombre as edificio_nombre, pisos.nombre_piso
       FROM beacons
       INNER JOIN pisos ON beacons.piso_id = pisos.id

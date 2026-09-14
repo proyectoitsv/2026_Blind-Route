@@ -210,6 +210,41 @@ class SupabaseService {
     return res as String?;
   }
 
+  /// Fecha de última actualización de un mapa en la nube (consulta liviana: una
+  /// sola columna de una fila). Se usa para saber si hay una versión más nueva
+  /// que la descargada. Devuelve null si el mapa ya no existe.
+  Future<DateTime?> obtenerActualizadoEn(String remoteId) async {
+    final row = await _client
+        .from(_tabla)
+        .select('actualizado_en')
+        .eq('id', remoteId)
+        .maybeSingle();
+    if (row == null) return null;
+    return DateTime.tryParse('${row['actualizado_en']}');
+  }
+
+  // ── NOVEDADES ───────────────────────────────────────────────────────────────
+
+  /// Cuenta cuántos mapas del catálogo son nuevos (no descargados) y cuántos
+  /// están descargados pero tienen una versión más nueva en la nube. Se usa
+  /// para el aviso del botón de inicio.
+  Future<({int nuevos, int actualizados})> contarNovedades() async {
+    final mapas = await listarMapas();
+    final descargadas =
+        await DatabaseHelper.instance.obtenerMapasDescargados();
+    int nuevos = 0;
+    int actualizados = 0;
+    for (final m in mapas) {
+      if (!descargadas.containsKey(m.id)) {
+        nuevos++;
+      } else {
+        final v = descargadas[m.id];
+        if (v != null && m.actualizadoEn.isAfter(v)) actualizados++;
+      }
+    }
+    return (nuevos: nuevos, actualizados: actualizados);
+  }
+
   // ── CATÁLOGO ADMIN ────────────────────────────────────────────────────────
 
   /// id del admin logueado (para saber cuáles mapas son propios). Null si no
@@ -296,6 +331,7 @@ class SupabaseService {
       zonas: (row['zonas'] as List?) ?? const [],
       lugares: (row['lugares'] as List?) ?? const [],
       calibraciones: (row['calibraciones'] as List?) ?? const [],
+      remoteActualizado: row['actualizado_en'] as String?,
     );
   }
 
