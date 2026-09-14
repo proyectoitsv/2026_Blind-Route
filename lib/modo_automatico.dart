@@ -5,6 +5,7 @@ import 'database.dart';
 import 'procesador_senal.dart';
 import 'bluetooth_helper.dart';
 import 'pantalla_naveg.dart';
+import 'supabase_service.dart';
 import 'voz_service.dart';
 import 'tema.dart';
  
@@ -17,6 +18,7 @@ class ModoAutomatico extends StatefulWidget {
  
 class _ModoAutomaticoState extends State<ModoAutomatico> {
   bool _navegando = false;
+  bool _descargandoAuto = false;
   String _estado = 'Iniciando...';
   int _beaconsDetectados = 0;
   Timer? _timeoutTimer;
@@ -82,7 +84,7 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
   }
  
   Future<void> _procesarResultados(List<ScanResult> resultados) async {
-    if (_navegando) return;
+    if (_navegando || _descargandoAuto) return;
  
     // Procesar señales para ir llenando la ventana de mediana de cada beacon,
     // así al pasar a PantallaNavegacion (mismo ProcesadorSenal compartido) el
@@ -96,55 +98,95 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       }
     }
  
-    int detectados = 0;
+    // 1) ¿Alguna MAC ya está en un mapa LOCAL? (comportamiento de siempre)
+    final macs = <String>[];
     for (var res in resultados) {
-      String mac = res.device.remoteId.str;
+      final mac = res.device.remoteId.str;
+      macs.add(mac);
       try {
         final info = await DatabaseHelper.instance.obtenerInfoPorBeacon(mac);
         if (info != null) {
-          _navegando = true;
-          _timeoutTimer?.cancel();
-          _mapaTimer?.cancel();
- 
-          // IMPORTANTE: Indicar que NO se detenga el scan al dispose
-          BluetoothHelper.mantenerScanActivo = true;
- 
-          if (mounted) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => PantallaNavegacion(
-                  pisoId: info['id'],
-                  rutaImagen: info['ruta_imagen'],
-                  escalaX: (info['escala_metros'] as num?)?.toDouble() ?? 50,
-                  escalaY: (info['escala_metros_alto'] as num?)?.toDouble() ?? 50,
-                  tamCeldaMetros: (info['tam_celda_metros'] as num?)?.toDouble() ?? 1.0,
-                  rotacionMapa: (info['rotacion_mapa'] as num?)?.toDouble() ?? 0.0,
-                  procesadorCompartido: _procesador, // Pasar el mismo procesador
-                ),
-              ),
-            );
-          }
+          _irANavegacion(info);
           return;
         }
       } catch (e) {
         // Ignorar errores de DB individuales
       }
-      detectados++;
+    }
+
+    // 2) No hay mapa local. Preguntar a la nube por estas MACs y, si hay un
+    //    mapa publicado que las contiene, descargarlo automáticamente.
+    if (!_descargandoAuto &&
+        !_navegando &&
+        macs.isNotEmpty &&
+        SupabaseService.instance.configurado) {
+      _descargandoAuto = true;
+      try {
+        final remoteId =
+            await SupabaseService.instance.buscarMapaPorMacs(macs);
+        if (remoteId != null && !_navegando) {
+          if (mounted) {
+            setState(() => _estado = 'Descargando mapa de este lugar...');
+          }
+          _voz.hablar('Descargando el mapa de este lugar.');
+          await SupabaseService.instance.descargarMapa(remoteId);
+          // Ya está en local: reintentar el match con las MACs detectadas.
+          for (final mac in macs) {
+            final info = await DatabaseHelper.instance.obtenerInfoPorBeacon(mac);
+            if (info != null) {
+              _irANavegacion(info);
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        // Falló la consulta o la descarga: se sigue escaneando normalmente.
+      } finally {
+        _descargandoAuto = false;
+      }
     }
  
-    if (mounted && !_navegando && detectados > 0) {
+    // 3) Feedback de dispositivos detectados sin mapa (comportamiento de siempre)
+    if (mounted && !_navegando && macs.isNotEmpty) {
       setState(() {
-        _beaconsDetectados = detectados;
-        _estado = 'Detectados $detectados dispositivo(s)...';
+        _beaconsDetectados = macs.length;
+        _estado = 'Detectados ${macs.length} dispositivo(s)...';
       });
       // Iniciar timer de mapa solo una vez, cuando aparecen beacons sin mapa
       _mapaTimer ??= Timer.periodic(const Duration(seconds: 10), (_) {
-        if (mounted && !_navegando) {
+        if (mounted && !_navegando && !_descargandoAuto) {
           setState(() => _estado = 'Mapa no encontrado.');
           _voz.hablar('Mapa no encontrado.');
         }
       });
+    }
+  }
+
+  /// Pasa a la pantalla de navegación con los datos del piso (local).
+  void _irANavegacion(Map<String, dynamic> info) {
+    _navegando = true;
+    _timeoutTimer?.cancel();
+    _mapaTimer?.cancel();
+
+    // IMPORTANTE: Indicar que NO se detenga el scan al dispose
+    BluetoothHelper.mantenerScanActivo = true;
+
+    if (mounted) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => PantallaNavegacion(
+            pisoId: info['id'],
+            rutaImagen: info['ruta_imagen'],
+            escalaX: (info['escala_metros'] as num?)?.toDouble() ?? 50,
+            escalaY: (info['escala_metros_alto'] as num?)?.toDouble() ?? 50,
+            tamCeldaMetros:
+                (info['tam_celda_metros'] as num?)?.toDouble() ?? 1.0,
+            rotacionMapa: (info['rotacion_mapa'] as num?)?.toDouble() ?? 0.0,
+            procesadorCompartido: _procesador, // Pasar el mismo procesador
+          ),
+        ),
+      );
     }
   }
  
