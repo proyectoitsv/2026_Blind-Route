@@ -16,7 +16,6 @@ import 'grilla_nav.dart';
 import 'asistente_trazo.dart';
 import 'calibracion_model.dart';
 import 'supabase_service.dart';
-import 'supabase_config.dart';
 import 'tema.dart';
 
 enum _ModoEdicion { beacons, zonas, lugares, escala, calibracion, brujula }
