@@ -197,6 +197,19 @@ class SupabaseService {
   String urlImagen(String imagenPath) =>
       _client.storage.from(_bucket).getPublicUrl(imagenPath);
 
+  // ── AUTODESCARGA POR BEACON ────────────────────────────────────────────────
+
+  /// Dada una lista de MACs detectadas, pregunta al servidor si algún mapa
+  /// publicado contiene alguna de ellas. Devuelve el id remoto del mapa o null.
+  /// La búsqueda ocurre en el server (dentro del JSONB de beacons); no baja
+  /// datos pesados hasta que efectivamente se descarga el mapa.
+  Future<String?> buscarMapaPorMacs(List<String> macs) async {
+    if (macs.isEmpty) return null;
+    final res = await _client
+        .rpc('buscar_mapa_por_macs', params: {'p_macs': macs});
+    return res as String?;
+  }
+
   // ── CATÁLOGO ADMIN ────────────────────────────────────────────────────────
 
   /// id del admin logueado (para saber cuáles mapas son propios). Null si no
