@@ -37,22 +37,21 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+         flavorDimensions += "app"
+    productFlavors {
+        create("user") {
+            dimension = "app"
+            resValue(type = "string", name = "app_name", value = "BlindRoute")
+        }
+        create("admin") {
+            dimension = "app"
+            applicationIdSuffix = ".admin"
+            resValue(type = "string", name = "app_name", value = "BlindRoute Admin")
+        }
+    }
 }
 
 flutter {
     source = "../.."
-}
-
-flavorDimensions "app"
-productFlavors {
-    user {
-        dimension "app"
-        applicationId "com.tuorg.blindroute"
-        resValue "string", "app_name", "BlindRoute"
-    }
-    admin {
-        dimension "app"
-        applicationId "com.tuorg.blindroute.admin"
-        resValue "string", "app_name", "BlindRoute Admin"
-    }
 }
