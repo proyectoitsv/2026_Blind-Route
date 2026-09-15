@@ -270,13 +270,13 @@ class SupabaseService {
 
   // ── ELIMINAR (admin dueño) ────────────────────────────────────────────────
 
-  /// Borra un mapa publicado (imagen + fila). La imagen se quita con la API de
-  /// Storage (borrarla por SQL directo está prohibido). La fila la borra la RLS
-  /// por dueño: si el mapa es de otro administrador, no se borra nada y se lanza
-  /// un error. Se borra la imagen primero (con la fila aún presente) para que la
-  /// regla de Storage pueda verificar el dueño.
+  /// Borra un mapa publicado (imagen + fila). Se borra la IMAGEN primero, con la
+  /// fila todavía presente: la regla de Storage verifica el dueño consultando
+  /// esa fila, así que si se borrara la fila antes, la regla no encontraría el
+  /// dueño y la imagen quedaría huérfana. Después se borra la fila (RLS por
+  /// dueño): si no sos el dueño, no se borra ninguna fila y se corta con error.
   Future<void> eliminarMapa(String remoteId) async {
-    // 1) Ruta de la imagen en el bucket.
+    // 1) Ruta de la imagen (con la fila aún presente).
     final row = await _client
         .from(_tabla)
         .select('imagen_path')
@@ -284,12 +284,12 @@ class SupabaseService {
         .maybeSingle();
     final imagenPath = row == null ? null : row['imagen_path'] as String?;
 
-    // 2) Imagen → API de Storage.
+    // 2) Imagen PRIMERO, con la API de Storage (borrarla por SQL está prohibido).
     if (imagenPath != null && imagenPath.isNotEmpty) {
       await _client.storage.from(_bucket).remove([imagenPath]);
     }
 
-    // 3) Fila → la RLS por dueño decide. Si no borró nada, no era el dueño.
+    // 3) Fila (RLS por dueño). Si no borró nada, no era el dueño.
     final borradas =
         await _client.from(_tabla).delete().eq('id', remoteId).select('id');
     if ((borradas as List).isEmpty) {

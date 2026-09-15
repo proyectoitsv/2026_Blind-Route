@@ -6,6 +6,7 @@ import 'poi_model.dart';
 import 'calibracion_model.dart';
 import 'package:flutter/material.dart';
 import 'dart:convert';
+import 'dart:io';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -314,6 +315,41 @@ class DatabaseHelper {
       limit: 1,
     );
     return r.isNotEmpty ? r.first['id'] as int : null;
+  }
+
+  /// Desinstala un mapa descargado: borra el piso local (con sus beacons, zonas,
+  /// lugares y calibraciones) y el archivo de imagen del teléfono. Sólo afecta
+  /// este dispositivo; el mapa sigue en la nube. No-op si no está descargado.
+  Future<void> desinstalarMapaLocal(String remoteId) async {
+    final db = await instance.database;
+    final r = await db.query(
+      'pisos',
+      columns: ['id', 'ruta_imagen'],
+      where: 'remote_id = ?',
+      whereArgs: [remoteId],
+      limit: 1,
+    );
+    if (r.isEmpty) return;
+    final pisoId = r.first['id'] as int;
+    final ruta = r.first['ruta_imagen'] as String?;
+
+    await db.delete('beacons', where: 'piso_id = ?', whereArgs: [pisoId]);
+    await db.delete('zonas_no_transitables',
+        where: 'piso_id = ?', whereArgs: [pisoId]);
+    await db.delete('lugares_interes',
+        where: 'piso_id = ?', whereArgs: [pisoId]);
+    await db.delete('calibraciones', where: 'piso_id = ?', whereArgs: [pisoId]);
+    await db.delete('pisos', where: 'id = ?', whereArgs: [pisoId]);
+
+    // Borrar el archivo de imagen local (si quedó y existe).
+    if (ruta != null && ruta.isNotEmpty) {
+      try {
+        final f = File(ruta);
+        if (await f.exists()) await f.delete();
+      } catch (_) {
+        // Si no se pudo borrar el archivo, no es crítico.
+      }
+    }
   }
 
   /// Set de remote_ids ya descargados/publicados en este equipo. Permite al
@@ -702,5 +738,24 @@ class DatabaseHelper {
     await db.delete('lugares_interes', where: 'piso_id = ?', whereArgs: [id]);
     await db.delete('calibraciones', where: 'piso_id = ?', whereArgs: [id]);
     return await db.delete('pisos', where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Desinstala del teléfono un mapa descargado (por su remote_id): borra el
+  /// piso y todos sus datos. Devuelve la ruta de la imagen local para que el
+  /// llamador borre también el archivo. Devuelve null si no estaba descargado.
+  Future<String?> eliminarMapaDescargado(String remoteId) async {
+    final db = await instance.database;
+    final rows = await db.query(
+      'pisos',
+      columns: ['id', 'ruta_imagen'],
+      where: 'remote_id = ?',
+      whereArgs: [remoteId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final pisoId = rows.first['id'] as int;
+    final ruta = rows.first['ruta_imagen'] as String?;
+    await eliminarPiso(pisoId);
+    return ruta;
   }
 }
