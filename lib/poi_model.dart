@@ -51,6 +51,21 @@ class LugarInteres {
 
   bool get esEscalera => tipo == TipoLugar.escalera;
 
+  /// Lado (m) del cuadrado que ocupa una escalera en el plano. Una escalera
+  /// típica mide ~1 m de ancho: con celdas de 1 m ocupa una celda. Lo usan
+  /// el dibujo del mapa y el pathfinder (la escalera es un obstáculo).
+  static const double anchoEscaleraMetros = 1.0;
+
+  /// Área (normalizada) que ocupa la escalera: un cuadrado de
+  /// [anchoEscaleraMetros] de lado centrado en su posición.
+  Rect areaEscalera({required double metrosX, required double metrosY}) {
+    return Rect.fromCenter(
+      center: posicion,
+      width: metrosX > 0 ? anchoEscaleraMetros / metrosX : 0,
+      height: metrosY > 0 ? anchoEscaleraMetros / metrosY : 0,
+    );
+  }
+
   LugarInteres copyWith({int? id, Offset? posicion}) {
     return LugarInteres(
       id: id ?? this.id,
