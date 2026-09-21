@@ -152,7 +152,7 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
           for (final mac in macs) {
             final info = await DatabaseHelper.instance.obtenerInfoPorBeacon(mac);
             if (info != null) {
-              _irANavegacion(info);
+              await _completarEdificioYNavegar(info);
               return;
             }
           }
@@ -216,7 +216,7 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
             final fresco =
                 await DatabaseHelper.instance.obtenerInfoPorBeacon(mac);
             if (fresco != null) {
-              _irANavegacion(fresco);
+              await _completarEdificioYNavegar(fresco);
               return;
             }
           }
@@ -227,6 +227,58 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     }
 
     // Sin actualización, sin conexión o error: navegar con lo que ya está.
+    await _completarEdificioYNavegar(info);
+  }
+
+  /// Antes de navegar, baja los OTROS pisos del mismo edificio que falten o
+  /// estén desactualizados. Al llegar sólo se detecta el piso donde está el
+  /// usuario, pero para ir a un lugar de otro piso hacen falta todos.
+  ///
+  /// Nunca bloquea la llegada: si no hay conexión, tarda demasiado o falla,
+  /// se navega igual con los pisos que ya estén en el teléfono. Lo que se
+  /// haya bajado antes del corte queda guardado (cada piso es una
+  /// transacción aparte).
+  Future<void> _completarEdificioYNavegar(Map<String, dynamic> info) async {
+    final edificio = info['edificio_nombre'] as String?;
+    if (edificio != null && SupabaseService.instance.configurado) {
+      try {
+        final pendientes = await SupabaseService.instance
+            .pisosPendientesDelEdificio(edificio)
+            .timeout(const Duration(seconds: 4));
+        if (pendientes.isNotEmpty) {
+          if (mounted) {
+            setState(() => _estado = 'Descargando los otros pisos del edificio...');
+          }
+          _voz.hablar('Descargando los otros pisos.');
+          final limite = DateTime.now().add(const Duration(seconds: 30));
+          for (final id in pendientes) {
+            final restante = limite.difference(DateTime.now());
+            if (restante <= Duration.zero) break;
+            await SupabaseService.instance.descargarMapa(id).timeout(restante);
+          }
+        }
+      } catch (e) {
+        // Sin datos / timeout / error: se sigue con lo que haya en el teléfono.
+        debugPrint('[Edificio] No se pudieron completar los pisos: $e');
+      }
+    }
+
+    // El piso actual pudo haberse re-descargado: releer sus datos por las
+    // dudas (mismo id local, la descarga actualiza en el lugar).
+    final pisoId = info['id'] as int?;
+    if (pisoId != null) {
+      final fresco = await DatabaseHelper.instance.obtenerPisoInfo(pisoId);
+      if (fresco != null) {
+        info = {
+          ...info,
+          'ruta_imagen': fresco.rutaImagen,
+          'escala_metros': fresco.escalaX,
+          'escala_metros_alto': fresco.escalaY,
+          'tam_celda_metros': fresco.tamCeldaMetros,
+          'rotacion_mapa': fresco.rotacionMapa,
+        };
+      }
+    }
     _irANavegacion(info);
   }
 

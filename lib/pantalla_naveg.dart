@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:math';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_compass/flutter_compass.dart';
@@ -19,6 +21,7 @@ import 'grilla_nav.dart';
 import 'filtro_un_euro.dart';
 import 'detector_movimiento.dart';
 import 'tema.dart';
+import 'piso_util.dart';
  
 class PantallaNavegacion extends StatefulWidget {
   final int pisoId;
@@ -37,6 +40,15 @@ class PantallaNavegacion extends StatefulWidget {
   /// Lado de celda de la grilla (m). Configurable por piso, rango 0.5–1.0.
   final double tamCeldaMetros;
 
+  /// Id del destino final cuando esta pantalla se abre por un SALTO de piso
+  /// (el usuario mantuvo apretada la pantalla al terminar de subir o bajar).
+  /// La navegación retoma ese destino sola, sin volver a preguntar.
+  final int? destinoFinalId;
+
+  /// Frase que se dice al abrir la pantalla en lugar de "Buscando ubicación."
+  /// (ej: "Estás en el piso 2. Buscando ubicación...").
+  final String? anuncioInicial;
+
   const PantallaNavegacion({
     super.key,
     required this.pisoId,
@@ -46,6 +58,8 @@ class PantallaNavegacion extends StatefulWidget {
     this.escalaX = GrillaNav.escalaPorDefecto,
     this.escalaY = GrillaNav.escalaPorDefecto,
     this.tamCeldaMetros = 1.0,
+    this.destinoFinalId,
+    this.anuncioInicial,
   });
  
   @override
@@ -61,7 +75,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
  
   Map<String, BeaconMarcado> _beaconsEnElMapa = {};
   List<ZonaNoTransitable> _zonas = [];
+  /// Lugares del piso ACTUAL (los que se dibujan y donde están las escaleras
+  /// que se pueden usar desde acá).
   List<LugarInteres> _lugares = [];
+
+  /// Lugares de todo el edificio: es donde se buscan los destinos.
+  List<LugarInteres> _lugaresEdificio = [];
+
+  /// Pisos del edificio indexados por id local.
+  Map<int, PisoInfo> _pisosEdificio = {};
   List<CalibracionRegistro> _calibraciones = [];
 
   /// Modelo de rango (txPower y n) AJUSTADO por beacon a partir de las
@@ -216,6 +238,51 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   bool _escaneando = false;
   String _estadoScan = 'Iniciando...';
  
+  // ── NAVEGACIÓN ENTRE PISOS ─────────────────────────────────────────────────
+  //
+  // _destinoSeleccionado es SIEMPRE el destino final, aunque esté en otro
+  // piso. Si está en otro piso, el tramo de este piso termina en una
+  // escalera (_escaleraObjetivo), elegida una sola vez por piso: la más
+  // cercana POR RUTA que vaya en el sentido necesario. Se guía hasta el punto
+  // frente a su entrada, se anuncia la llegada y el usuario mantiene
+  // apretada la pantalla para cargar el piso siguiente. Si hacen falta varios
+  // pisos, cada salto repite lo mismo en el piso nuevo.
+
+  /// Escalera del piso actual hacia la que se guía (sólo en tramo entre pisos).
+  LugarInteres? _escaleraObjetivo;
+
+  /// El usuario llegó frente a la escalera: se dejan de dar giros y se espera
+  /// el "mantener apretado".
+  bool _llegoAEscalera = false;
+
+  /// El usuario llegó al destino final.
+  bool _llegoADestino = false;
+
+  /// En este piso no hay ninguna escalera en el sentido necesario.
+  bool _sinEscaleraDisponible = false;
+
+  /// Ciclos seguidos dentro del radio de llegada (evita anunciar por un
+  /// único ciclo ruidoso).
+  int _ciclosEnLlegada = 0;
+  static const int _ciclosParaLlegada = 3;
+
+  /// Distancia (m) al objetivo a la que se considera que el usuario llegó.
+  /// Con celdas de ~1 m y el ruido BLE, 1.5 m es lo mínimo razonable.
+  static const double _radioLlegadaMetros = 1.5;
+
+  /// Si ya se eligió entre los lugares del mismo nombre del piso actual el más
+  /// cercano al usuario (hace falta la posición para decidirlo).
+  bool _destinoRefinado = true;
+
+  /// Evita dos saltos si el gesto se dispara dos veces.
+  bool _saltandoDePiso = false;
+
+  /// Tras un salto, si ya se anunció cómo sigue el recorrido en este piso.
+  bool _anuncioRetomadoHecho = false;
+
+  /// Tiempo que hay que mantener apretada la pantalla para cambiar de piso.
+  static const Duration _duracionMantener = Duration(milliseconds: 1000);
+
   // Navegacion
   LugarInteres? _destinoSeleccionado;
   List<Offset>? _rutaActual;
@@ -335,7 +402,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     _movimiento.detener();
     _puertaRumbo.resetear();
     _histeresisCelda.resetear();
-    if (widget.procesadorCompartido == null) {
+    if (widget.procesadorCompartido == null && !_saltandoDePiso) {
       BluetoothHelper.detenerScanSeguro(dueno: this);
     } else {
       // El scan fisico sigue vivo para la proxima pantalla, pero la suscripcion
@@ -355,6 +422,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
       final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
       final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(widget.pisoId);
+      // Destinos de todo el edificio + pisos disponibles para los saltos.
+      final lugaresEdificio =
+          await DatabaseHelper.instance.obtenerLugaresDelMismoEdificio(widget.pisoId);
+      final pisosEdificio =
+          await DatabaseHelper.instance.obtenerPisosDelMismoEdificio(widget.pisoId);
       final calibraciones = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(widget.pisoId);
 
       // Lookup del nombre del piso para el AppBar (item 7).
@@ -368,9 +440,20 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         whereArgs: [widget.pisoId],
         limit: 1,
       );
-      final nombrePiso = filas.isNotEmpty
-          ? filas.first['nombre_piso'] as String?
-          : null;
+      final pisosPorId = {for (final p in pisosEdificio) p.id: p};
+      // Con número de piso se muestra el nombre derivado ("Piso 2").
+      final nombrePiso = pisosPorId[widget.pisoId]?.nombreVisible ??
+          (filas.isNotEmpty ? filas.first['nombre_piso'] as String? : null);
+
+      // Salto de piso: retomar el destino final que venía de la pantalla
+      // anterior. Si hay varios lugares con ese nombre en este piso, se
+      // elige el más cercano cuando se conozca la posición.
+      LugarInteres? destinoRetomado;
+      if (widget.destinoFinalId != null) {
+        for (final l in lugaresEdificio) {
+          if (l.id == widget.destinoFinalId) destinoRetomado = l;
+        }
+      }
       // rotacion_mapa puede no existir todavía en instalaciones antiguas (v7→v8);
       // usar el valor pasado por widget como fallback.
       final rotacionDb = filas.isNotEmpty
@@ -382,7 +465,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         _beaconsEnElMapa = {for (var b in beacons) b.mac: b};
         _zonas = zonas;
         _lugares = lugares;
+        _lugaresEdificio = lugaresEdificio;
+        _pisosEdificio = pisosPorId;
         _calibraciones = calibraciones;
+        if (destinoRetomado != null) {
+          _destinoSeleccionado = destinoRetomado;
+          _destinoRefinado = false;
+          _estadoRuta = 'Buscando tu ubicación para seguir...';
+        }
         _nombrePiso = nombrePiso;
         _rotacionMapaEfectiva = rotacionDb;
       });
@@ -430,7 +520,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       // anterior se interrumpe y esa espera retrasaba el arranque del scan
       // varios segundos justo cuando mas importa. El anuncio es informativo:
       // no tiene por que estar en el camino critico del posicionamiento.
-      _voz.hablarSinEsperar('Buscando ubicación.');
+      _voz.hablarSinEsperar(widget.anuncioInicial ?? 'Buscando ubicación.');
  
       if (widget.procesadorCompartido != null && FlutterBluePlus.isScanningNow) {
         if (mounted) {
@@ -1171,6 +1261,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         // no sea un efecto colateral del repintado del widget.
         _actualizarInstruccionVoz();
 
+        // ¿Llegó a la escalera o al destino final?
+        _verificarLlegada();
+
         // Anunciar cuando se obtiene la primera ubicacion estable.
         // hablarSinEsperar para NO bloquear el loop de posicionamiento BLE.
         if (primeraUbicacion) {
@@ -1178,7 +1271,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         }
       }
  
-      if (_destinoSeleccionado != null && _posicionFinal != null) {
+      if (_destinoSeleccionado != null &&
+          _posicionFinal != null &&
+          !_llegoADestino &&
+          !(_esTramoEntrePisos && _sinEscaleraDisponible)) {
         final ahora = DateTime.now();
         final debeRecalcular = _ultimaPosicionRuta == null ||
             (_posicionFinal! - _ultimaPosicionRuta!).distance > _umbralRecalcularRuta;
@@ -1239,9 +1335,49 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         _posicionFinal!.dx.clamp(0.001, 0.999),
         _posicionFinal!.dy.clamp(0.001, 0.999),
       );
+
+      // Destino en este piso con nombre repetido: ahora que se conoce la
+      // posición, quedarse con el más cercano.
+      if (!_esTramoEntrePisos && !_destinoRefinado) {
+        _refinarDestinoEnPiso(origen);
+      }
+
+      // Tramo entre pisos: elegir la escalera una sola vez por piso.
+      if (_esTramoEntrePisos && _escaleraObjetivo == null) {
+        final escalera = await _elegirEscalera(origen);
+        if (!mounted) return;
+        if (escalera == null) {
+          final sube = _subiendo;
+          setState(() {
+            _sinEscaleraDisponible = true;
+            _rutaActual = null;
+            _estadoRuta = 'No hay escalera para ${sube ? 'subir' : 'bajar'} en este piso';
+          });
+          _voz.hablar('No hay escalera para ${sube ? 'subir' : 'bajar'} '
+              'en este piso.');
+          return;
+        }
+        setState(() => _escaleraObjetivo = escalera);
+        // Si esta pantalla se abrió por un salto, avisar cómo se sigue.
+        // Incluye "Ubicación lista" porque esta frase la interrumpe.
+        if (widget.destinoFinalId != null && !_anuncioRetomadoHecho) {
+          _anuncioRetomadoHecho = true;
+          _voz.hablar('Ubicación lista. Vamos a la escalera.');
+        }
+      } else if (!_esTramoEntrePisos &&
+          widget.destinoFinalId != null &&
+          !_anuncioRetomadoHecho) {
+        // Salto al piso final: avisar que ya se guía al destino.
+        _anuncioRetomadoHecho = true;
+        _voz.hablar('Ubicación lista. Vamos a '
+            '${_destinoSeleccionado!.nombre}.');
+      }
+
+      final objetivo = _puntoObjetivoTramo();
+      if (objetivo == null) return;
       final destino = Offset(
-        _destinoSeleccionado!.posicion.dx.clamp(0.001, 0.999),
-        _destinoSeleccionado!.posicion.dy.clamp(0.001, 0.999),
+        objetivo.dx.clamp(0.001, 0.999),
+        objetivo.dy.clamp(0.001, 0.999),
       );
 
       final camino = await _resolvedor.encontrarCamino(origen, destino);
@@ -1256,8 +1392,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           // callback BLE dispare un nuevo compute() durante el período de espera.
           _ultimaPosicionRuta = null;
         } else {
-          final distancia = _calcularDistancia(camino);
-          _estadoRuta = 'Ruta a ${_destinoSeleccionado!.nombre}: ${distancia.toStringAsFixed(1)}m';
+          final distancia = _calcularDistancia(camino).toStringAsFixed(1);
+          if (_esTramoEntrePisos) {
+            final pisoDestino = _numeroPisoDe(_destinoSeleccionado!);
+            _estadoRuta = 'Escalera para ${_subiendo ? 'subir' : 'bajar'}: '
+                '${distancia}m · destino en '
+                '${pisoDestino != null ? PisoUtil.nombre(pisoDestino) : 'otro piso'}';
+          } else {
+            _estadoRuta = 'Ruta a ${_destinoSeleccionado!.nombre}: ${distancia}m';
+          }
         }
       });
     } catch (e) {
@@ -1280,6 +1423,317 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       _calculandoRuta = false;
     }
   }
+
+  // ─── NAVEGACIÓN ENTRE PISOS: helpers ──────────────────────────────────────
+
+  /// Número del piso actual (null si el piso no tiene número asignado).
+  int? get _numeroPisoActual => _pisosEdificio[widget.pisoId]?.numero;
+
+  /// Número del piso donde está [l] (null si ese piso no tiene número).
+  int? _numeroPisoDe(LugarInteres l) => _pisosEdificio[l.pisoId]?.numero;
+
+  /// El destino final está en otro piso: el tramo de este piso termina en
+  /// una escalera.
+  bool get _esTramoEntrePisos =>
+      _destinoSeleccionado != null &&
+      _destinoSeleccionado!.pisoId != widget.pisoId;
+
+  /// true si hay que subir para llegar al destino.
+  bool get _subiendo {
+    final actual = _numeroPisoActual;
+    final destino =
+        _destinoSeleccionado == null ? null : _numeroPisoDe(_destinoSeleccionado!);
+    return actual != null && destino != null && destino > actual;
+  }
+
+  /// Número del piso al que lleva la escalera de este tramo.
+  int? get _siguientePisoNumero {
+    final actual = _numeroPisoActual;
+    if (actual == null || !_esTramoEntrePisos) return null;
+    return actual + (_subiendo ? 1 : -1);
+  }
+
+  PisoInfo? _pisoPorNumero(int numero) {
+    for (final p in _pisosEdificio.values) {
+      if (p.numero == numero) return p;
+    }
+    return null;
+  }
+
+  /// Se puede llegar a [l]: está en este piso, o en otro piso con número y
+  /// todos los pisos intermedios (incluido el suyo) tienen mapa cargado.
+  bool _puedeLlegarA(LugarInteres l) {
+    if (l.pisoId == widget.pisoId) return true;
+    final actual = _numeroPisoActual;
+    final destino = _numeroPisoDe(l);
+    if (actual == null || destino == null || destino == actual) return false;
+    final paso = destino > actual ? 1 : -1;
+    for (int n = actual + paso; n != destino + paso; n += paso) {
+      if (_pisoPorNumero(n) == null) return false;
+    }
+    return true;
+  }
+
+  /// Punto al que se calcula la ruta en ESTE piso: el destino si está acá, o
+  /// el punto frente a la entrada de la escalera si hay que cambiar de piso.
+  Offset? _puntoObjetivoTramo() {
+    final d = _destinoSeleccionado;
+    if (d == null) return null;
+    if (!_esTramoEntrePisos) return d.posicion;
+    return _escaleraObjetivo?.puntoEntrada(
+      metrosX: _grilla.metrosX,
+      metrosY: _grilla.metrosY,
+    );
+  }
+
+  /// Elige la escalera de este piso que va en el sentido necesario y queda
+  /// más cerca POR RUTA (no en línea recta: una escalera detrás de una pared
+  /// puede estar cerca en línea recta y lejísimos caminando). Si ninguna
+  /// tiene ruta, se usa la más cercana en línea recta. Null si no hay.
+  Future<LugarInteres?> _elegirEscalera(Offset origen) async {
+    final sube = _subiendo;
+    final candidatas = _lugares
+        .where((l) => l.esEscalera && (sube ? l.sube : l.baja))
+        .toList();
+    if (candidatas.isEmpty) return null;
+    if (candidatas.length == 1) return candidatas.first;
+
+    LugarInteres? mejor;
+    int mejorPasos = 1 << 30;
+    for (final e in candidatas) {
+      final entrada = e.puntoEntrada(
+        metrosX: _grilla.metrosX,
+        metrosY: _grilla.metrosY,
+      );
+      final camino = await _resolvedor.encontrarCamino(
+        origen,
+        Offset(entrada.dx.clamp(0.001, 0.999), entrada.dy.clamp(0.001, 0.999)),
+      );
+      if (camino != null && camino.length < mejorPasos) {
+        mejorPasos = camino.length;
+        mejor = e;
+      }
+    }
+    if (mejor != null) return mejor;
+
+    candidatas.sort((a, b) => _distanciaMetros(origen, a.posicion)
+        .compareTo(_distanciaMetros(origen, b.posicion)));
+    return candidatas.first;
+  }
+
+  /// Entre los lugares alcanzables con el mismo nombre (normalizado) que
+  /// [nombreNorm], elige el del piso más cercano al actual. Si hay varios en
+  /// ese piso y es el piso actual, el más cercano al usuario.
+  LugarInteres? _elegirDestino(String nombreNorm) {
+    final candidatos = _lugaresEdificio
+        .where((l) => _normalizar(l.nombre) == nombreNorm && _puedeLlegarA(l))
+        .toList();
+    if (candidatos.isEmpty) return null;
+
+    final actual = _numeroPisoActual;
+    int distanciaPisos(LugarInteres l) {
+      if (l.pisoId == widget.pisoId) return 0;
+      final n = _numeroPisoDe(l);
+      return (actual == null || n == null) ? 1 << 20 : (n - actual).abs();
+    }
+
+    candidatos.sort((a, b) => distanciaPisos(a).compareTo(distanciaPisos(b)));
+    final mejores = candidatos
+        .where((l) => distanciaPisos(l) == distanciaPisos(candidatos.first))
+        .toList();
+
+    final pos = _posicionFinal;
+    final enEstePiso = mejores.where((l) => l.pisoId == widget.pisoId).toList();
+    if (enEstePiso.isNotEmpty && pos != null) {
+      enEstePiso.sort((a, b) => _distanciaMetros(pos, a.posicion)
+          .compareTo(_distanciaMetros(pos, b.posicion)));
+      return enEstePiso.first;
+    }
+    return mejores.first;
+  }
+
+  /// Destino en este piso con nombre repetido: se queda con el más cercano
+  /// al usuario. Se hace una sola vez, cuando ya hay posición.
+  void _refinarDestinoEnPiso(Offset origen) {
+    _destinoRefinado = true;
+    final d = _destinoSeleccionado;
+    if (d == null) return;
+    final nombreNorm = _normalizar(d.nombre);
+    final mismos = _lugares
+        .where((l) => _normalizar(l.nombre) == nombreNorm)
+        .toList();
+    if (mismos.length < 2) return;
+    mismos.sort((a, b) => _distanciaMetros(origen, a.posicion)
+        .compareTo(_distanciaMetros(origen, b.posicion)));
+    if (mismos.first.id != d.id && mounted) {
+      setState(() => _destinoSeleccionado = mismos.first);
+    }
+  }
+
+  /// Fija un nuevo destino final y reinicia todo el estado del tramo.
+  Future<void> _establecerDestino(LugarInteres destino) async {
+    if (!mounted) return;
+    setState(() {
+      _destinoSeleccionado = destino;
+      _escaleraObjetivo = null;
+      _llegoAEscalera = false;
+      _llegoADestino = false;
+      _sinEscaleraDisponible = false;
+      _ciclosEnLlegada = 0;
+      _destinoRefinado = _posicionFinal != null;
+      _rutaActual = null;
+      _estadoRuta = 'Calculando ruta...';
+      _ultimaPosicionRuta = null;
+      _ultimoIntentoRuta = null;
+      _anuncioRetomadoHecho = true;
+    });
+    _calcularRuta();
+
+    if (!_esTramoEntrePisos) {
+      await _voz.hablar('${destino.nombre}. Calculando ruta.');
+      return;
+    }
+    final pisoDestino = _numeroPisoDe(destino)!;
+    await _voz.hablar(
+      '${destino.nombre}, ${PisoUtil.nombre(pisoDestino).toLowerCase()}. '
+      'Vamos a la escalera.',
+    );
+  }
+
+  /// Revisa, en cada ciclo de posición, si el usuario llegó a la escalera del
+  /// tramo o al destino final. Pide [_ciclosParaLlegada] ciclos seguidos
+  /// dentro del radio para no anunciar por un salto de ruido.
+  void _verificarLlegada() {
+    final d = _destinoSeleccionado;
+    final pos = _posicionFinal;
+    if (d == null || pos == null) return;
+
+    if (_esTramoEntrePisos) {
+      final esc = _escaleraObjetivo;
+      if (esc == null || _llegoAEscalera) return;
+      final entrada = esc.puntoEntrada(
+        metrosX: _grilla.metrosX,
+        metrosY: _grilla.metrosY,
+      );
+      final cerca = _distanciaMetros(pos, entrada) <= _radioLlegadaMetros ||
+          _distanciaMetros(pos, esc.posicion) <= _radioLlegadaMetros;
+      _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
+      if (_ciclosEnLlegada >= _ciclosParaLlegada) {
+        _ciclosEnLlegada = 0;
+        setState(() => _llegoAEscalera = true);
+        _anunciarLlegadaEscalera(esc, entrada);
+      }
+      return;
+    }
+
+    if (_llegoADestino) return;
+    final cerca = _distanciaMetros(pos, d.posicion) <= _radioLlegadaMetros;
+    _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
+    if (_ciclosEnLlegada >= _ciclosParaLlegada) {
+      _ciclosEnLlegada = 0;
+      setState(() {
+        _llegoADestino = true;
+        _estadoRuta = 'Llegaste';
+      });
+      HapticFeedback.heavyImpact();
+      _voz.hablar('Llegaste a ${d.nombre}.');
+    }
+  }
+
+  /// Anuncio al llegar frente a la escalera: hacia dónde girar para quedar
+  /// de frente a la entrada, si hay que subir o bajar, hasta qué piso, y el
+  /// recordatorio del gesto para cambiar de piso.
+  void _anunciarLlegadaEscalera(LugarInteres esc, Offset entrada) {
+    HapticFeedback.heavyImpact();
+    final accion = _subiendo ? 'Subí' : 'Bajá';
+    final sig = _siguientePisoNumero;
+
+    // Giro para quedar de frente a la entrada (sólo si hay brújula).
+    String giro = '';
+    final heading = _orientacion.heading;
+    if (heading != null && esc.direccionEntrada != null) {
+      // Desde el punto de entrada hacia el centro de la escalera = la
+      // dirección en la que hay que mirar para entrar.
+      final ind = OrientacionService.calcularIndicacion(
+        headingUsuario: heading,
+        posicionUsuario: entrada,
+        posicionDestino: esc.posicion,
+        rotacionMapa: _rotacionMapaEfectiva,
+        metrosX: widget.escalaX,
+        metrosY: widget.escalaY,
+      );
+      giro = ind.instruccion == 'Seguí derecho'
+          ? ' Está adelante.'
+          : ' ${ind.instruccion}.';
+    }
+
+    // Ej: "Escalera. Girá a la izquierda. Subí al piso 2 y mantené la
+    // pantalla apretada."
+    _voz.hablar(
+      'Escalera.$giro $accion'
+      '${sig != null ? ' ${PisoUtil.destinoVoz(sig)}' : ''}'
+      ' y mantené la pantalla apretada.',
+    );
+  }
+
+  /// Gesto de mantener apretada la pantalla: carga el piso siguiente del
+  /// tramo y retoma la navegación hacia el destino final.
+  ///
+  /// Se permite aunque el sistema todavía no haya detectado la llegada a la
+  /// escalera: el posicionamiento BLE puede no confirmarla justo en el borde,
+  /// y quien sabe que ya subió es el usuario.
+  Future<void> _cambiarDePiso() async {
+    if (_saltandoDePiso || !mounted) return;
+    final d = _destinoSeleccionado;
+    if (d == null || !_esTramoEntrePisos) {
+      _voz.hablar('No hay cambio de piso pendiente.');
+      return;
+    }
+    if (_sinEscaleraDisponible) {
+      _voz.hablar('No hay escalera en este piso.');
+      return;
+    }
+    final sig = _siguientePisoNumero;
+    final piso = sig == null ? null : _pisoPorNumero(sig);
+    if (sig == null || piso == null) {
+      _voz.hablar('Falta el mapa del piso siguiente.');
+      return;
+    }
+
+    _saltandoDePiso = true;
+    HapticFeedback.heavyImpact();
+    if (_escuchando) {
+      _voz.detenerEscucha();
+      _escuchando = false;
+    }
+
+    // Ej: "Piso 2. Buscando ubicación."
+    final anuncio = '${PisoUtil.nombre(sig)}. Buscando ubicación.';
+
+    // El scan físico sigue vivo para la pantalla nueva, igual que al pasar
+    // desde el modo automático. La pantalla nueva toma la propiedad del scan
+    // y de la voz; la limpieza tardía de esta queda neutralizada.
+    BluetoothHelper.mantenerScanActivo = true;
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PantallaNavegacion(
+          pisoId: piso.id,
+          rutaImagen: piso.rutaImagen,
+          escalaX: piso.escalaX,
+          escalaY: piso.escalaY,
+          tamCeldaMetros: piso.tamCeldaMetros,
+          rotacionMapa: piso.rotacionMapa,
+          // Mismo procesador: conserva el historial de RSSI de los beacons
+          // que se ven entre pisos y la posición se estabiliza antes.
+          procesadorCompartido: _procesador,
+          destinoFinalId: d.id,
+          anuncioInicial: anuncio,
+        ),
+      ),
+    );
+  }
  
   double _calcularDistancia(List<Offset> camino) {
     // El camino es una secuencia de celdas adyacentes (1 celda ≈ 1 m real en
@@ -1292,7 +1746,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
  
   /// Activa el micrófono, escucha el destino y busca la mejor coincidencia.
   Future<void> _seleccionarDestinoPorVoz() async {
-    if (_lugares.isEmpty) {
+    if (_lugaresEdificio.isEmpty) {
       await _voz.hablar('No hay lugares configurados.');
       return;
     }
@@ -1316,17 +1770,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         if (!mounted) return;
         setState(() => _escuchando = false);
  
-        final destino = _buscarMejorCoincidencia(textoReconocido);
+        final coincidencia = _buscarMejorCoincidencia(textoReconocido);
+        // Si hay varios lugares con ese nombre (ej: varios baños), se elige
+        // el del piso más cercano.
+        final destino = coincidencia == null
+            ? null
+            : _elegirDestino(_normalizar(coincidencia.nombre));
  
         if (destino != null) {
-          setState(() {
-            _destinoSeleccionado = destino;
-            _rutaActual = null;
-            _estadoRuta = 'Calculando ruta...';
-            _ultimaPosicionRuta = null;
-          });
-          _calcularRuta();
-          await _voz.hablar('${destino.nombre}. Calculando ruta.');
+          await _establecerDestino(destino);
         } else {
           await _voz.hablar('No encontré "$textoReconocido". Intentá de nuevo.');
         }
@@ -1341,14 +1793,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   /// Busca el lugar cuyo nombre tenga mayor similitud con el texto reconocido.
   LugarInteres? _buscarMejorCoincidencia(String texto) {
     final textoNorm = _normalizar(texto);
+    // Se busca en todo el edificio, sólo entre los lugares alcanzables.
+    final lugares = _lugaresEdificio.where(_puedeLlegarA).toList();
  
     // Búsqueda exacta primero
-    for (final lugar in _lugares) {
+    for (final lugar in lugares) {
       if (_normalizar(lugar.nombre) == textoNorm) return lugar;
     }
  
     // Búsqueda por contención
-    for (final lugar in _lugares) {
+    for (final lugar in lugares) {
       final nombreNorm = _normalizar(lugar.nombre);
       if (nombreNorm.contains(textoNorm) || textoNorm.contains(nombreNorm)) {
         return lugar;
@@ -1360,7 +1814,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     LugarInteres? mejorCandidato;
     int mejorPuntaje = 0;
  
-    for (final lugar in _lugares) {
+    for (final lugar in lugares) {
       final nombreNorm = _normalizar(lugar.nombre);
       int puntaje = 0;
       for (final palabra in palabras) {
@@ -1390,7 +1844,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   // ─── SELECCIÓN DE DESTINO POR LISTA (fallback táctil) ─────────────────────
  
   void _seleccionarDestinoLista() async {
-    if (_lugares.isEmpty) {
+    // Nombres únicos de todo el edificio (alcanzables). Los lugares con el
+    // mismo nombre en distintos pisos aparecen una sola vez: al elegirlo se
+    // va al del piso más cercano.
+    final grupos = <String, List<LugarInteres>>{};
+    for (final l in _lugaresEdificio.where(_puedeLlegarA)) {
+      grupos.putIfAbsent(_normalizar(l.nombre), () => []).add(l);
+    }
+    if (grupos.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('No hay lugares de interes configurados')),
@@ -1398,10 +1859,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       }
       return;
     }
- 
+    final claves = grupos.keys.toList()
+      ..sort((a, b) => grupos[a]!.first.nombre
+          .toLowerCase()
+          .compareTo(grupos[b]!.first.nombre.toLowerCase()));
+
+    String pisosDe(List<LugarInteres> ls) {
+      final nums = <int?>{for (final l in ls) _numeroPisoDe(l)};
+      final textos = nums.map((n) {
+        final t = n == null ? 'Sin número' : PisoUtil.nombre(n);
+        return n != null && n == _numeroPisoActual ? '$t (acá)' : t;
+      }).toList();
+      return textos.join(' · ');
+    }
+
     // La lista se muestra visualmente; no leer todos los nombres por voz
  
-    final seleccion = await showDialog<LugarInteres>(
+    final seleccion = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('¿A dónde querés ir?'),
@@ -1409,14 +1883,18 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           width: double.maxFinite,
           child: ListView.builder(
             shrinkWrap: true,
-            itemCount: _lugares.length,
+            itemCount: claves.length,
             itemBuilder: (context, i) {
-              final l = _lugares[i];
+              final ls = grupos[claves[i]]!;
+              final l = ls.first;
               return ListTile(
-                leading: const Icon(Icons.place, color: Colors.purple),
+                leading: Icon(
+                  l.esEscalera ? Icons.stairs : Icons.place,
+                  color: l.esEscalera ? Colors.orange : Colors.purple,
+                ),
                 title: Text(l.nombre, style: const TextStyle(fontSize: 18)),
-                subtitle: l.descripcion != null ? Text(l.descripcion!) : null,
-                onTap: () => Navigator.pop(ctx, l),
+                subtitle: Text(pisosDe(ls)),
+                onTap: () => Navigator.pop(ctx, claves[i]),
               );
             },
           ),
@@ -1431,14 +1909,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     );
  
     if (seleccion != null && mounted) {
-      setState(() {
-        _destinoSeleccionado = seleccion;
-        _rutaActual = null;
-        _estadoRuta = 'Calculando ruta...';
-        _ultimaPosicionRuta = null;
-      });
-      _calcularRuta();
-      await _voz.hablar('${seleccion.nombre}. Calculando ruta.');
+      final destino = _elegirDestino(seleccion);
+      if (destino != null) await _establecerDestino(destino);
     }
   }
  
@@ -1446,6 +1918,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     if (mounted) {
       setState(() {
         _destinoSeleccionado = null;
+        _escaleraObjetivo = null;
+        _llegoAEscalera = false;
+        _llegoADestino = false;
+        _sinEscaleraDisponible = false;
+        _ciclosEnLlegada = 0;
         _rutaActual = null;
         _estadoRuta = '';
         _ultimaPosicionRuta = null;
@@ -1486,10 +1963,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     if (heading == null || _posicionFinal == null || _destinoSeleccionado == null) {
       return;
     }
+    // Ya llegó (a la escalera o al destino): no más indicaciones de giro.
+    if (_llegoAEscalera || _llegoADestino) return;
+    final objetivo = _objetivoNavegacion();
+    if (objetivo == null) return;
     final indicacion = OrientacionService.calcularIndicacion(
       headingUsuario: heading,
       posicionUsuario: _posicionFinal!,
-      posicionDestino: _objetivoNavegacion(),
+      posicionDestino: objetivo,
       rotacionMapa: _rotacionMapaEfectiva,
       metrosX: widget.escalaX,
       metrosY: widget.escalaY,
@@ -1500,11 +1981,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
   /// Punto al que deben apuntar las instrucciones: la próxima esquina del camino
   /// pintado (sigue las cuadrículas). Si todavía no hay ruta, el destino directo.
-  Offset _objetivoNavegacion() {
+  /// En un tramo entre pisos el objetivo es la entrada de la escalera; null
+  /// si todavía no se eligió (no hay a dónde apuntar).
+  Offset? _objetivoNavegacion() {
     if (_rutaActual != null && _rutaActual!.isNotEmpty && _posicionFinal != null) {
       return OrientacionService.proximoObjetivo(_rutaActual!, _posicionFinal!);
     }
-    return _destinoSeleccionado!.posicion;
+    return _puntoObjetivoTramo();
   }
  
   // ─── WIDGETS ──────────────────────────────────────────────────────────────
@@ -1599,16 +2082,96 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     );
   }
  
+  /// Tarjeta fija para los estados de llegada (escalera / destino).
+  Widget _buildTarjetaEstado({
+    required IconData icono,
+    required String titulo,
+    required String subtitulo,
+    required Color acento,
+  }) {
+    return Semantics(
+      liveRegion: true,
+      label: '$titulo. $subtitulo',
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        decoration: BoxDecoration(
+          color: TemaApp.fondoCard,
+          borderRadius: BorderRadius.circular(TemaApp.radiusCard),
+          border: Border.all(color: acento.withValues(alpha: 0.6), width: 1.5),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 56, height: 56,
+              decoration: BoxDecoration(
+                color: acento.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icono, color: acento, size: 36),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    titulo,
+                    style: const TextStyle(
+                      color: TemaApp.textoBlanco,
+                      fontSize: TemaApp.spInstruccion,
+                      fontWeight: FontWeight.w800,
+                      height: 1.1,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitulo,
+                    style: TextStyle(
+                      color: acento.withValues(alpha: 0.9),
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildIndicacionGiro() {
+    if (_llegoADestino && _destinoSeleccionado != null) {
+      return _buildTarjetaEstado(
+        icono: Icons.flag_rounded,
+        titulo: 'Llegaste',
+        subtitulo: _destinoSeleccionado!.nombre,
+        acento: TemaApp.instruccionAccent,
+      );
+    }
+    if (_llegoAEscalera) {
+      final sig = _siguientePisoNumero;
+      return _buildTarjetaEstado(
+        icono: Icons.stairs_rounded,
+        titulo: '${_subiendo ? 'Subí' : 'Bajá'} la escalera'
+            '${sig != null ? ' a ${PisoUtil.nombre(sig)}' : ''}',
+        subtitulo: 'Al llegar, mantené apretada la pantalla',
+        acento: Colors.orange,
+      );
+    }
+
     final heading = _orientacion.heading;
-    if (heading == null || _posicionFinal == null || _destinoSeleccionado == null) {
+    final objetivo = _destinoSeleccionado == null ? null : _objetivoNavegacion();
+    if (heading == null || _posicionFinal == null || objetivo == null) {
       return const SizedBox.shrink();
     }
  
     final indicacion = OrientacionService.calcularIndicacion(
       headingUsuario: heading,
       posicionUsuario: _posicionFinal!,
-      posicionDestino: _objetivoNavegacion(),
+      posicionDestino: objetivo,
       rotacionMapa: _rotacionMapaEfectiva,
       metrosX: widget.escalaX,
       metrosY: widget.escalaY,
@@ -1747,7 +2310,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
                     ),
                   ),
                   Text(
-                    escuchando ? 'Decí el nombre del lugar' : 'Tocá en cualquier parte de la pantalla',
+                    escuchando
+                        ? 'Decí el nombre del lugar'
+                        : _esTramoEntrePisos
+                            ? 'Mantené apretado para cambiar de piso'
+                            : 'Tocá en cualquier parte de la pantalla',
                     style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 14),
                   ),
                 ],
@@ -1821,13 +2388,30 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
         body: Semantics(
           label: 'Tocá en cualquier parte de la pantalla para elegir tu destino por voz',
+          onLongPressHint: 'cambiar de piso',
           explicitChildNodes: true,
-          child: GestureDetector(
-            // Toque en cualquier parte → selección de destino por voz.
+          // Dos gestos sobre toda la pantalla:
+          //  - toque corto  → elegir destino por voz (como siempre);
+          //  - mantener ~1 s → cambiar de piso (salto al piso siguiente).
+          // Se usa RawGestureDetector para poder fijar la duración del
+          // mantener: la de GestureDetector (0.5 s) es demasiado corta y un
+          // toque apoyado sin querer podría cargar otro piso.
+          child: RawGestureDetector(
             // translucent deja pasar los eventos a los hijos (mapa, botones,
             // barra de micrófono), que capturan sus propios toques y gestos.
             behavior: HitTestBehavior.translucent,
-            onTap: _iniciarSeleccionDestinoPorPantalla,
+            gestures: <Type, GestureRecognizerFactory>{
+              TapGestureRecognizer:
+                  GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+                () => TapGestureRecognizer(),
+                (r) => r.onTap = _iniciarSeleccionDestinoPorPantalla,
+              ),
+              LongPressGestureRecognizer: GestureRecognizerFactoryWithHandlers<
+                  LongPressGestureRecognizer>(
+                () => LongPressGestureRecognizer(duration: _duracionMantener),
+                (r) => r.onLongPress = _cambiarDePiso,
+              ),
+            },
             child: Column(
               children: [
             // Panel de destino + brújula
@@ -1850,7 +2434,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
                                   const SizedBox(width: 6),
                                   Expanded(
                                     child: Text(
-                                      _destinoSeleccionado!.nombre,
+                                      _esTramoEntrePisos &&
+                                              _numeroPisoDe(_destinoSeleccionado!) != null
+                                          ? '${_destinoSeleccionado!.nombre} · '
+                                              '${PisoUtil.nombre(_numeroPisoDe(_destinoSeleccionado!)!)}'
+                                          : _destinoSeleccionado!.nombre,
                                       style: const TextStyle(
                                         fontWeight: FontWeight.w700,
                                         fontSize: 17,

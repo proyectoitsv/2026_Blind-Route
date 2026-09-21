@@ -171,6 +171,24 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   String? _beaconArrastrado;
   static const double _radioAgarreBeacon = 0.05;
 
+  // Arrastre de lugares de interés y escaleras (modo lugares). Mismo canal de
+  // un dedo que beacons/zonas. Se guarda el id del lugar agarrado, el
+  // desfasaje entre el dedo y el punto (para que no "salte" bajo el dedo) y
+  // si ya superó el umbral de movimiento: un toque limpio NO debe moverlo,
+  // porque ese toque es el que abre el diálogo de eliminar.
+  int? _lugarArrastrado;
+  Offset _desfaseAgarreLugar = Offset.zero;
+  Offset? _inicioAgarreLugar;
+  bool _lugarEnMovimiento = false;
+
+  /// true si el último gesto sobre un lugar fue un arrastre real. El tap del
+  /// marcador (que abre "eliminar") se resuelve DESPUÉS de soltar el dedo,
+  /// cuando el estado del arrastre ya se limpió; esta marca le avisa que ese
+  /// gesto no era un toque. Se limpia al empezar el próximo gesto.
+  bool _ultimoGestoLugarFueArrastre = false;
+  static const double _radioAgarreLugar = 0.05;
+  static const double _umbralMovimientoLugar = 0.012;
+
   // ── Asistente de trazo (líneas rectas, estilo Canva) ──────────────────────
   // Cuando el trazo se acerca a un ángulo notable el punto se corrige para que
   // la línea quede exactamente recta, se dibujan guías punteadas y se emite un
@@ -858,56 +876,29 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   // -- Lugares de Interes (POI) ----------------------------------------------
 
+  /// Alta de un lugar de interés o de una escalera.
+  ///
+  /// Las escaleras se cargan POR PISO (no vinculadas entre pisos): cada una
+  /// dice si desde este piso sube, baja o ambas, y hacia qué lado del plano
+  /// da su entrada. La navegación sólo necesita las escaleras del piso donde
+  /// está el usuario, y así cada piso sigue siendo un mapa independiente.
   void _agregarLugar(Offset normalizado) async {
-    final controller = TextEditingController();
-    final descController = TextEditingController();
-
-    final nombre = await showDialog<String>(
+    final datos = await showDialog<_DatosNuevoLugar>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Nuevo Lugar de Interes'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: controller,
-              decoration: const InputDecoration(
-                hintText: 'Nombre (ej: Bano, Terminal 5)',
-                border: OutlineInputBorder(),
-              ),
-              autofocus: true,
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: descController,
-              decoration: const InputDecoration(
-                hintText: 'Descripcion opcional',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
-          ElevatedButton(
-            onPressed: () {
-              final n = controller.text.trim();
-              if (n.isNotEmpty) Navigator.pop(ctx, n);
-            },
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
+      builder: (ctx) => const _DialogoNuevoLugar(),
     );
-
-    if (nombre == null || nombre.isEmpty) return;
+    if (datos == null) return;
 
     try {
       final lugar = LugarInteres(
         pisoId: widget.pisoId,
-        nombre: nombre,
+        nombre: datos.nombre,
         posicion: normalizado,
-        descripcion: descController.text.trim().isEmpty ? null : descController.text.trim(),
+        descripcion: datos.descripcion,
+        tipo: datos.tipo,
+        sube: datos.sube,
+        baja: datos.baja,
+        direccionEntrada: datos.direccionEntrada,
       );
       final id = await DatabaseHelper.instance.crearLugarInteres(lugar);
       if (mounted) {
@@ -922,7 +913,112 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
+  // ── Arrastre de lugares y escaleras (modo lugares) ────────────────────────
+
+  /// Lugar cuyo marcador cae dentro del radio de agarre de [n], o null. Si
+  /// hay varios, el más cercano.
+  ///  - Lugar común: el pin se dibuja ARRIBA del punto (la punta es la
+  ///    posición), así que también se acepta tocar el ícono, un poco más arriba.
+  ///  - Escalera: el cuadrado está centrado en la posición y mide 1 m, así que
+  ///    el radio cubre todo el cuadrado aunque sea más grande que el normal.
+  LugarInteres? _lugarCercano(Offset n) {
+    LugarInteres? mejor;
+    double mejorDist = double.infinity;
+    final mitadEscalera = max(
+      MapaWidget.anchoEscaleraMetros * 0.75 / _grilla.metrosX,
+      MapaWidget.anchoEscaleraMetros * 0.75 / _grilla.metrosY,
+    );
+    for (final l in _lugares) {
+      if (l.id == null) continue;
+      final double d;
+      final double radio;
+      if (l.esEscalera) {
+        d = (l.posicion - n).distance;
+        radio = max(_radioAgarreLugar, mitadEscalera);
+      } else {
+        final dPunto = (l.posicion - n).distance;
+        final dIcono =
+            (l.posicion - Offset(n.dx, n.dy + _radioAgarreLugar * 0.6)).distance;
+        d = min(dPunto, dIcono);
+        radio = _radioAgarreLugar;
+      }
+      if (d <= radio && d < mejorDist) {
+        mejorDist = d;
+        mejor = l;
+      }
+    }
+    return mejor;
+  }
+
+  void _onArrastreInicioLugar(Offset n) {
+    if (!mounted) return;
+    _ultimoGestoLugarFueArrastre = false;
+    final l = _lugarCercano(n);
+    if (l == null) return;
+    setState(() {
+      _lugarArrastrado = l.id;
+      _desfaseAgarreLugar = l.posicion - n;
+      _inicioAgarreLugar = n;
+      _lugarEnMovimiento = false;
+    });
+  }
+
+  void _onArrastreActualizarLugar(Offset n) {
+    if (!mounted || _lugarArrastrado == null) return;
+    // Hasta superar el umbral el gesto se trata como toque (no se mueve).
+    if (!_lugarEnMovimiento) {
+      if (_inicioAgarreLugar == null ||
+          (n - _inicioAgarreLugar!).distance < _umbralMovimientoLugar) {
+        return;
+      }
+      _lugarEnMovimiento = true;
+    }
+    final destino = n + _desfaseAgarreLugar;
+    final nueva = Offset(destino.dx.clamp(0.0, 1.0), destino.dy.clamp(0.0, 1.0));
+    setState(() {
+      // Se reasigna la lista (no se muta in-place) para que el mapa se
+      // entere del cambio, igual que con las zonas.
+      _lugares = _lugares
+          .map((l) => l.id == _lugarArrastrado ? l.copyWith(posicion: nueva) : l)
+          .toList();
+    });
+  }
+
+  Future<void> _terminarArrastreLugar() async {
+    if (!mounted) return;
+    final id = _lugarArrastrado;
+    final movio = _lugarEnMovimiento;
+    _ultimoGestoLugarFueArrastre = movio;
+    setState(() {
+      _lugarArrastrado = null;
+      _inicioAgarreLugar = null;
+      _lugarEnMovimiento = false;
+    });
+    if (id == null || !movio) return;
+    final lugar = _lugares.where((l) => l.id == id).firstOrNull;
+    if (lugar == null) return;
+    try {
+      await DatabaseHelper.instance.actualizarPosicionLugar(id, lugar.posicion);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando la nueva ubicación: $e')),
+        );
+      }
+    }
+  }
+
+  // Soltar el dedo y cancelar (segundo dedo para zoom) hacen lo mismo: el
+  // lugar queda donde se soltó y se persiste, como con los beacons.
+  void _onArrastreFinLugar() => _terminarArrastreLugar();
+  void _onArrastreCancelarLugar() => _terminarArrastreLugar();
+
   void _borrarLugar(LugarInteres lugar) async {
+    // Si el gesto terminó siendo un arrastre, no se ofrece borrar.
+    if (_ultimoGestoLugarFueArrastre) {
+      _ultimoGestoLugarFueArrastre = false;
+      return;
+    }
     try {
       final confirmar = await showDialog<bool>(
         context: context,
@@ -980,6 +1076,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       // callback se vuelve a conectar.
       _agregarVertice(normalizado);
     } else if (_modo == _ModoEdicion.lugares) {
+      // Tocar sobre un lugar existente es para arrastrarlo o borrarlo, no
+      // para crear otro encima.
+      if (_lugarCercano(normalizado) != null) return;
       _agregarLugar(normalizado);
     } else if (_modo == _ModoEdicion.calibracion) {
       // Seleccionar la celda donde el operador dice estar parado.
@@ -1579,7 +1678,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         }
         return '${_verticesEnCurso.length} punto(s) marcado(s). Arrastrá cualquier punto naranja para corregir su ubicación. Seguí tocando para agregar más, o cerrá la zona.';
       case _ModoEdicion.lugares:
-        return 'Toca el mapa para agregar un lugar de interes. Toca el icono morado para eliminarlo.';
+        return 'Toca el mapa para agregar un lugar o una escalera. Arrastra su icono para moverlo, o tocalo para eliminarlo.';
       case _ModoEdicion.escala:
         final actual = 'Escala actual: ${_escalaX.toStringAsFixed(1)} m × ${_escalaY.toStringAsFixed(1)} m '
             '(grilla ${_grilla.celdasX}×${_grilla.celdasY}).';
@@ -1805,7 +1904,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                   // queda siempre activo.
                   panEnabled: _modo != _ModoEdicion.escala &&
                       _modo != _ModoEdicion.zonas &&
-                      _modo != _ModoEdicion.beacons,
+                      _modo != _ModoEdicion.beacons &&
+                      _modo != _ModoEdicion.lugares,
                   scaleEnabled: true,
                   child: MapaWidget(
                     rutaImagen: widget.rutaImagen,
@@ -1847,30 +1947,40 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                             ? _onArrastreInicioZona
                             : _modo == _ModoEdicion.beacons
                                 ? _onArrastreInicioBeacon
-                                : null,
+                                : _modo == _ModoEdicion.lugares
+                                    ? _onArrastreInicioLugar
+                                    : null,
                     onArrastreActualizar: _modo == _ModoEdicion.escala
                         ? _onArrastreActualizar
                         : _modo == _ModoEdicion.zonas
                             ? _onArrastreActualizarZona
                             : _modo == _ModoEdicion.beacons
                                 ? _onArrastreActualizarBeacon
-                                : null,
+                                : _modo == _ModoEdicion.lugares
+                                    ? _onArrastreActualizarLugar
+                                    : null,
                     onArrastreFin: _modo == _ModoEdicion.escala
                         ? _onArrastreFin
                         : _modo == _ModoEdicion.zonas
                             ? _onArrastreFinZona
                             : _modo == _ModoEdicion.beacons
                                 ? _onArrastreFinBeacon
-                                : null,
+                                : _modo == _ModoEdicion.lugares
+                                    ? _onArrastreFinLugar
+                                    : null,
                     onArrastreCancelar: _modo == _ModoEdicion.escala
                         ? _onArrastreCancelar
                         : _modo == _ModoEdicion.zonas
                             ? _onArrastreCancelarZona
                             : _modo == _ModoEdicion.beacons
                                 ? _onArrastreCancelarBeacon
-                                : null,
+                                : _modo == _ModoEdicion.lugares
+                                    ? _onArrastreCancelarLugar
+                                    : null,
                     beaconArrastrado:
                         _modo == _ModoEdicion.beacons ? _beaconArrastrado : null,
+                    lugarArrastrado:
+                        _modo == _ModoEdicion.lugares ? _lugarArrastrado : null,
                     // Calibración: celda seleccionada (amarillo) + pines de celdas calibradas.
                     celdaResaltada: _modo == _ModoEdicion.calibracion && _celdaCalSeleccionada != null
                         ? Offset(_grilla.centroX(_celdaCalSeleccionada!.ix),
@@ -2521,5 +2631,252 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   String _formatearTimestamp(DateTime t) {
     String dos(int n) => n.toString().padLeft(2, '0');
     return '${dos(t.day)}/${dos(t.month)} ${dos(t.hour)}:${dos(t.minute)}';
+  }
+}
+
+
+// ─── DIÁLOGO DE ALTA DE LUGAR / ESCALERA ────────────────────────────────────
+
+/// Resultado del diálogo de alta.
+class _DatosNuevoLugar {
+  final String nombre;
+  final String? descripcion;
+  final TipoLugar tipo;
+  final bool sube;
+  final bool baja;
+  final double? direccionEntrada;
+
+  const _DatosNuevoLugar({
+    required this.nombre,
+    this.descripcion,
+    this.tipo = TipoLugar.comun,
+    this.sube = false,
+    this.baja = false,
+    this.direccionEntrada,
+  });
+}
+
+/// Conexiones posibles de una escalera desde el piso donde se carga.
+enum _SentidoEscalera { sube, baja, ambas }
+
+class _DialogoNuevoLugar extends StatefulWidget {
+  const _DialogoNuevoLugar();
+
+  @override
+  State<_DialogoNuevoLugar> createState() => _DialogoNuevoLugarState();
+}
+
+class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
+  final _nombreCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+
+  TipoLugar _tipo = TipoLugar.comun;
+  _SentidoEscalera? _sentido;
+  double? _direccion; // 0 arriba, 90 derecha, 180 abajo, 270 izquierda
+
+  @override
+  void dispose() {
+    _nombreCtrl.dispose();
+    _descCtrl.dispose();
+    super.dispose();
+  }
+
+  bool get _esEscalera => _tipo == TipoLugar.escalera;
+
+  /// Qué falta para poder guardar (null = se puede guardar).
+  String? get _faltante {
+    if (!_esEscalera) {
+      return _nombreCtrl.text.trim().isEmpty ? 'Escribí un nombre' : null;
+    }
+    if (_sentido == null) return 'Elegí si sube, baja o ambas';
+    if (_direccion == null) return 'Elegí hacia dónde da la entrada';
+    return null;
+  }
+
+  void _guardar() {
+    if (_faltante != null) return;
+    final desc = _descCtrl.text.trim();
+    if (!_esEscalera) {
+      Navigator.pop(
+        context,
+        _DatosNuevoLugar(
+          nombre: _nombreCtrl.text.trim(),
+          descripcion: desc.isEmpty ? null : desc,
+        ),
+      );
+      return;
+    }
+    final nombre = _nombreCtrl.text.trim();
+    Navigator.pop(
+      context,
+      _DatosNuevoLugar(
+        nombre: nombre.isEmpty ? 'Escalera' : nombre,
+        descripcion: desc.isEmpty ? null : desc,
+        tipo: TipoLugar.escalera,
+        sube: _sentido == _SentidoEscalera.sube ||
+            _sentido == _SentidoEscalera.ambas,
+        baja: _sentido == _SentidoEscalera.baja ||
+            _sentido == _SentidoEscalera.ambas,
+        direccionEntrada: _direccion,
+      ),
+    );
+  }
+
+  Widget _botonDireccion(double grados, IconData icono, String etiqueta) {
+    final elegido = _direccion == grados;
+    return Semantics(
+      button: true,
+      selected: elegido,
+      label: 'Entrada hacia $etiqueta del plano',
+      child: SizedBox(
+        width: 56,
+        height: 56,
+        child: ElevatedButton(
+          onPressed: () => setState(() => _direccion = grados),
+          style: ElevatedButton.styleFrom(
+            padding: EdgeInsets.zero,
+            backgroundColor: elegido ? TemaApp.acento : TemaApp.acentoSuave,
+            foregroundColor: elegido ? TemaApp.fondo : TemaApp.textoBlanco,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          child: Icon(icono, size: 28),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(_esEscalera ? 'Nueva escalera' : 'Nuevo lugar de interés'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SegmentedButton<TipoLugar>(
+              segments: const [
+                ButtonSegment(
+                  value: TipoLugar.comun,
+                  icon: Icon(Icons.place),
+                  label: Text('Lugar'),
+                ),
+                ButtonSegment(
+                  value: TipoLugar.escalera,
+                  icon: Icon(Icons.stairs),
+                  label: Text('Escalera'),
+                ),
+              ],
+              selected: {_tipo},
+              onSelectionChanged: (s) => setState(() => _tipo = s.first),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _nombreCtrl,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                hintText: _esEscalera
+                    ? 'Nombre (opcional, ej: Escalera norte)'
+                    : 'Nombre (ej: Baño, Terminal 5)',
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _descCtrl,
+              decoration: const InputDecoration(
+                hintText: 'Descripción opcional',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            if (_esEscalera) ...[
+              const SizedBox(height: 16),
+              const Text('Desde este piso, la escalera:',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('Sube'),
+                    avatar: const Icon(Icons.north, size: 18),
+                    selected: _sentido == _SentidoEscalera.sube,
+                    onSelected: (_) =>
+                        setState(() => _sentido = _SentidoEscalera.sube),
+                  ),
+                  ChoiceChip(
+                    label: const Text('Baja'),
+                    avatar: const Icon(Icons.south, size: 18),
+                    selected: _sentido == _SentidoEscalera.baja,
+                    onSelected: (_) =>
+                        setState(() => _sentido = _SentidoEscalera.baja),
+                  ),
+                  ChoiceChip(
+                    label: const Text('Sube y baja'),
+                    avatar: const Icon(Icons.swap_vert, size: 18),
+                    selected: _sentido == _SentidoEscalera.ambas,
+                    onSelected: (_) =>
+                        setState(() => _sentido = _SentidoEscalera.ambas),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const Text('¿Hacia qué lado del plano da la entrada?',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              const Text(
+                'Es el lado por donde se llega a la boca de la escalera, '
+                'tal como se ve el plano en pantalla.',
+                style: TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              Center(
+                child: Column(
+                  children: [
+                    _botonDireccion(0, Icons.arrow_upward, 'arriba'),
+                    const SizedBox(height: 6),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _botonDireccion(270, Icons.arrow_back, 'la izquierda'),
+                        const SizedBox(width: 6),
+                        const SizedBox(
+                          width: 56,
+                          height: 56,
+                          child: Icon(Icons.stairs, size: 32),
+                        ),
+                        const SizedBox(width: 6),
+                        _botonDireccion(90, Icons.arrow_forward, 'la derecha'),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    _botonDireccion(180, Icons.arrow_downward, 'abajo'),
+                  ],
+                ),
+              ),
+            ],
+            if (_faltante != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _faltante!,
+                style: const TextStyle(color: TemaApp.advertencia, fontSize: 12),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        ElevatedButton(
+          onPressed: _faltante == null ? _guardar : null,
+          child: const Text('Guardar'),
+        ),
+      ],
+    );
   }
 }
