@@ -142,14 +142,9 @@ class SupabaseService {
                     z.vertices.map((v) => {'dx': v.dx, 'dy': v.dy}).toList(),
               })
           .toList(),
-      'lugares': lugares
-          .map((l) => {
-                'nombre': l.nombre,
-                'x': l.posicion.dx,
-                'y': l.posicion.dy,
-                'descripcion': l.descripcion,
-              })
-          .toList(),
+      // Incluye tipo/sube/baja/direccion_entrada de las escaleras dentro del
+      // mismo JSONB: la tabla de Supabase no necesita columnas nuevas.
+      'lugares': lugares.map((l) => l.toJsonNube()).toList(),
       // toJson() ya deja lecturas_ble / tx_power_ajustado como strings y el
       // timestamp en ISO: se guarda tal cual y CalibracionRegistro.fromJson lo
       // reconstruye igual al descargar. Sólo se quita el id local.
@@ -221,6 +216,35 @@ class SupabaseService {
         .maybeSingle();
     if (row == null) return null;
     return DateTime.tryParse('${row['actualizado_en']}');
+  }
+
+  // ── PISOS DEL MISMO EDIFICIO ────────────────────────────────────────────────
+
+  /// ids remotos de los pisos del edificio [edificioNombre] que faltan en el
+  /// teléfono o tienen una versión más nueva en la nube. Consulta liviana
+  /// (dos columnas). La navegación entre pisos necesita tener todos los
+  /// pisos del edificio: al llegar sólo se detecta uno por sus beacons.
+  Future<List<String>> pisosPendientesDelEdificio(String edificioNombre) async {
+    final data = await _client
+        .from(_tabla)
+        .select('id, actualizado_en')
+        .eq('edificio_nombre', edificioNombre);
+    final locales = await DatabaseHelper.instance.obtenerMapasDescargados();
+    final pendientes = <String>[];
+    for (final raw in data as List) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final id = row['id'] as String;
+      if (!locales.containsKey(id)) {
+        pendientes.add(id);
+        continue;
+      }
+      final local = locales[id];
+      final remoto = DateTime.tryParse('${row['actualizado_en']}');
+      if (local != null && remoto != null && remoto.isAfter(local)) {
+        pendientes.add(id);
+      }
+    }
+    return pendientes;
   }
 
   // ── NOVEDADES ───────────────────────────────────────────────────────────────

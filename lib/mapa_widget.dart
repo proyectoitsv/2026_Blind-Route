@@ -615,6 +615,15 @@ class MapaWidget extends StatelessWidget {
   /// maneja el canal de un dedo ([onArrastreInicio]/…) de la pantalla de config.
   final String? beaconArrastrado;
 
+  /// Id del lugar/escalera que el operador está arrastrando (modo lugares de
+  /// la configuración), o null. Se dibuja agrandado para que se vea cuál se
+  /// está moviendo.
+  final int? lugarArrastrado;
+
+  /// Lado (m) con el que se dibujan las escaleras. Una escalera típica mide
+  /// ~1 m de ancho: con celdas de 1 m, el ícono ocupa exactamente una celda.
+  static const double anchoEscaleraMetros = 1.0;
+
   const MapaWidget({
     super.key,
     required this.rutaImagen,
@@ -643,6 +652,7 @@ class MapaWidget extends StatelessWidget {
     this.celdasCalibradas = const [],
     this.verticeArrastrado,
     this.beaconArrastrado,
+    this.lugarArrastrado,
     this.guias = const [],
     this.guiaPunto,
   });
@@ -797,8 +807,44 @@ class MapaWidget extends StatelessWidget {
                   );
                 }),
 
-                // LUGARES DE INTERÉS (POIs)
+                // LUGARES DE INTERÉS (POIs) y ESCALERAS
                 ...lugares.map((lugar) {
+                  final arrastrado =
+                      lugarArrastrado != null && lugarArrastrado == lugar.id;
+
+                  // ESCALERA: cuadrado a escala real, centrado en su posición.
+                  // Mide [MapaWidget.anchoEscaleraMetros] de lado, convertido a
+                  // píxeles con la escala del piso en cada eje: con celdas de
+                  // 1 m ocupa exactamente una celda de la grilla.
+                  if (lugar.esEscalera) {
+                    final ancho = (tamanoRenderizado.width / grilla.metrosX *
+                            MapaWidget.anchoEscaleraMetros)
+                        .clamp(4.0, double.infinity);
+                    final alto = (tamanoRenderizado.height / grilla.metrosY *
+                            MapaWidget.anchoEscaleraMetros)
+                        .clamp(4.0, double.infinity);
+                    final cx = offsetX + lugar.posicion.dx * tamanoRenderizado.width;
+                    final cy = offsetY + lugar.posicion.dy * tamanoRenderizado.height;
+                    return Positioned(
+                      left: cx - ancho / 2,
+                      top: cy - alto / 2,
+                      width: ancho,
+                      height: alto,
+                      child: GestureDetector(
+                        onTap: onTapLugar != null ? () => onTapLugar!(lugar) : null,
+                        child: Transform.scale(
+                          scale: arrastrado ? 1.35 : 1.0,
+                          child: _MarcadorEscalera(
+                            lugar: lugar,
+                            ancho: ancho,
+                            alto: alto,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+
+                  // LUGAR COMÚN: pin de tamaño fijo con la punta en la posición.
                   final px = offsetX + lugar.posicion.dx * tamanoRenderizado.width - 14;
                   final py = offsetY + lugar.posicion.dy * tamanoRenderizado.height - 28;
                   return Positioned(
@@ -806,30 +852,37 @@ class MapaWidget extends StatelessWidget {
                     top: py,
                     child: GestureDetector(
                       onTap: onTapLugar != null ? () => onTapLugar!(lugar) : null,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.place,
-                            color: modoEdicion ? Colors.purple : Colors.purple[700],
-                            size: 28,
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.85),
-                              borderRadius: BorderRadius.circular(4),
+                      // Agrandado mientras se arrastra. La escala se ancla cerca
+                      // de la punta del ícono (la posición exacta); la etiqueta
+                      // cuelga por debajo de ese punto.
+                      child: Transform.scale(
+                        scale: arrastrado ? 1.35 : 1.0,
+                        alignment: const Alignment(0, 0.25),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.place,
+                              color: modoEdicion ? Colors.purple : Colors.purple[700],
+                              size: 28,
                             ),
-                            child: Text(
-                              lugar.nombre,
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                color: modoEdicion ? Colors.purple[800] : Colors.purple[900],
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.85),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                lugar.nombre,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: modoEdicion ? Colors.purple[800] : Colors.purple[900],
+                                ),
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   );
@@ -1023,4 +1076,140 @@ class _ArrastreUnDedoState extends State<_ArrastreUnDedo> {
       child: widget.child,
     );
   }
+}
+
+
+/// Marcador de escalera a escala real ([ancho] × [alto] píxeles, que son
+/// [MapaWidget.anchoEscaleraMetros] en el plano). Dibuja los escalones y un
+/// triángulo en el borde de la entrada apuntando hacia afuera; la etiqueta
+/// con nombre y sentido (↑ sube, ↓ baja, ↕ ambas) cuelga debajo sin afectar
+/// el tamaño del cuadrado.
+class _MarcadorEscalera extends StatelessWidget {
+  final LugarInteres lugar;
+  final double ancho;
+  final double alto;
+  const _MarcadorEscalera({
+    required this.lugar,
+    required this.ancho,
+    required this.alto,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final sentido = lugar.sube && lugar.baja
+        ? '↕'
+        : lugar.sube
+            ? '↑'
+            : lugar.baja
+                ? '↓'
+                : '';
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Positioned.fill(
+          child: CustomPaint(
+            painter: _EscaleraPainter(direccionEntrada: lugar.direccionEntrada),
+          ),
+        ),
+        // Etiqueta debajo del cuadrado, centrada y más ancha que él si hace
+        // falta (no se recorta ni desplaza el cuadrado).
+        Positioned(
+          top: alto + 2,
+          left: -60,
+          right: -60,
+          child: Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.85),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                '${lugar.nombre} $sentido'.trim(),
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orange[900],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Dibuja la escalera dentro de su cuadrado. Se trabaja en un marco local
+/// rotado según [direccionEntrada], donde la entrada queda siempre "arriba":
+/// los escalones son líneas horizontales y el triángulo va en el borde de
+/// arriba apuntando hacia afuera.
+class _EscaleraPainter extends CustomPainter {
+  final double? direccionEntrada;
+  const _EscaleraPainter({required this.direccionEntrada});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final lado = min(size.width, size.height);
+    final radio = Radius.circular(lado * 0.12);
+
+    // Fondo y borde.
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, radio),
+      Paint()..color = const Color(0xFFE65100).withValues(alpha: 0.85),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect.deflate(0.5), radio),
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = max(1.0, lado * 0.05),
+    );
+
+    // Marco local centrado y rotado: la entrada queda hacia -y.
+    canvas.save();
+    canvas.translate(size.width / 2, size.height / 2);
+    if (direccionEntrada != null) canvas.rotate(direccionEntrada! * pi / 180);
+    final medio = lado / 2;
+
+    // Escalones.
+    final escalon = Paint()
+      ..color = Colors.white
+      ..strokeWidth = max(0.8, lado * 0.05)
+      ..strokeCap = StrokeCap.round;
+    const n = 4;
+    for (int i = 0; i < n; i++) {
+      final y = -medio * 0.45 + i * (medio * 1.2 / (n - 1));
+      canvas.drawLine(
+        Offset(-medio * 0.6, y),
+        Offset(medio * 0.6, y),
+        escalon,
+      );
+    }
+
+    // Triángulo de la entrada, sobresaliendo del borde.
+    if (direccionEntrada != null) {
+      final base = -medio;
+      final t = lado * 0.28;
+      final tri = Path()
+        ..moveTo(0, base - t)
+        ..lineTo(-t, base + t * 0.2)
+        ..lineTo(t, base + t * 0.2)
+        ..close();
+      canvas.drawPath(tri, Paint()..color = Colors.orange);
+      canvas.drawPath(
+        tri,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = max(0.8, lado * 0.03),
+      );
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_EscaleraPainter old) =>
+      old.direccionEntrada != direccionEntrada;
 }

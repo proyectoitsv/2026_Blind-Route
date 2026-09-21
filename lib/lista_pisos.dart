@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'database.dart';
 import 'pantalla_config.dart';
+import 'piso_util.dart';
 import 'supabase_service.dart';
 import 'tema.dart';
 
@@ -54,11 +55,99 @@ class _ListaPisosState extends State<ListaPisos> {
     ) ?? false;
   }
 
+  /// Selector de número de piso. Sólo se puede elegir un número (no se
+  /// escribe un nombre libre) y no se ofrecen los ya usados en el edificio.
+  /// [actual] es el número del piso que se está editando (se permite
+  /// re-elegirlo). Devuelve null si se cancela.
+  Future<int?> _elegirNumeroPiso({int? actual}) async {
+    final ocupados = await DatabaseHelper.instance
+        .obtenerNumerosPisoOcupados(widget.edificioId);
+    if (actual != null) ocupados.remove(actual);
+    if (!mounted) return null;
+
+    final numeros = [
+      for (int n = PisoUtil.minimo; n <= PisoUtil.maximo; n++) n,
+    ];
+
+    return showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: TemaApp.fondoCard,
+        title: Text(
+          actual == null ? '¿Qué piso es?' : 'Cambiar número de piso',
+          style: const TextStyle(color: TemaApp.textoBlanco),
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'PB = planta baja · S = subsuelo',
+                  style: TextStyle(color: TemaApp.textoSecundario, fontSize: 13),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: numeros.map((n) {
+                    final usado = ocupados.contains(n);
+                    final esActual = n == actual;
+                    return Semantics(
+                      button: true,
+                      enabled: !usado,
+                      label: usado
+                          ? '${PisoUtil.nombre(n)}, ya cargado'
+                          : PisoUtil.nombre(n),
+                      child: SizedBox(
+                        width: 56,
+                        height: 56,
+                        child: ElevatedButton(
+                          onPressed: usado ? null : () => Navigator.pop(ctx, n),
+                          style: ElevatedButton.styleFrom(
+                            padding: EdgeInsets.zero,
+                            backgroundColor:
+                                esActual ? TemaApp.acento : TemaApp.acentoSuave,
+                            foregroundColor:
+                                esActual ? TemaApp.fondo : TemaApp.textoBlanco,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: Text(
+                            PisoUtil.etiquetaCorta(n),
+                            style: const TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('CANCELAR'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _agregarPiso() async {
-    final controller = TextEditingController();
+    // 1) Primero el número: si se cancela, no se copia ninguna imagen.
+    final numero = await _elegirNumeroPiso();
+    if (numero == null) return;
+
+    // 2) Después la imagen del plano.
     final picker = ImagePicker();
     final imagen = await picker.pickImage(source: ImageSource.gallery);
-
     if (imagen == null) return;
 
     final directory = await getApplicationDocumentsDirectory();
@@ -66,36 +155,30 @@ class _ListaPisosState extends State<ListaPisos> {
     final rutaPermanente = p.join(directory.path, nombreArchivo);
     await File(imagen.path).copy(rutaPermanente);
 
-    if (!mounted) return;
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: TemaApp.fondoCard,
-        title: const Text('Nuevo Piso', style: TextStyle(color: TemaApp.textoBlanco)),
-        content: TextField(
-          controller: controller,
-          style: const TextStyle(color: TemaApp.textoBlanco),
-          decoration: const InputDecoration(hintText: 'Nombre (ej: Planta Baja)'),
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () async {
-              if (controller.text.isNotEmpty) {
-                await DatabaseHelper.instance.crearPiso(
-                  widget.edificioId,
-                  controller.text,
-                  rutaPermanente,
-                );
-                _refrescarPisos();
-                if (context.mounted) Navigator.pop(context);
-              }
-            },
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
+    await DatabaseHelper.instance.crearPiso(
+      widget.edificioId,
+      numero,
+      rutaPermanente,
     );
+    _refrescarPisos();
+  }
+
+  /// Cambia el número de un piso existente (o se lo asigna a un piso viejo
+  /// que se cargó con nombre libre y no se pudo deducir).
+  void _cambiarNumero(Map<String, dynamic> piso) async {
+    final numero = await _elegirNumeroPiso(actual: piso['numero_piso'] as int?);
+    if (numero == null) return;
+    await DatabaseHelper.instance.actualizarNumeroPiso(piso['id'] as int, numero);
+    _refrescarPisos();
+    if (!mounted) return;
+    if (piso['remote_id'] != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Número actualizado. Volvé a publicar el piso para que llegue a los usuarios.'),
+        ),
+      );
+    }
   }
 
   @override
@@ -183,9 +266,34 @@ class _ListaPisosState extends State<ListaPisos> {
                           ),
                           child: const Icon(Icons.layers_rounded, color: TemaApp.acento, size: 22),
                         ),
-                        title: Text(piso['nombre_piso'], style: const TextStyle(color: TemaApp.textoBlanco, fontWeight: FontWeight.w600, fontSize: 16)),
-                        subtitle: const Text('Deslizá para eliminar', style: TextStyle(color: TemaApp.textoSecundario, fontSize: 12)),
-                        trailing: const Icon(Icons.chevron_right_rounded, color: TemaApp.textoSecundario),
+                        title: Text(
+                          piso['numero_piso'] != null
+                              ? PisoUtil.nombre(piso['numero_piso'] as int)
+                              : piso['nombre_piso'],
+                          style: const TextStyle(color: TemaApp.textoBlanco, fontWeight: FontWeight.w600, fontSize: 16),
+                        ),
+                        subtitle: Text(
+                          piso['numero_piso'] == null
+                              ? 'Sin número de piso: tocá el lápiz para asignarlo'
+                              : 'Deslizá para eliminar',
+                          style: TextStyle(
+                            color: piso['numero_piso'] == null
+                                ? TemaApp.advertencia
+                                : TemaApp.textoSecundario,
+                            fontSize: 12,
+                          ),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit_rounded, color: TemaApp.acento),
+                              tooltip: 'Cambiar número de piso',
+                              onPressed: () => _cambiarNumero(piso),
+                            ),
+                            const Icon(Icons.chevron_right_rounded, color: TemaApp.textoSecundario),
+                          ],
+                        ),
                         onTap: () {
                           Navigator.push(
                             context,

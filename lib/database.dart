@@ -4,6 +4,7 @@ import 'beacon_model.dart';
 import 'zona_model.dart';
 import 'poi_model.dart';
 import 'calibracion_model.dart';
+import 'piso_util.dart';
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'dart:io';
@@ -26,7 +27,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 12, // v12: pisos.remote_actualizado (versión descargada del mapa)
+      version: 13, // v13: pisos.numero_piso + escaleras en lugares_interes
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -50,6 +51,7 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         edificio_id INTEGER NOT NULL,
         nombre_piso TEXT NOT NULL,
+        numero_piso INTEGER,
         ruta_imagen TEXT NOT NULL,
         escala_metros REAL NOT NULL DEFAULT 50,
         escala_metros_alto REAL NOT NULL DEFAULT 50,
@@ -92,6 +94,10 @@ class DatabaseHelper {
         x REAL NOT NULL,
         y REAL NOT NULL,
         descripcion TEXT,
+        tipo TEXT NOT NULL DEFAULT 'comun',
+        sube INTEGER NOT NULL DEFAULT 0,
+        baja INTEGER NOT NULL DEFAULT 0,
+        direccion_entrada REAL,
         FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
       )
     ''');
@@ -226,6 +232,47 @@ class DatabaseHelper {
         await db.execute('ALTER TABLE pisos ADD COLUMN remote_actualizado TEXT');
       }
     }
+    if (oldVersion < 13) {
+      // v13: pisos identificados por NÚMERO + escaleras entre pisos.
+      //
+      // Mismo cuidado que en v9/v10: si la tabla se creó con el DDL nuevo la
+      // columna ya existe, así que se consulta el esquema antes del ALTER.
+      final colsPisos = await db.rawQuery('PRAGMA table_info(pisos)');
+      if (!colsPisos.any((c) => (c['name'] as String?) == 'numero_piso')) {
+        // Nullable: un piso viejo cuyo nombre no permite deducir el número
+        // queda en null hasta que el admin se lo asigne desde la lista.
+        await db.execute('ALTER TABLE pisos ADD COLUMN numero_piso INTEGER');
+      }
+      // Backfill: deducir el número de los nombres libres que ya existían
+      // ("Planta Baja", "Piso 2", "Subsuelo 1", "3"...).
+      final pisos = await db.query('pisos', columns: ['id', 'nombre_piso']);
+      for (final p in pisos) {
+        final numero = PisoUtil.numeroDesdeNombre(p['nombre_piso'] as String?);
+        if (numero != null) {
+          await db.update('pisos', {'numero_piso': numero},
+              where: 'id = ?', whereArgs: [p['id']]);
+        }
+      }
+
+      final colsLug = await db.rawQuery('PRAGMA table_info(lugares_interes)');
+      bool tiene(String n) => colsLug.any((c) => (c['name'] as String?) == n);
+      if (!tiene('tipo')) {
+        await db.execute(
+            "ALTER TABLE lugares_interes ADD COLUMN tipo TEXT NOT NULL DEFAULT 'comun'");
+      }
+      if (!tiene('sube')) {
+        await db.execute(
+            'ALTER TABLE lugares_interes ADD COLUMN sube INTEGER NOT NULL DEFAULT 0');
+      }
+      if (!tiene('baja')) {
+        await db.execute(
+            'ALTER TABLE lugares_interes ADD COLUMN baja INTEGER NOT NULL DEFAULT 0');
+      }
+      if (!tiene('direccion_entrada')) {
+        await db.execute(
+            'ALTER TABLE lugares_interes ADD COLUMN direccion_entrada REAL');
+      }
+    }
   }
 
   // --- Edificios ---
@@ -240,18 +287,73 @@ class DatabaseHelper {
   }
 
   // --- Pisos ---
-  Future<int> crearPiso(int edificioId, String nombrePiso, String rutaImagen) async {
+  /// Crea un piso identificado por su NÚMERO (0 = planta baja, negativos =
+  /// subsuelos). El nombre se deriva del número, no se escribe a mano.
+  Future<int> crearPiso(int edificioId, int numeroPiso, String rutaImagen) async {
     final db = await instance.database;
     return await db.insert('pisos', {
       'edificio_id': edificioId,
-      'nombre_piso': nombrePiso,
+      'numero_piso': numeroPiso,
+      'nombre_piso': PisoUtil.nombre(numeroPiso),
       'ruta_imagen': rutaImagen,
     });
   }
 
+  /// Cambia (o asigna, en pisos viejos) el número de un piso. Actualiza
+  /// también el nombre derivado para que la nube lo reciba al republicar.
+  Future<void> actualizarNumeroPiso(int pisoId, int numeroPiso) async {
+    final db = await instance.database;
+    await db.update(
+      'pisos',
+      {
+        'numero_piso': numeroPiso,
+        'nombre_piso': PisoUtil.nombre(numeroPiso),
+      },
+      where: 'id = ?',
+      whereArgs: [pisoId],
+    );
+  }
+
+  /// Pisos de un edificio ordenados por número (los sin número, al final).
   Future<List<Map<String, dynamic>>> obtenerPisosPorEdificio(int edificioId) async {
     final db = await instance.database;
-    return await db.query('pisos', where: 'edificio_id = ?', whereArgs: [edificioId]);
+    return await db.query(
+      'pisos',
+      where: 'edificio_id = ?',
+      whereArgs: [edificioId],
+      orderBy: 'numero_piso IS NULL, numero_piso ASC',
+    );
+  }
+
+  /// Números de piso ya usados en un edificio (para no repetirlos).
+  Future<Set<int>> obtenerNumerosPisoOcupados(int edificioId) async {
+    final db = await instance.database;
+    final r = await db.query(
+      'pisos',
+      columns: ['numero_piso'],
+      where: 'edificio_id = ? AND numero_piso IS NOT NULL',
+      whereArgs: [edificioId],
+    );
+    return r.map((row) => row['numero_piso'] as int).toSet();
+  }
+
+  /// Datos completos de un piso, listos para navegarlo.
+  Future<PisoInfo?> obtenerPisoInfo(int pisoId) async {
+    final db = await instance.database;
+    final r = await db.query('pisos', where: 'id = ?', whereArgs: [pisoId], limit: 1);
+    return r.isNotEmpty ? PisoInfo.fromRow(r.first) : null;
+  }
+
+  /// Todos los pisos del edificio al que pertenece [pisoId] (incluido él).
+  /// Es la base de la navegación entre pisos.
+  Future<List<PisoInfo>> obtenerPisosDelMismoEdificio(int pisoId) async {
+    final db = await instance.database;
+    final r = await db.rawQuery('''
+      SELECT p.* FROM pisos p
+      WHERE p.edificio_id = (SELECT edificio_id FROM pisos WHERE id = ?)
+      ORDER BY p.numero_piso IS NULL, p.numero_piso ASC
+    ''', [pisoId]);
+    return r.map(PisoInfo.fromRow).toList();
   }
 
   /// Datos que necesita el modo publicar: nombre del piso, nombre del edificio
@@ -259,7 +361,8 @@ class DatabaseHelper {
   Future<Map<String, dynamic>?> obtenerPisoConEdificio(int pisoId) async {
     final db = await instance.database;
     final r = await db.rawQuery('''
-      SELECT p.id, p.nombre_piso, p.remote_id, e.nombre AS edificio_nombre
+      SELECT p.id, p.nombre_piso, p.numero_piso, p.remote_id,
+             e.nombre AS edificio_nombre
       FROM pisos p
       INNER JOIN edificios e ON p.edificio_id = e.id
       WHERE p.id = ?
@@ -429,6 +532,8 @@ class DatabaseHelper {
       final datosPiso = {
         'edificio_id': edificioId,
         'nombre_piso': pisoNombre,
+        // La nube sólo guarda el nombre; el número se recupera de ahí.
+        'numero_piso': PisoUtil.numeroDesdeNombre(pisoNombre),
         'ruta_imagen': rutaImagen,
         'escala_metros': escalaX,
         'escala_metros_alto': escalaY,
@@ -492,12 +597,18 @@ class DatabaseHelper {
       // Lugares de interés.
       for (final raw in lugares) {
         final l = Map<String, dynamic>.from(raw as Map);
+        // Los campos de escalera son opcionales: un mapa publicado antes de
+        // v13 no los trae y sus lugares quedan como comunes.
         await txn.insert('lugares_interes', {
           'piso_id': pisoId,
           'nombre': l['nombre'] ?? '',
           'x': (l['x'] as num).toDouble(),
           'y': (l['y'] as num).toDouble(),
           'descripcion': l['descripcion'],
+          'tipo': LugarInteres.tipoDesdeTexto(l['tipo'] as String?).name,
+          'sube': (l['sube'] == true) ? 1 : 0,
+          'baja': (l['baja'] == true) ? 1 : 0,
+          'direccion_entrada': (l['direccion_entrada'] as num?)?.toDouble(),
         });
       }
 
@@ -577,7 +688,8 @@ class DatabaseHelper {
   Future<Map<String, dynamic>?> obtenerInfoPorBeacon(String mac) async {
     final db = await instance.database;
     final result = await db.rawQuery('''
-      SELECT pisos.id, pisos.ruta_imagen, pisos.escala_metros, pisos.escala_metros_alto,
+      SELECT pisos.id, pisos.edificio_id, pisos.numero_piso,
+             pisos.ruta_imagen, pisos.escala_metros, pisos.escala_metros_alto,
              pisos.tam_celda_metros, pisos.rotacion_mapa,
              pisos.remote_id, pisos.remote_actualizado,
              edificios.nombre as edificio_nombre, pisos.nombre_piso
@@ -633,13 +745,7 @@ class DatabaseHelper {
 
   Future<int> crearLugarInteres(LugarInteres lugar) async {
     final db = await instance.database;
-    return await db.insert('lugares_interes', {
-      'piso_id': lugar.pisoId,
-      'nombre': lugar.nombre,
-      'x': lugar.posicion.dx,
-      'y': lugar.posicion.dy,
-      'descripcion': lugar.descripcion,
-    });
+    return await db.insert('lugares_interes', lugar.toRow());
   }
 
   Future<List<LugarInteres>> obtenerLugaresPorPiso(int pisoId) async {
@@ -649,13 +755,31 @@ class DatabaseHelper {
       where: 'piso_id = ?',
       whereArgs: [pisoId],
     );
-    return res.map((row) => LugarInteres(
-      id: row['id'] as int,
-      pisoId: pisoId,
-      nombre: row['nombre'] as String,
-      posicion: Offset(row['x'] as double, row['y'] as double),
-      descripcion: row['descripcion'] as String?,
-    )).toList();
+    return res.map(LugarInteres.fromRow).toList();
+  }
+
+  /// Lugares de TODOS los pisos del edificio al que pertenece [pisoId]
+  /// (incluidas las escaleras). Cada lugar conserva su `pisoId`, así la
+  /// navegación sabe en qué piso está.
+  Future<List<LugarInteres>> obtenerLugaresDelMismoEdificio(int pisoId) async {
+    final db = await instance.database;
+    final res = await db.rawQuery('''
+      SELECT l.* FROM lugares_interes l
+      INNER JOIN pisos p ON l.piso_id = p.id
+      WHERE p.edificio_id = (SELECT edificio_id FROM pisos WHERE id = ?)
+    ''', [pisoId]);
+    return res.map(LugarInteres.fromRow).toList();
+  }
+
+  /// Persiste la nueva ubicación de un lugar/escalera tras arrastrarlo.
+  Future<void> actualizarPosicionLugar(int id, Offset posicion) async {
+    final db = await instance.database;
+    await db.update(
+      'lugares_interes',
+      {'x': posicion.dx, 'y': posicion.dy},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   Future<void> eliminarLugarInteres(int id) async {
