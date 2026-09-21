@@ -622,7 +622,7 @@ class MapaWidget extends StatelessWidget {
 
   /// Lado (m) con el que se dibujan las escaleras. Una escalera típica mide
   /// ~1 m de ancho: con celdas de 1 m, el ícono ocupa exactamente una celda.
-  static const double anchoEscaleraMetros = 1.0;
+  static const double anchoEscaleraMetros = LugarInteres.anchoEscaleraMetros;
 
   const MapaWidget({
     super.key,

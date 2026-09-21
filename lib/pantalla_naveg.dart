@@ -49,6 +49,12 @@ class PantallaNavegacion extends StatefulWidget {
   /// (ej: "Estás en el piso 2. Buscando ubicación...").
   final String? anuncioInicial;
 
+  /// Sólo en un salto de piso: true si el usuario llegó SUBIENDO, false si
+  /// llegó BAJANDO, null si la pantalla no se abrió por un salto. Sirve para
+  /// saber por qué escalera apareció (una que baja si subió, una que sube si
+  /// bajó) y arrancar la ruta desde su entrada.
+  final bool? llegoSubiendo;
+
   const PantallaNavegacion({
     super.key,
     required this.pisoId,
@@ -60,6 +66,7 @@ class PantallaNavegacion extends StatefulWidget {
     this.tamCeldaMetros = 1.0,
     this.destinoFinalId,
     this.anuncioInicial,
+    this.llegoSubiendo,
   });
  
   @override
@@ -279,6 +286,36 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
   /// Tras un salto, si ya se anunció cómo sigue el recorrido en este piso.
   bool _anuncioRetomadoHecho = false;
+
+  // ── SALIDA DE LA ESCALERA TRAS UN SALTO ────────────────────────────────────
+  //
+  // Después de cambiar de piso el usuario está parado SOBRE la escalera por
+  // la que llegó, que para el pathfinder es un obstáculo. Sin esto la ruta
+  // arrancaba desde la celda libre más cercana, que podía estar detrás o al
+  // costado de la escalera. Mientras siga cerca de esa escalera, la ruta sale
+  // desde el punto frente a su entrada/salida.
+
+  /// Escalera por la que llegó al piso (null si no vino de un salto, o si ya
+  /// se alejó de ella).
+  LugarInteres? _escaleraLlegada;
+
+  /// Si ya se decidió cuál es la escalera de llegada (hace falta posición).
+  bool _escaleraLlegadaResuelta = false;
+
+  /// Mientras la posición esté a esta distancia (m) o menos de la escalera
+  /// de llegada, la ruta sale desde su entrada. Más que el radio de llegada
+  /// porque justo después del salto la posición BLE todavía se está
+  /// estabilizando.
+  static const double _radioSalidaEscaleraMetros = 2.5;
+
+  /// Radio (m) para RECONOCER la escalera de llegada con la primera posición.
+  /// Más amplio que el anterior: la primera estimación tras el salto suele
+  /// ser la más ruidosa y no conviene descartar la escalera por eso.
+  static const double _radioDeteccionLlegadaMetros = 5.0;
+
+  /// Si ya se vio al usuario junto a la escalera de llegada. Recién a partir
+  /// de ahí, alejarse más de [_radioSalidaEscaleraMetros] cuenta como "salió".
+  bool _vistoEnEscaleraLlegada = false;
 
   /// Tiempo que hay que mantener apretada la pantalla para cambiar de piso.
   static const Duration _duracionMantener = Duration(milliseconds: 1000);
@@ -502,7 +539,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           '(hacen falta ${ProcesadorSenal.minPuntosAjuste}+ calibraciones a '
           'distancias distintas por beacon).');
 
-      _resolvedor.inicializar(_zonas, grilla: _grilla);
+      // Las escaleras del piso son obstáculos: la ruta las rodea y llega por
+      // la entrada. Se deja libre la celda frente a cada entrada, que es a
+      // donde apunta la ruta.
+      final escaleras = _lugares.where((l) => l.esEscalera).toList();
+      _resolvedor.inicializar(
+        _zonas,
+        grilla: _grilla,
+        obstaculosRect: [
+          for (final e in escaleras)
+            e.areaEscalera(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY),
+        ],
+        puntosLibres: [
+          for (final e in escaleras)
+            e.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY),
+        ],
+      );
       _resolvedorListo = true;
       // Acelerómetro: si el dispositivo no lo expone, el detector devuelve un
       // factor intermedio fijo y el filtro sigue funcionando (con un
@@ -1331,10 +1383,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       // _aStarIsolate los clampea con clampX/clampY, pero si esa celda de
       // borde es un obstáculo, _celdaLibreCercana puede no encontrar alternativa
       // y retornar null, haciendo que la ruta nunca aparezca.
-      final origen = Offset(
+      final origen = _origenRuta(Offset(
         _posicionFinal!.dx.clamp(0.001, 0.999),
         _posicionFinal!.dy.clamp(0.001, 0.999),
-      );
+      ));
 
       // Destino en este piso con nombre repetido: ahora que se conoce la
       // posición, quedarse con el más cercano.
@@ -1426,6 +1478,57 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
   // ─── NAVEGACIÓN ENTRE PISOS: helpers ──────────────────────────────────────
 
+  /// Origen real de la ruta. Tras un salto de piso, mientras el usuario siga
+  /// junto a la escalera por la que llegó, es el punto frente a su
+  /// entrada/salida (así la ruta sale por donde se sale de la escalera, no
+  /// por la celda libre más cercana). Al alejarse, vuelve a ser su posición.
+  Offset _origenRuta(Offset posicion) {
+    if (widget.llegoSubiendo != null && !_escaleraLlegadaResuelta) {
+      _escaleraLlegadaResuelta = true;
+      _escaleraLlegada = _detectarEscaleraLlegada(posicion);
+    }
+    final esc = _escaleraLlegada;
+    if (esc == null) return posicion;
+
+    final d = _distanciaMetros(posicion, esc.posicion);
+    if (d > _radioSalidaEscaleraMetros) {
+      // Ya estuvo en la escalera y se alejó (o la posición quedó claramente
+      // lejos): de acá en más la ruta sale de su posición, sin volver atrás.
+      if (_vistoEnEscaleraLlegada || d > _radioDeteccionLlegadaMetros) {
+        _escaleraLlegada = null;
+      }
+      return posicion;
+    }
+    _vistoEnEscaleraLlegada = true;
+    final salida = esc.puntoEntrada(
+      metrosX: _grilla.metrosX,
+      metrosY: _grilla.metrosY,
+    );
+    return Offset(salida.dx.clamp(0.001, 0.999), salida.dy.clamp(0.001, 0.999));
+  }
+
+  /// Escalera de este piso por la que llegó el usuario: si subió, una que
+  /// BAJA (conecta con el piso de abajo); si bajó, una que SUBE. Si hay
+  /// varias, la más cercana a su posición. Si ninguna tiene el sentido
+  /// esperado (datos incompletos), la escalera más cercana. Null si el
+  /// piso no tiene escaleras o la más cercana está lejos.
+  LugarInteres? _detectarEscaleraLlegada(Offset posicion) {
+    final subio = widget.llegoSubiendo;
+    if (subio == null) return null;
+    final escaleras = _lugares.where((l) => l.esEscalera).toList();
+    if (escaleras.isEmpty) return null;
+    var candidatas =
+        escaleras.where((l) => subio ? l.baja : l.sube).toList();
+    if (candidatas.isEmpty) candidatas = escaleras;
+    candidatas.sort((a, b) => _distanciaMetros(posicion, a.posicion)
+        .compareTo(_distanciaMetros(posicion, b.posicion)));
+    final esc = candidatas.first;
+    // Si la posición ya está lejos de toda escalera, no forzar nada.
+    return _distanciaMetros(posicion, esc.posicion) <= _radioDeteccionLlegadaMetros
+        ? esc
+        : null;
+  }
+
   /// Número del piso actual (null si el piso no tiene número asignado).
   int? get _numeroPisoActual => _pisosEdificio[widget.pisoId]?.numero;
 
@@ -1479,7 +1582,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   Offset? _puntoObjetivoTramo() {
     final d = _destinoSeleccionado;
     if (d == null) return null;
-    if (!_esTramoEntrePisos) return d.posicion;
+    if (!_esTramoEntrePisos) {
+      // Si el destino es una escalera de este piso, también se llega por su
+      // entrada: su cuadrado es un obstáculo para el pathfinder.
+      return d.esEscalera
+          ? d.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
+          : d.posicion;
+    }
     return _escaleraObjetivo?.puntoEntrada(
       metrosX: _grilla.metrosX,
       metrosY: _grilla.metrosY,
@@ -1627,7 +1736,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
 
     if (_llegoADestino) return;
-    final cerca = _distanciaMetros(pos, d.posicion) <= _radioLlegadaMetros;
+    // Una escalera como destino se alcanza por su entrada (su cuadrado es
+    // obstáculo, así que la posición del usuario nunca cae encima).
+    final objetivoLlegada = d.esEscalera
+        ? d.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
+        : d.posicion;
+    final cerca = _distanciaMetros(pos, objetivoLlegada) <= _radioLlegadaMetros ||
+        _distanciaMetros(pos, d.posicion) <= _radioLlegadaMetros;
     _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
     if (_ciclosEnLlegada >= _ciclosParaLlegada) {
       _ciclosEnLlegada = 0;
@@ -1730,6 +1845,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           procesadorCompartido: _procesador,
           destinoFinalId: d.id,
           anuncioInicial: anuncio,
+          llegoSubiendo: _subiendo,
         ),
       ),
     );

@@ -161,8 +161,24 @@ class ResolvedorCaminos {
 
   // ── Inicialización ──────────────────────────────────────────────────────────
 
-  void inicializar(List<ZonaNoTransitable> zonas, {GrillaNav? grilla}) {
+  /// [obstaculosRect]: áreas extra no transitables (normalizadas), hoy las
+  /// escaleras: la ruta no puede pasar POR ENCIMA de una escalera, tiene que
+  /// rodearla y llegar por su entrada. Se bloquean las celdas cuyo CENTRO
+  /// cae dentro del área (sin rasterizar el contorno como en las zonas: con
+  /// un cuadrado de 1 m eso bloquearía hasta 4 celdas y taparía la entrada).
+  ///
+  /// [puntosLibres]: puntos cuya celda NUNCA se bloquea por [obstaculosRect]
+  /// (el punto frente a la entrada de cada escalera, que es el destino de la
+  /// ruta). No liberan celdas bloqueadas por zonas prohibidas.
+  void inicializar(
+    List<ZonaNoTransitable> zonas, {
+    GrillaNav? grilla,
+    List<Rect> obstaculosRect = const [],
+    List<Offset> puntosLibres = const [],
+  }) {
     _zonas = zonas;
+    _obstaculosRect = obstaculosRect;
+    _puntosLibres = puntosLibres;
     if (grilla != null) _grillaNav = grilla;
 
     final total = _resX * _resY;
@@ -171,13 +187,15 @@ class ResolvedorCaminos {
     _costoExtra = List<double>.filled(total, 0.0);
 
     _marcarObstaculos();
+    _marcarObstaculosRect();
     _aplicarAnchoPasillo();
     _marcarBordes();
     _calcularCampoDeCostos();
 
     debugPrint(
       '[Pathfinder] Grilla ${_resX}x$_resY (${_grillaNav.tamCeldaMetros} m/celda) — '
-      'zonas: ${_zonas.length}, margen de borde: $_margenCeldas celda(s).',
+      'zonas: ${_zonas.length}, escaleras: ${_obstaculosRect.length}, '
+      'margen de borde: $_margenCeldas celda(s).',
     );
   }
 
@@ -230,6 +248,44 @@ class ResolvedorCaminos {
       //    puede quedar "abierta" porque ningún centro de celda cae adentro, y
       //    el A* se cuela por ese hueco inexistente.
       _rasterizarContorno(zona.vertices);
+    }
+  }
+
+  List<Rect> _obstaculosRect = const [];
+  List<Offset> _puntosLibres = const [];
+
+  /// Bloquea las celdas cuyo centro cae dentro de alguna de las áreas de
+  /// [_obstaculosRect], salvo las celdas de [_puntosLibres]. Si el área es
+  /// más chica que una celda y ningún centro cae adentro, se bloquea la celda
+  /// que contiene su centro, para que la escalera nunca quede transitable.
+  void _marcarObstaculosRect() {
+    if (_obstaculosRect.isEmpty) return;
+
+    int celdaX(double x) => min(_resX - 1, max(0, (x / _pasoX).floor()));
+    int celdaY(double y) => min(_resY - 1, max(0, (y / _pasoY).floor()));
+    final libres = <int>{
+      for (final p in _puntosLibres) _idx(celdaX(p.dx), celdaY(p.dy)),
+    };
+
+    for (final r in _obstaculosRect) {
+      final ixMin = celdaX(r.left);
+      final ixMax = celdaX(r.right);
+      final iyMin = celdaY(r.top);
+      final iyMax = celdaY(r.bottom);
+      bool marcoAlguna = false;
+      for (int x = ixMin; x <= ixMax; x++) {
+        for (int y = iyMin; y <= iyMax; y++) {
+          if (r.contains(Offset(_centroX(x), _centroY(y)))) {
+            final i = _idx(x, y);
+            if (!libres.contains(i)) _obsZona[i] = true;
+            marcoAlguna = true;
+          }
+        }
+      }
+      if (!marcoAlguna) {
+        final i = _idx(celdaX(r.center.dx), celdaY(r.center.dy));
+        if (!libres.contains(i)) _obsZona[i] = true;
+      }
     }
   }
 
