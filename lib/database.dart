@@ -703,6 +703,25 @@ class DatabaseHelper {
     return null;
   }
 
+  /// Índice completo "MAC → piso" de todos los mapas guardados, en UNA sola
+  /// consulta. El modo automático lo carga al arrancar en vez de consultar la
+  /// base por cada dispositivo de cada barrido (en un lugar concurrido eso son
+  /// decenas de consultas por segundo, la mayoría para dispositivos ajenos).
+  Future<List<Map<String, dynamic>>> obtenerIndiceBeaconsLocales() async {
+    final db = await instance.database;
+    return await db.rawQuery('''
+      SELECT beacons.mac,
+             pisos.id, pisos.edificio_id, pisos.numero_piso, pisos.nombre_piso,
+             pisos.ruta_imagen, pisos.escala_metros, pisos.escala_metros_alto,
+             pisos.tam_celda_metros, pisos.rotacion_mapa,
+             pisos.remote_id, pisos.remote_actualizado,
+             edificios.nombre as edificio_nombre
+      FROM beacons
+      INNER JOIN pisos ON beacons.piso_id = pisos.id
+      INNER JOIN edificios ON pisos.edificio_id = edificios.id
+    ''');
+  }
+
   // --- Zonas no transitables ---
 
   Future<int> crearZona(ZonaNoTransitable zona) async {
