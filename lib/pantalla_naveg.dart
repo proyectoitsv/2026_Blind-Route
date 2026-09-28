@@ -1631,12 +1631,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   }
 
   /// Entre los lugares alcanzables con el mismo nombre (normalizado) que
-  /// [nombreNorm], elige el del piso más cercano al actual. Si hay varios en
-  /// ese piso y es el piso actual, el más cercano al usuario.
+  /// [nombreNorm], elige el del piso más cercano al actual.
   LugarInteres? _elegirDestino(String nombreNorm) {
-    final candidatos = _lugaresEdificio
+    return _elegirEntre(_lugaresEdificio
         .where((l) => _normalizar(l.nombre) == nombreNorm && _puedeLlegarA(l))
-        .toList();
+        .toList());
+  }
+
+  /// Elige, entre [candidatos], el del piso más cercano al actual. Si hay
+  /// varios en ese piso y es el piso actual, el más cercano al usuario.
+  LugarInteres? _elegirEntre(List<LugarInteres> candidatos) {
     if (candidatos.isEmpty) return null;
 
     final actual = _numeroPisoActual;
@@ -1659,6 +1663,118 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       return enEstePiso.first;
     }
     return mejores.first;
+  }
+
+  // ─── BAÑOS: HOMBRES / MUJERES ─────────────────────────────────────────────
+  //
+  // "Restaurante" se resuelve solo (el más cercano), pero "baño" no alcanza:
+  // hay que saber cuál. Si el usuario no lo aclaró y el edificio tiene de los
+  // dos, se le pregunta por voz y recién ahí se elige el más cercano del que
+  // pidió.
+
+  static const Set<String> _palabrasBano = {
+    'bano', 'banos', 'bao', 'baos', 'sanitario', 'sanitarios', 'toilette',
+    'toilet', 'wc', 'servicios',
+  };
+  static const Set<String> _palabrasHombre = {
+    'hombre', 'hombres', 'caballero', 'caballeros', 'masculino', 'masculinos',
+    'varon', 'varones', 'chicos', 'ellos',
+  };
+  static const Set<String> _palabrasMujer = {
+    'mujer', 'mujeres', 'dama', 'damas', 'femenino', 'femeninos', 'femenina',
+    'chicas', 'ellas',
+  };
+  static const Set<String> _palabrasIndistinto = {
+    'cualquiera', 'cualquier', 'indistinto', 'igual', 'importa', 'mas',
+    'cercano', 'ninguno',
+  };
+
+  /// ¿El texto (ya normalizado) nombra un baño?
+  bool _mencionaBano(String textoNorm) =>
+      textoNorm.split(' ').any(_palabrasBano.contains);
+
+  /// Género que nombra un texto ya normalizado (el nombre de un lugar o lo
+  /// que dijo el usuario). null si no menciona ninguno.
+  _GeneroBano? _generoEnTexto(String textoNorm) {
+    final palabras = textoNorm.split(' ');
+    if (palabras.any(_palabrasMujer.contains)) return _GeneroBano.mujeres;
+    if (palabras.any(_palabrasHombre.contains)) return _GeneroBano.hombres;
+    return null;
+  }
+
+  /// Resuelve lo que pidió el usuario (texto ya normalizado) a un destino
+  /// concreto. Para los baños puede preguntar; para el resto elige el más
+  /// cercano con el mismo nombre.
+  Future<LugarInteres?> _resolverPedido(String textoNorm) async {
+    if (!_mencionaBano(textoNorm)) {
+      final coincidencia = _buscarMejorCoincidencia(textoNorm);
+      return coincidencia == null
+          ? null
+          : _elegirDestino(_normalizar(coincidencia.nombre));
+    }
+
+    final banos = _lugaresEdificio
+        .where((l) => _puedeLlegarA(l) && _mencionaBano(_normalizar(l.nombre)))
+        .toList();
+    if (banos.isEmpty) return null;
+
+    // Género que pidió el usuario ("baño de hombres" no se pregunta).
+    var genero = _generoEnTexto(textoNorm);
+
+    final disponibles = banos
+        .map((l) => _generoEnTexto(_normalizar(l.nombre)))
+        .whereType<_GeneroBano>()
+        .toSet();
+    final hayDeLosDos = disponibles.length > 1;
+
+    if (genero == null && hayDeLosDos) {
+      genero = await _preguntarGeneroBano();
+    }
+    if (genero == null) return _elegirEntre(banos); // indistinto o sin datos
+
+    final delGenero = banos
+        .where((l) => _generoEnTexto(_normalizar(l.nombre)) == genero)
+        .toList();
+    // Si no hay de ese género (datos incompletos), el más cercano igual.
+    return _elegirEntre(delGenero.isNotEmpty ? delGenero : banos);
+  }
+
+  /// Pregunta por voz si quiere el baño de hombres o el de mujeres. Devuelve
+  /// null si el usuario dice que le da igual o si no se entiende en dos
+  /// intentos (ahí se usa el más cercano de cualquiera).
+  Future<_GeneroBano?> _preguntarGeneroBano({int intento = 1}) async {
+    await _voz.hablar(intento == 1
+        ? '¿De hombres o de mujeres?'
+        : 'Decí hombres, mujeres, o cualquiera.');
+    await Future.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return null;
+    setState(() => _escuchando = true);
+
+    final respuesta = Completer<String?>();
+    await _voz.escuchar(
+      timeout: const Duration(seconds: 8),
+      onEscuchando: (activo) {
+        if (mounted) setState(() => _escuchando = activo);
+      },
+      onResultado: (texto) {
+        if (!respuesta.isCompleted) respuesta.complete(texto);
+      },
+      onError: (_) {
+        if (!respuesta.isCompleted) respuesta.complete(null);
+      },
+    );
+    final texto = await respuesta.future;
+    if (mounted) setState(() => _escuchando = false);
+
+    final norm = texto == null ? '' : _normalizar(texto);
+    final genero = _generoEnTexto(norm);
+    if (genero != null) return genero;
+    if (norm.split(' ').any(_palabrasIndistinto.contains)) return null;
+    if (intento >= 2) {
+      await _voz.hablar('Te llevo al más cercano.');
+      return null;
+    }
+    return _preguntarGeneroBano(intento: intento + 1);
   }
 
   /// Destino en este piso con nombre repetido: se queda con el más cercano
@@ -1886,12 +2002,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         if (!mounted) return;
         setState(() => _escuchando = false);
  
-        final coincidencia = _buscarMejorCoincidencia(textoReconocido);
-        // Si hay varios lugares con ese nombre (ej: varios baños), se elige
-        // el del piso más cercano.
-        final destino = coincidencia == null
-            ? null
-            : _elegirDestino(_normalizar(coincidencia.nombre));
+        // Resuelve el pedido: con nombres repetidos elige el del piso más
+        // cercano, y si pidió "baño" sin aclarar, pregunta cuál.
+        final destino = await _resolverPedido(_normalizar(textoReconocido));
  
         if (destino != null) {
           await _establecerDestino(destino);
@@ -1953,6 +2066,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         .replaceAll(RegExp(r'[íìï]'), 'i')
         .replaceAll(RegExp(r'[óòö]'), 'o')
         .replaceAll(RegExp(r'[úùü]'), 'u')
+        // La ñ se pasa a n ANTES de limpiar: si no, "baño" quedaba como
+        // "bao" (la ñ caía en el filtro de caracteres).
+        .replaceAll('ñ', 'n')
         .replaceAll(RegExp(r'[^a-z0-9 ]'), '')
         .trim();
   }
@@ -2025,7 +2141,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     );
  
     if (seleccion != null && mounted) {
-      final destino = _elegirDestino(seleccion);
+      // Misma resolución que por voz: si tocó un "Baño" sin género y el
+      // edificio tiene de hombres y de mujeres, se pregunta cuál.
+      final destino = await _resolverPedido(seleccion);
       if (destino != null) await _establecerDestino(destino);
     }
   }
@@ -2763,3 +2881,6 @@ class _HisteresisCelda {
     _celdaCandidataActual = null;
   }
 }
+
+/// Baño pedido por el usuario.
+enum _GeneroBano { hombres, mujeres }
