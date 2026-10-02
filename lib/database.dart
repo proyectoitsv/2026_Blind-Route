@@ -486,6 +486,22 @@ class DatabaseHelper {
     return res;
   }
 
+  /// Mapa de remote_id → ruta local de la imagen del plano, de los mapas
+  /// descargados. Lo usa el catálogo para mostrar la miniatura desde el
+  /// archivo que ya está en el teléfono, sin bajar nada de la nube.
+  Future<Map<String, String>> obtenerImagenesDescargadas() async {
+    final db = await instance.database;
+    final r = await db.query(
+      'pisos',
+      columns: ['remote_id', 'ruta_imagen'],
+      where: 'remote_id IS NOT NULL',
+    );
+    return {
+      for (final row in r)
+        row['remote_id'] as String: row['ruta_imagen'] as String,
+    };
+  }
+
   /// Importa un mapa descargado de la nube a la base local, en UNA transacción.
   ///
   /// - Reutiliza el edificio local con el mismo nombre si ya existe; si no, lo

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'database.dart';
@@ -11,9 +13,13 @@ enum _FiltroMapas { todos, actualizables, descargados }
 /// mapas de su teléfono. Pensado para ser fácil de operar (también con lector de
 /// pantalla): botones grandes y etiquetados, buscador por nombre y filtros.
 ///
-/// Rendimiento: el listado sólo trae metadatos livianos; las miniaturas se
-/// cargan bajo demanda con `cacheWidth`. El filtrado y la búsqueda se hacen en
-/// memoria sobre esa lista liviana, sin volver a consultar la nube.
+/// Rendimiento: el listado sólo trae metadatos livianos y NO baja ninguna
+/// imagen. La miniatura se muestra sólo en los mapas ya descargados, desde el
+/// archivo del teléfono; el resto lleva un ícono. (Antes se pedía a la nube el
+/// plano completo de cada mapa visible sólo para dibujar la miniatura:
+/// `cacheWidth` achica la imagen en memoria, no la descarga.) El filtrado y la
+/// búsqueda se hacen en memoria sobre esa lista liviana, sin volver a
+/// consultar la nube.
 class PantallaMapasOnline extends StatefulWidget {
   const PantallaMapasOnline({super.key});
 
@@ -25,6 +31,8 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
   List<MapaPublicadoResumen> _mapas = [];
   // remote_id → versión descargada (o null si se descargó antes de guardarla).
   Map<String, DateTime?> _descargados = {};
+  // remote_id → ruta local de la imagen del plano (sólo mapas descargados).
+  Map<String, String> _imagenesLocales = {};
   final Set<String> _enProgreso = {};
 
   final TextEditingController _buscador = TextEditingController();
@@ -69,10 +77,13 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
       final mapas = resultados[0] as List<MapaPublicadoResumen>;
       final descargados = resultados[1] as Map<String, DateTime?>;
       final quitados = await _quitarEliminados(mapas, descargados);
+      final imagenes =
+          await DatabaseHelper.instance.obtenerImagenesDescargadas();
       if (!mounted) return;
       setState(() {
         _mapas = mapas;
         _descargados = descargados;
+        _imagenesLocales = imagenes;
         _cargando = false;
       });
       if (quitados > 0) {
@@ -141,10 +152,15 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
   Future<void> _descargar(MapaPublicadoResumen mapa) async {
     setState(() => _enProgreso.add(mapa.id));
     try {
-      await SupabaseService.instance.descargarMapa(mapa.id);
+      final pisoId = await SupabaseService.instance.descargarMapa(mapa.id);
+      // Ruta del plano recién bajado, para mostrar su miniatura.
+      final piso = await DatabaseHelper.instance.obtenerPisoInfo(pisoId);
       if (!mounted) return;
       setState(() {
         _descargados = {..._descargados, mapa.id: mapa.actualizadoEn};
+        if (piso != null) {
+          _imagenesLocales = {..._imagenesLocales, mapa.id: piso.rutaImagen};
+        }
         _enProgreso.remove(mapa.id);
       });
       _avisar('"${mapa.pisoNombre}" descargado');
@@ -184,6 +200,7 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
       if (!mounted) return;
       setState(() {
         _descargados = {..._descargados}..remove(mapa.id);
+        _imagenesLocales = {..._imagenesLocales}..remove(mapa.id);
         _enProgreso.remove(mapa.id);
       });
       _avisar('"${mapa.pisoNombre}" quitado del teléfono');
@@ -633,44 +650,34 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
     );
   }
 
+  /// Miniatura del mapa. Sólo los mapas descargados la tienen, y sale del
+  /// archivo local: no se pide ninguna imagen a la nube.
   Widget _miniatura(MapaPublicadoResumen mapa) {
+    final rutaLocal = _imagenesLocales[mapa.id];
     return ClipRRect(
       borderRadius: BorderRadius.circular(10),
       child: SizedBox(
         width: 56,
         height: 56,
-        child: mapa.imagenPath.isEmpty
+        child: rutaLocal == null
             ? _placeholderMiniatura()
-            : Image.network(
-                SupabaseService.instance.urlImagen(mapa.imagenPath),
+            : Image.file(
+                File(rutaLocal),
                 fit: BoxFit.cover,
                 cacheWidth: 112,
                 gaplessPlayback: true,
                 errorBuilder: (context, error, stack) => _placeholderMiniatura(),
-                loadingBuilder: (context, child, progress) {
-                  if (progress == null) return child;
-                  return _placeholderMiniatura(cargando: true);
-                },
               ),
       ),
     );
   }
 
-  Widget _placeholderMiniatura({bool cargando = false}) {
+  Widget _placeholderMiniatura() {
     return Container(
       color: TemaApp.fondoSurface,
       alignment: Alignment.center,
-      child: cargando
-          ? const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: TemaApp.acento,
-              ),
-            )
-          : const Icon(Icons.map_rounded,
-              color: TemaApp.textoSecundario, size: 24),
+      child: const Icon(Icons.map_rounded,
+          color: TemaApp.textoSecundario, size: 24),
     );
   }
 

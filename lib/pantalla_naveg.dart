@@ -241,6 +241,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   // BLE (que con continuousUpdates dispara muchos callbacks por segundo).
   DateTime? _ultimoRefrescoUI;
   static const Duration _intervaloRefrescoUI = Duration(milliseconds: 250);
+
+  /// Lo último que se dibujó en pantalla: celda del usuario y cantidad de
+  /// beacons visibles. Sirven para NO redibujar cuando no cambió nada.
+  Offset? _posicionMostradaUI;
+  int _beaconsMostradosUI = -1;
  
   bool _escaneando = false;
   String _estadoScan = 'Iniciando...';
@@ -901,8 +906,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           .toList();
  
       if (candidatos.length < _minBeaconsActivos) {
-        if (mounted) {
-          setState(() => _estadoScan = 'Beacons cercanos: ${candidatos.length} (necesitamos $_minBeaconsActivos)');
+        // Sólo si el texto cambió: antes se redibujaba la pantalla entera en
+        // cada ciclo (~5 veces por segundo) con el mismo mensaje.
+        final texto = 'Beacons cercanos: ${candidatos.length} (necesitamos $_minBeaconsActivos)';
+        if (mounted && texto != _estadoScan) {
+          setState(() => _estadoScan = texto);
         }
         return;
       }
@@ -1295,18 +1303,30 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
             : nuevaPosicionFinal;
         _posicionFinal = posicionSnap;
 
+        // Además del tope de frecuencia, se redibuja SÓLO si cambió algo de
+        // lo que se ve: la celda del usuario, el texto de estado o la
+        // cantidad de beacons visibles. Antes se redibujaba la pantalla
+        // entera 4 veces por segundo aunque la persona estuviera parada. Se
+        // compara contra lo último DIBUJADO (no contra el ciclo anterior):
+        // así un cambio que cae dentro del tope no se pierde, se dibuja en
+        // el próximo ciclo. El giro del usuario lo refresca el timer de la
+        // brújula.
+        final modo = !_movimiento.disponible
+            ? ''
+            : (_factorMovimiento > 0.5 ? ' · en movimiento' : ' · quieto');
+        final textoEstado = 'Ubicacion estable (${activos.length} beacons)$modo';
+        final bool cambioUI = posicionSnap != _posicionMostradaUI ||
+            textoEstado != _estadoScan ||
+            candidatos.length != _beaconsMostradosUI;
+
         final ahora = DateTime.now();
-        final bool debeRefrescarUI = primeraUbicacion ||
-            _ultimoRefrescoUI == null ||
+        final bool pasoIntervalo = _ultimoRefrescoUI == null ||
             ahora.difference(_ultimoRefrescoUI!) > _intervaloRefrescoUI;
-        if (mounted && debeRefrescarUI) {
+        if (mounted && (primeraUbicacion || (pasoIntervalo && cambioUI))) {
           _ultimoRefrescoUI = ahora;
-          setState(() {
-            final modo = !_movimiento.disponible
-                ? ''
-                : (_factorMovimiento > 0.5 ? ' · en movimiento' : ' · quieto');
-            _estadoScan = 'Ubicacion estable (${activos.length} beacons)$modo';
-          });
+          _posicionMostradaUI = posicionSnap;
+          _beaconsMostradosUI = candidatos.length;
+          setState(() => _estadoScan = textoEstado);
         }
 
         // Actualizar la instruccion de voz aca (no en build()) para que hablar()
