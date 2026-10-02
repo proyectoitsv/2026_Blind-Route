@@ -205,46 +205,98 @@ class SupabaseService {
     return res as String?;
   }
 
-  /// Fecha de última actualización de un mapa en la nube (consulta liviana: una
-  /// sola columna de una fila). Se usa para saber si hay una versión más nueva
-  /// que la descargada. Devuelve null si el mapa ya no existe.
-  Future<DateTime?> obtenerActualizadoEn(String remoteId) async {
-    final row = await _client
-        .from(_tabla)
-        .select('actualizado_en')
-        .eq('id', remoteId)
-        .maybeSingle();
-    if (row == null) return null;
-    return DateTime.tryParse('${row['actualizado_en']}');
-  }
+  // ── SINCRONIZAR EL EDIFICIO AL LLEGAR (sólo app usuario) ──────────────────
 
-  // ── PISOS DEL MISMO EDIFICIO ────────────────────────────────────────────────
-
-  /// ids remotos de los pisos del edificio [edificioNombre] que faltan en el
-  /// teléfono o tienen una versión más nueva en la nube. Consulta liviana
-  /// (dos columnas). La navegación entre pisos necesita tener todos los
-  /// pisos del edificio: al llegar sólo se detecta uno por sus beacons.
-  Future<List<String>> pisosPendientesDelEdificio(String edificioNombre) async {
+  /// Pone al día los pisos de un edificio contra la nube al llegar. Devuelve:
+  ///  - `pendientes`: ids remotos de los pisos del edificio que faltan en el
+  ///    teléfono o tienen una versión más nueva en la nube (hay que bajarlos;
+  ///    la navegación entre pisos necesita tenerlos todos);
+  ///  - `eliminados`: ids remotos de los pisos que el admin eliminó de la
+  ///    nube y que se acaban de quitar del teléfono (piso, beacons, zonas,
+  ///    lugares, calibraciones e imagen).
+  ///
+  /// Consumo: en el caso normal es UNA sola consulta de dos columnas, que
+  /// responde a la vez si hay pisos nuevos, actualizados o eliminados. Sólo
+  /// si algún piso del teléfono no aparece en esa respuesta se hace una
+  /// segunda consulta, por id y nada más que de esos pisos, para confirmar
+  /// que realmente no existe antes de borrarlo.
+  ///
+  /// Sin conexión (o si el servidor no contesta dentro de [limiteRed]) lanza
+  /// la excepción y NO borra nada: sin respuesta del servidor no se puede
+  /// saber si un mapa fue eliminado. El límite se aplica acá adentro, sólo a
+  /// las consultas, y no con un `.timeout()` desde afuera: un timeout externo
+  /// no cancela el trabajo, y un borrado que llegara tarde podría sacar el
+  /// mapa cuando el usuario ya está navegando con él.
+  ///
+  /// SÓLO PARA LA APP USUARIO. En la app admin, un piso local con remote_id
+  /// es el ORIGINAL del administrador: si su fila ya no está en la nube, no
+  /// hay que borrarlo del equipo.
+  Future<({List<String> pendientes, Set<String> eliminados})>
+      sincronizarEdificio({
+    required int edificioId,
+    required String edificioNombre,
+    Duration limiteRed = const Duration(seconds: 4),
+  }) async {
+    // 1) Pisos publicados de este edificio: id + versión.
     final data = await _client
         .from(_tabla)
         .select('id, actualizado_en')
-        .eq('edificio_nombre', edificioNombre);
-    final locales = await DatabaseHelper.instance.obtenerMapasDescargados();
-    final pendientes = <String>[];
+        .eq('edificio_nombre', edificioNombre)
+        .timeout(limiteRed);
+    final enNube = <String, DateTime?>{};
     for (final raw in data as List) {
       final row = Map<String, dynamic>.from(raw as Map);
-      final id = row['id'] as String;
-      if (!locales.containsKey(id)) {
-        pendientes.add(id);
-        continue;
+      enNube[row['id'] as String] =
+          DateTime.tryParse('${row['actualizado_en']}');
+    }
+
+    // 2) Pisos de este edificio que están en el teléfono pero no vinieron en
+    //    la respuesta: candidatos a "eliminado por el admin".
+    final delEdificio =
+        await DatabaseHelper.instance.obtenerRemoteIdsDeEdificio(edificioId);
+    final ausentes = <String>[
+      for (final id in delEdificio)
+        if (!enNube.containsKey(id)) id,
+    ];
+
+    final eliminados = <String>{};
+    if (ausentes.isNotEmpty) {
+      // Confirmar por id antes de borrar: la primera consulta busca por nombre
+      // de edificio, y un mapa que sigue publicado con otro nombre de edificio
+      // no tiene que borrarse.
+      final confirmacion = await _client
+          .from(_tabla)
+          .select('id, actualizado_en')
+          .inFilter('id', ausentes)
+          .timeout(limiteRed);
+      for (final raw in confirmacion as List) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        enNube[row['id'] as String] =
+            DateTime.tryParse('${row['actualizado_en']}');
       }
-      final local = locales[id];
-      final remoto = DateTime.tryParse('${row['actualizado_en']}');
-      if (local != null && remoto != null && remoto.isAfter(local)) {
-        pendientes.add(id);
+      for (final id in ausentes) {
+        if (enNube.containsKey(id)) continue;
+        await DatabaseHelper.instance.desinstalarMapaLocal(id);
+        eliminados.add(id);
       }
     }
-    return pendientes;
+
+    // 3) Lo que hay que bajar: pisos que no están en el teléfono o que tienen
+    //    una versión más nueva en la nube.
+    final locales = await DatabaseHelper.instance.obtenerMapasDescargados();
+    final pendientes = <String>[];
+    for (final entrada in enNube.entries) {
+      if (!locales.containsKey(entrada.key)) {
+        pendientes.add(entrada.key);
+        continue;
+      }
+      final local = locales[entrada.key];
+      final remoto = entrada.value;
+      if (local != null && remoto != null && remoto.isAfter(local)) {
+        pendientes.add(entrada.key);
+      }
+    }
+    return (pendientes: pendientes, eliminados: eliminados);
   }
 
   // ── NOVEDADES ───────────────────────────────────────────────────────────────
