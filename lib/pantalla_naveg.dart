@@ -2183,9 +2183,20 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
  
   // ─── INSTRUCCIONES POR VOZ (OUTPUT) ───────────────────────────────────────
  
-  /// Habla la indicación actual solo si cambió o pasó el tiempo mínimo.
-  void _hablarInstruccionActual(String instruccion) {
-    _voz.hablarSiCambio(instruccion);
+  /// Distancia tal como se dice en voz. Cerca se dice al metro (es lo que
+  /// importa para frenar a tiempo); lejos se redondea de a 5 m, porque el
+  /// error del posicionamiento BLE es de ese orden y no tiene sentido fingir
+  /// precisión.
+  String _distanciaParaVoz(double metros) {
+    if (metros < 1.5) return 'un metro';
+    if (metros < 10) return '${metros.round()} metros';
+    return '${(metros / 5).round() * 5} metros';
+  }
+
+  /// Distancia escrita en la tarjeta ("1 metro", "7 metros").
+  String _distanciaEnPantalla(double metros) {
+    final n = metros.round();
+    return n == 1 ? '1 metro' : '$n metros';
   }
 
   /// Calcula la indicación de giro actual y la pasa al filtro de voz.
@@ -2209,8 +2220,18 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       metrosX: widget.escalaX,
       metrosY: widget.escalaY,
     );
-    final distMetros = (indicacion.distanciaMetros / 5).round() * 5;
-    _hablarInstruccionActual('${indicacion.instruccion}, $distMetros metros');
+    // Los metros sólo se dicen cuando hay que AVANZAR ("Seguí derecho, 5
+    // metros"). En un giro o una vuelta se dice sólo la orden ("Girá a la
+    // derecha"): pegada a un giro, la distancia se entiende como "girá
+    // dentro de 5 metros". Se anuncia recién cuando el usuario ya quedó
+    // orientado y la indicación pasa a "Seguí derecho".
+    //
+    // La estabilidad se mide sobre la indicación (clave); la distancia se
+    // dice actualizada al momento de hablar.
+    final texto = indicacion.instruccion == 'Seguí derecho'
+        ? '${indicacion.instruccion}, ${_distanciaParaVoz(indicacion.distanciaMetros)}'
+        : indicacion.instruccion;
+    _voz.hablarSiCambio(texto, clave: indicacion.instruccion);
   }
 
   /// Punto al que deben apuntar las instrucciones: la próxima esquina del camino
@@ -2416,7 +2437,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
     // Item 2: Semantics con descripción completa para lectores de pantalla.
     return Semantics(
-      label: '${indicacion.instruccion}, ${indicacion.distanciaMetros.toStringAsFixed(0)} metros',
+      label: '${indicacion.instruccion}, ${_distanciaEnPantalla(indicacion.distanciaMetros)}',
       child: Container(
         margin: const EdgeInsets.fromLTRB(8, 6, 8, 0),
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
@@ -2468,7 +2489,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${indicacion.distanciaMetros.toStringAsFixed(0)} metros',
+                    _distanciaEnPantalla(indicacion.distanciaMetros),
                     style: TextStyle(
                       color: TemaApp.instruccionAccent.withValues(alpha: 0.85),
                       fontSize: TemaApp.spDistancia,

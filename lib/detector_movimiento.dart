@@ -22,10 +22,21 @@ enum EstadoMovimiento { desconocido, quieto, moviendo }
 /// filtro se congelaría a mitad de zancada.
 class DetectorMovimiento {
   /// Energía (m/s²) por debajo de la cual se considera al usuario detenido.
-  static const double umbralQuieto = 0.18;
+  ///
+  /// MEDIDO EN EL AULA: con estos umbrales en 0.18 / 0.60, el teléfono EN LA
+  /// MANO daba "en movimiento" todo el tiempo, incluso con la persona parada.
+  /// Con el régimen de "quieto" nunca activo, la zona muerta y la histéresis
+  /// de celda larga no entraban nunca en juego. El ajuste es chico a
+  /// propósito (0.18→0.25 y 0.60→0.80): corre el punto medio lo justo para
+  /// que la mano quieta cuente como quieta, sin arriesgar latencia al
+  /// caminar. Si al caminar el log muestra mov menor a 0.8, bajar
+  /// umbralMoviendo a 0.70.
+  static const double umbralQuieto = 0.25;
 
-  /// Energía (m/s²) por encima de la cual se considera que camina.
-  static const double umbralMoviendo = 0.60;
+  /// Energía (m/s²) por encima de la cual se considera que camina. Caminando
+  /// con el teléfono en la mano la energía suavizada queda bastante por
+  /// encima de 1 m/s², así que subirlo no agrega latencia al caminar.
+  static const double umbralMoviendo = 0.80;
 
   /// Constante de tiempo del suavizado de la energía (s). ~0,35 s promedia
   /// varias zancadas sin borrar el arranque del movimiento.
