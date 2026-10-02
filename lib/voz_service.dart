@@ -131,31 +131,81 @@ class VozService {
   // Filtro de estabilidad: la instrucción debe repetirse N veces
   // consecutivas antes de hablarse, descartando flickers de heading/posición.
   String _instruccionCandidata = '';
+
+  /// Última clave hablada (la indicación sin la distancia). Se guarda aparte
+  /// de [_ultimaInstruccion] porque el texto incluye los metros, que cambian
+  /// todo el tiempo mientras el usuario camina.
+  String _ultimaClaveHablada = '';
   int _contadorConfirmaciones = 0;
   static const int _confirmacionesNecesarias = 4;
 
-  Future<void> hablarSiCambio(String texto) async {
+  /// Además de las confirmaciones, una indicación NUEVA tiene que sostenerse
+  /// este tiempo antes de decirse. Las confirmaciones solas no alcanzan: su
+  /// duración depende del ritmo del scan BLE, y un error de una celda que
+  /// dura un segundo puede llegar a juntar 4 ciclos y hacer que se diga un
+  /// giro que no corresponde. Con el tiempo mínimo, ese tipo de rebote se
+  /// descarta solo.
+  static const Duration _estabilidadMinima = Duration(milliseconds: 1800);
+
+  /// Separación mínima entre dos indicaciones DISTINTAS. Evita que, si la
+  /// posición oscila entre dos celdas, la voz quede alternando órdenes
+  /// contradictorias una atrás de la otra. Corto para no demorar un giro real.
+  static const Duration _intervaloEntreDistintas = Duration(seconds: 2);
+
+  /// Momento en que apareció la indicación candidata actual.
+  DateTime? _candidataDesde;
+
+  /// Habla una indicación aplicando dos filtros: estabilidad (hay que verla
+  /// repetida varias veces) e intervalo mínimo entre repeticiones.
+  ///
+  /// [clave] es la parte que define "es la misma indicación". Si no se pasa,
+  /// se usa el texto completo.
+  ///
+  /// POR QUÉ HACE FALTA LA CLAVE: el texto que llega es del tipo
+  /// "Seguí derecho, 7 metros". Mientras la persona camina, la distancia
+  /// cambia en cada ciclo, así que el texto NUNCA llegaba a repetirse las
+  /// [_confirmacionesNecesarias] veces y la indicación no se hablaba nunca.
+  /// Para esquivar eso, la distancia se venía redondeando a múltiplos de 5 m
+  /// (lo que además producía el absurdo "a 0 metros" en todo el tramo final).
+  /// Con la clave, la estabilidad se mide sobre la indicación —"Seguí
+  /// derecho"— y la distancia se dice actualizada en el momento de hablar.
+  Future<void> hablarSiCambio(String texto, {String? clave}) async {
     if (!_ttsInicializado || texto.trim().isEmpty) return;
     final ahora = DateTime.now();
+    final k = (clave == null || clave.trim().isEmpty) ? texto : clave;
 
-    // \u2500\u2500 Filtro de estabilidad \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    // Si el texto cambió, reiniciar contador y esperar confirmaciones.
-    if (texto != _instruccionCandidata) {
-      _instruccionCandidata = texto;
+    // ── Filtro de estabilidad: confirmaciones Y tiempo ───────────────────────
+    // Si la indicación cambió, reiniciar contador y reloj.
+    if (k != _instruccionCandidata) {
+      _instruccionCandidata = k;
       _contadorConfirmaciones = 1;
+      _candidataDesde = ahora;
       return;
     }
     _contadorConfirmaciones++;
     if (_contadorConfirmaciones < _confirmacionesNecesarias) return;
+    if (_candidataDesde != null &&
+        ahora.difference(_candidataDesde!) < _estabilidadMinima) {
+      return;
+    }
 
-    // \u2500\u2500 Filtro de tiempo \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    // Aunque la instrucción sea estable, respetar el intervalo mínimo,
-    // salvo que sea distinta a la última hablada (nueva instrucción real).
-    final instruccionIgual = texto == _ultimaInstruccion;
-    final tiempoSuficiente = _ultimaVezHablado == null ||
-        ahora.difference(_ultimaVezHablado!) > _intervaloMinimo;
+    // ── Filtro de tiempo ─────────────────────────────────────────────────────
+    final instruccionIgual = k == _ultimaClaveHablada;
+    if (!instruccionIgual) {
+      // Indicación nueva: se dice enseguida, pero nunca pisando a la anterior.
+      if (_ultimaVezHablado != null &&
+          ahora.difference(_ultimaVezHablado!) < _intervaloEntreDistintas) {
+        return; // se dirá en el próximo ciclo, sin perder la candidata
+      }
+      _ultimaClaveHablada = k;
+      hablarSinEsperar(texto);
+      return;
+    }
 
-    if (!instruccionIgual || tiempoSuficiente) {
+    // Misma indicación: sólo se repite cada _intervaloMinimo, con la
+    // distancia actualizada.
+    if (_ultimaVezHablado == null ||
+        ahora.difference(_ultimaVezHablado!) > _intervaloMinimo) {
       hablarSinEsperar(texto);
     }
   }
