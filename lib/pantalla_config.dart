@@ -423,7 +423,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         title: const Text('Eliminar de la nube'),
         content: const Text(
           'Se quitará este mapa del catálogo. Los usuarios ya no podrán '
-          'descargarlo (quienes ya lo tienen lo conservan).\n\n¿Continuar?',
+          'descargarlo (quienes ya lo tienen se les borrará del teléfono).\n\n¿Continuar?',
         ),
         actions: [
           TextButton(

@@ -66,12 +66,20 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
         SupabaseService.instance.listarMapas(),
         DatabaseHelper.instance.obtenerMapasDescargados(),
       ]);
+      final mapas = resultados[0] as List<MapaPublicadoResumen>;
+      final descargados = resultados[1] as Map<String, DateTime?>;
+      final quitados = await _quitarEliminados(mapas, descargados);
       if (!mounted) return;
       setState(() {
-        _mapas = resultados[0] as List<MapaPublicadoResumen>;
-        _descargados = resultados[1] as Map<String, DateTime?>;
+        _mapas = mapas;
+        _descargados = descargados;
         _cargando = false;
       });
+      if (quitados > 0) {
+        _avisar(quitados == 1
+            ? 'Se quitó 1 mapa que ya no está disponible'
+            : 'Se quitaron $quitados mapas que ya no están disponibles');
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -79,6 +87,40 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
         _error = 'No se pudieron cargar los mapas: $e';
       });
     }
+  }
+
+  /// Quita del teléfono los mapas descargados que el admin eliminó de la nube
+  /// (los que están en [descargados] pero ya no figuran en [mapas]). Saca esas
+  /// entradas de [descargados] y devuelve cuántos quitó.
+  ///
+  /// No hace ninguna consulta: usa el catálogo que se acaba de bajar. Por eso
+  /// depende de que `listarMapas()` traiga el catálogo COMPLETO; si algún día
+  /// se pagina o se filtra, esta limpieza tiene que confirmar por id antes de
+  /// borrar. Sólo corre cuando la lista llegó bien: sin conexión no se toca
+  /// nada.
+  Future<int> _quitarEliminados(
+    List<MapaPublicadoResumen> mapas,
+    Map<String, DateTime?> descargados,
+  ) async {
+    if (descargados.isEmpty) return 0;
+    final enNube = <String>{for (final m in mapas) m.id};
+    final eliminados = <String>[
+      for (final id in descargados.keys)
+        if (!enNube.contains(id)) id,
+    ];
+    var quitados = 0;
+    for (final id in eliminados) {
+      try {
+        await DatabaseHelper.instance.desinstalarMapaLocal(id);
+        descargados.remove(id);
+        quitados++;
+      } catch (e) {
+        // Si no se pudo quitar, no se frena el catálogo: se reintenta la
+        // próxima vez que se abra.
+        debugPrint('[Catálogo] No se pudo quitar el mapa $id: $e');
+      }
+    }
+    return quitados;
   }
 
   // ── Estado de cada mapa ─────────────────────────────────────────────────────
