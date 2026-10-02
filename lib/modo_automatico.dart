@@ -315,102 +315,124 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     }
   }
 
-  /// Resuelve la llegada a un lugar con mapa ya descargado. Si hay conexión y el
-  /// mapa fue actualizado por el admin, avisa por voz, baja la nueva versión y
-  /// navega con ella. Si no hay datos (o falla), navega con la versión local.
-  /// Siempre termina navegando: nunca deja al usuario esperando.
+  /// Resuelve la llegada a un lugar con mapa ya descargado.
+  ///
+  /// Con conexión, pone al día el edificio contra la nube en una sola
+  /// consulta (ver [SupabaseService.sincronizarEdificio]):
+  ///  - si el admin ELIMINÓ el mapa de este piso, ya se quitó del teléfono:
+  ///    no se navega con él y se vuelve a escuchar beacons;
+  ///  - si hay una versión más nueva de este piso, avisa por voz y la baja;
+  ///  - si faltan o cambiaron otros pisos del edificio, los baja (para ir a
+  ///    un lugar de otro piso hacen falta todos).
+  ///
+  /// Sin conexión, si tarda demasiado o si falla, navega con lo que ya está
+  /// en el teléfono: nunca deja al usuario esperando.
   Future<void> _resolverLlegadaLocal(Map<String, dynamic> info) async {
+    final pisoId = info['id'] as int;
     final remoteId = info['remote_id'] as String?;
-    final localTs = info['remote_actualizado'] as String?;
+    final edificioId = info['edificio_id'] as int?;
+    final edificio = info['edificio_nombre'] as String?;
 
-    // Sólo tiene sentido chequear si el mapa vino de la nube y sabemos su
-    // versión local (los descargados antes de guardar versión no se comparan).
-    if (remoteId != null &&
-        localTs != null &&
+    // true si ya se avisó por voz que se está bajando el mapa de este lugar.
+    var avisoDescarga = false;
+
+    if (edificioId != null &&
+        edificio != null &&
         SupabaseService.instance.configurado) {
       try {
-        final serverTs = await SupabaseService.instance
-            .obtenerActualizadoEn(remoteId)
-            .timeout(const Duration(seconds: 3));
-        final localDt = DateTime.tryParse(localTs);
-        if (serverTs != null &&
-            localDt != null &&
-            serverTs.isAfter(localDt)) {
-          // Hay versión más nueva y hubo respuesta => hay conexión: actualizar.
-          if (mounted) setState(() => _estado = 'Actualizando mapa...');
-          _voz.hablar('Actualizando el mapa de este lugar.');
-          await SupabaseService.instance
-              .descargarMapa(remoteId)
-              .timeout(const Duration(seconds: 20));
-          // La descarga actualiza el piso en su lugar (mismo id local):
-          // se relee el índice y se navega con los datos nuevos.
-          await _cargarIndiceBeacons();
-          final fresco = _infoPiso[info['id'] as int];
-          await _completarEdificioYNavegar(fresco ?? info);
-          return;
-        }
-      } catch (e) {
-        // Sin datos / timeout / error: se sigue con la versión local.
-      }
-    }
-
-    // Sin actualización, sin conexión o error: navegar con lo que ya está.
-    await _completarEdificioYNavegar(info);
-  }
-
-  /// Antes de navegar, baja los OTROS pisos del mismo edificio que falten o
-  /// estén desactualizados. Al llegar sólo se detecta el piso donde está el
-  /// usuario, pero para ir a un lugar de otro piso hacen falta todos.
-  ///
-  /// Nunca bloquea la llegada: si no hay conexión, tarda demasiado o falla,
-  /// se navega igual con los pisos que ya estén en el teléfono. Lo que se
-  /// haya bajado antes del corte queda guardado (cada piso es una
-  /// transacción aparte).
-  Future<void> _completarEdificioYNavegar(Map<String, dynamic> info) async {
-    final edificio = info['edificio_nombre'] as String?;
-    if (edificio != null && SupabaseService.instance.configurado) {
-      try {
-        final pendientes = await SupabaseService.instance
-            .pisosPendientesDelEdificio(edificio)
-            .timeout(const Duration(seconds: 4));
-        if (pendientes.isNotEmpty) {
-          if (mounted) {
-            setState(() => _estado = 'Descargando los otros pisos del edificio...');
-          }
-          _voz.hablar('Descargando los otros pisos.');
-          final limite = DateTime.now().add(const Duration(seconds: 30));
-          for (final id in pendientes) {
-            final restante = limite.difference(DateTime.now());
-            if (restante <= Duration.zero) break;
-            await SupabaseService.instance.descargarMapa(id).timeout(restante);
-          }
-        }
+        final resultado = await SupabaseService.instance.sincronizarEdificio(
+          edificioId: edificioId,
+          edificioNombre: edificio,
+        );
+        avisoDescarga = await _descargarPendientes(
+          resultado.pendientes,
+          remoteId: remoteId,
+          reemplazo: remoteId != null && resultado.eliminados.contains(remoteId),
+        );
       } catch (e) {
         // Sin datos / timeout / error: se sigue con lo que haya en el teléfono.
-        debugPrint('[Edificio] No se pudieron completar los pisos: $e');
+        debugPrint('[Llegada] No se pudo sincronizar con la nube: $e');
       }
     }
 
-    // El índice cambió si se bajaron pisos nuevos.
-    await _cargarIndiceBeacons();
+    // La base local manda. Se relee el piso: si se re-descargó trae los datos
+    // nuevos (mismo id local, la descarga actualiza en el lugar), y si ya no
+    // está es que el admin lo eliminó.
+    final fresco = await DatabaseHelper.instance.obtenerPisoInfo(pisoId);
 
-    // El piso actual pudo haberse re-descargado: releer sus datos por las
-    // dudas (mismo id local, la descarga actualiza en el lugar).
-    final pisoId = info['id'] as int?;
-    if (pisoId != null) {
-      final fresco = await DatabaseHelper.instance.obtenerPisoInfo(pisoId);
-      if (fresco != null) {
-        info = {
-          ...info,
-          'ruta_imagen': fresco.rutaImagen,
-          'escala_metros': fresco.escalaX,
-          'escala_metros_alto': fresco.escalaY,
-          'tam_celda_metros': fresco.tamCeldaMetros,
-          'rotacion_mapa': fresco.rotacionMapa,
-        };
+    if (fresco == null) {
+      // Mapa eliminado: no se navega con él. Se recarga el índice (sus beacons
+      // dejan de ser conocidos) y se vuelve a escuchar. Si el admin publicó
+      // otro en su lugar, ya se bajó recién o lo encuentra la autodescarga
+      // por beacon del próximo barrido.
+      await _cargarIndiceBeacons();
+      if (!mounted) return;
+      _inicioVentanaPiso = null;
+      if (!avisoDescarga) {
+        _voz.hablar('El mapa de este lugar ya no está disponible.');
       }
+      _mostrarEstado('Buscando el mapa de este lugar...');
+      _resolviendo = false;
+      return;
     }
-    _irANavegacion(info);
+
+    _irANavegacion({
+      ...info,
+      'ruta_imagen': fresco.rutaImagen,
+      'escala_metros': fresco.escalaX,
+      'escala_metros_alto': fresco.escalaY,
+      'tam_celda_metros': fresco.tamCeldaMetros,
+      'rotacion_mapa': fresco.rotacionMapa,
+    });
+  }
+
+  /// Baja los pisos [pendientes] del edificio: los que faltan en el teléfono
+  /// o tienen una versión más nueva. El piso donde está el usuario va primero.
+  /// Devuelve true si se avisó por voz que se baja el mapa de ESTE lugar.
+  ///
+  /// Nunca bloquea la llegada: tiene un tope de tiempo y, si no hay conexión
+  /// o falla, se sigue con los pisos que ya estén en el teléfono. Lo que se
+  /// haya bajado antes del corte queda guardado (cada piso es una transacción
+  /// aparte).
+  ///
+  /// [reemplazo]: el mapa de este piso fue eliminado por el admin, así que lo
+  /// que se baja es lo que haya publicado en su lugar.
+  Future<bool> _descargarPendientes(
+    List<String> pendientes, {
+    required String? remoteId,
+    required bool reemplazo,
+  }) async {
+    if (pendientes.isEmpty) return false;
+
+    final estePendiente = remoteId != null && pendientes.contains(remoteId);
+    final esEsteLugar = estePendiente || reemplazo;
+    if (mounted) {
+      setState(() => _estado = esEsteLugar
+          ? 'Actualizando mapa...'
+          : 'Descargando los otros pisos del edificio...');
+    }
+    _voz.hablar(esEsteLugar
+        ? 'Actualizando el mapa de este lugar.'
+        : 'Descargando los otros pisos.');
+
+    try {
+      if (remoteId != null && estePendiente) {
+        await SupabaseService.instance
+            .descargarMapa(remoteId)
+            .timeout(const Duration(seconds: 20));
+      }
+      final limite = DateTime.now().add(const Duration(seconds: 30));
+      for (final id in pendientes) {
+        if (id == remoteId) continue;
+        final restante = limite.difference(DateTime.now());
+        if (restante <= Duration.zero) break;
+        await SupabaseService.instance.descargarMapa(id).timeout(restante);
+      }
+    } catch (e) {
+      // Sin datos / timeout / error: se sigue con lo que haya en el teléfono.
+      debugPrint('[Edificio] No se pudieron completar los pisos: $e');
+    }
+    return esEsteLugar;
   }
 
   /// Pasa a la pantalla de navegación con los datos del piso (local).
