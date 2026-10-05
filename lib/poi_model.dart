@@ -37,6 +37,28 @@ class LugarInteres {
   /// rotación del mapa, igual que el resto de las indicaciones.
   final double? direccionEntrada;
 
+  /// Sólo con [tipo] == escalera: true si en realidad es un ASCENSOR. Para
+  /// la navegación un ascensor es lo mismo que una escalera (conecta pisos,
+  /// sube y/o baja, tiene un lado de entrada, la ruta lo rodea y llega por
+  /// la puerta); lo único que cambia es cómo se lo nombra y cómo se dibuja.
+  /// Por eso no es un tipo aparte sino una variante: todo lo que pregunta
+  /// [esEscalera] vale también para los ascensores.
+  final bool esAscensor;
+
+  /// Otras formas de pedir este lugar por voz, además de su nombre. Ejemplo:
+  /// para "McDonald's", ["restaurante", "comida rápida", "hamburguesas"]. Si
+  /// el usuario dice una de estas palabras, este lugar entra como opción; si
+  /// varios lugares comparten la palabra, la navegación le da a elegir.
+  /// Se guardan tal como las escribió el admin; la comparación (sin tildes,
+  /// sin mayúsculas) la hace la navegación.
+  final List<String> palabrasClave;
+
+  /// Id del rubro del lugar (ver rubros.dart), o null si no tiene. El rubro
+  /// trae sus propias palabras ("comida" → restaurante, comer, almorzar…),
+  /// así que es la forma normal de que un lugar se encuentre por lo que es;
+  /// [palabrasClave] queda para lo propio de ESTE lugar (apodos, marcas).
+  final String? rubro;
+
   const LugarInteres({
     this.id,
     required this.pisoId,
@@ -47,9 +69,24 @@ class LugarInteres {
     this.sube = false,
     this.baja = false,
     this.direccionEntrada,
+    this.palabrasClave = const [],
+    this.rubro,
+    this.esAscensor = false,
   });
 
+  /// true para todo lo que conecta pisos: escaleras Y ascensores.
   bool get esEscalera => tipo == TipoLugar.escalera;
+
+  // Cómo se nombra en una frase, según sea escalera o ascensor.
+
+  /// "Escalera" / "Ascensor".
+  String get medioNombre => esAscensor ? 'Ascensor' : 'Escalera';
+
+  /// "la escalera" / "el ascensor".
+  String get medioConArticulo => esAscensor ? 'el ascensor' : 'la escalera';
+
+  /// "a la escalera" / "al ascensor".
+  String get medioComoDestino => esAscensor ? 'al ascensor' : 'a la escalera';
 
   /// Lado (m) del cuadrado que ocupa una escalera en el plano. Una escalera
   /// típica mide ~1 m de ancho: con celdas de 1 m ocupa una celda. Lo usan
@@ -77,8 +114,43 @@ class LugarInteres {
       sube: sube,
       baja: baja,
       direccionEntrada: direccionEntrada,
+      palabrasClave: palabrasClave,
+      rubro: rubro,
+      esAscensor: esAscensor,
     );
   }
+
+  // ── Palabras clave ────────────────────────────────────────────────────────
+
+  /// Convierte lo que escribió el admin ("restaurante, bar; café") en la
+  /// lista de palabras clave: separa por coma, punto y coma o salto de línea,
+  /// recorta espacios y saca vacíos y repetidos (sin distinguir mayúsculas).
+  static List<String> palabrasDesdeTexto(String? texto) {
+    if (texto == null || texto.trim().isEmpty) return const [];
+    final vistas = <String>{};
+    final salida = <String>[];
+    for (final parte in texto.split(RegExp(r'[,;\n]'))) {
+      final p = parte.trim();
+      if (p.isEmpty) continue;
+      if (vistas.add(p.toLowerCase())) salida.add(p);
+    }
+    return salida;
+  }
+
+  /// Lo mismo desde el JSON de la nube, donde viajan como lista. Acepta
+  /// también un texto separado por comas y null (mapas publicados antes de
+  /// que existieran las palabras clave).
+  static List<String> palabrasDesdeJson(dynamic valor) {
+    if (valor is List) {
+      return palabrasDesdeTexto(valor.map((e) => '$e').join(','));
+    }
+    if (valor is String) return palabrasDesdeTexto(valor);
+    return const [];
+  }
+
+  /// Texto para guardar en SQLite / mostrar en el campo de edición.
+  static String? palabrasATexto(List<String> palabras) =>
+      palabras.isEmpty ? null : palabras.join(', ');
 
   /// Punto (normalizado) donde el usuario queda parado frente a la boca de
   /// la escalera, a [distanciaMetros] de su posición, del lado de la entrada.
@@ -114,6 +186,9 @@ class LugarInteres {
         'sube': sube ? 1 : 0,
         'baja': baja ? 1 : 0,
         'direccion_entrada': direccionEntrada,
+        'palabras_clave': palabrasATexto(palabrasClave),
+        'rubro': rubro,
+        'ascensor': esAscensor ? 1 : 0,
       };
 
   factory LugarInteres.fromRow(Map<String, dynamic> row) {
@@ -130,6 +205,9 @@ class LugarInteres {
       sube: (row['sube'] as int? ?? 0) == 1,
       baja: (row['baja'] as int? ?? 0) == 1,
       direccionEntrada: (row['direccion_entrada'] as num?)?.toDouble(),
+      palabrasClave: palabrasDesdeTexto(row['palabras_clave'] as String?),
+      rubro: row['rubro'] as String?,
+      esAscensor: (row['ascensor'] as int? ?? 0) == 1,
     );
   }
 
@@ -148,6 +226,9 @@ class LugarInteres {
         'sube': sube,
         'baja': baja,
         'direccion_entrada': direccionEntrada,
+        'palabras_clave': palabrasClave,
+        'rubro': rubro,
+        'ascensor': esAscensor,
       };
 
   static TipoLugar tipoDesdeTexto(String? texto) =>

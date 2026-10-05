@@ -7,6 +7,7 @@ import 'package:flutter_compass/flutter_compass.dart';
 import 'beacon_model.dart';
 import 'zona_model.dart';
 import 'poi_model.dart';
+import 'rubros.dart';
 import 'database.dart';
 import 'procesador_senal.dart';
 import 'posicionador.dart';
@@ -1001,6 +1002,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         sube: datos.sube,
         baja: datos.baja,
         direccionEntrada: datos.direccionEntrada,
+        palabrasClave: datos.palabrasClave,
+        rubro: datos.rubro,
+        esAscensor: datos.esAscensor,
       );
       final id = await DatabaseHelper.instance.crearLugarInteres(lugar);
       if (mounted) {
@@ -1010,6 +1014,52 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error guardando lugar: $e')),
+        );
+      }
+    }
+  }
+
+  /// Edita un lugar ya cargado (nombre, rubro, descripción, palabras clave
+  /// y, si es escalera, sus datos). Se abre tocándolo en la lista de abajo; la
+  /// posición no cambia acá (para eso se arrastra en el mapa).
+  Future<void> _editarLugar(LugarInteres lugar) async {
+    if (lugar.id == null) return;
+    final datos = await showDialog<_DatosNuevoLugar>(
+      context: context,
+      builder: (ctx) => _DialogoNuevoLugar(inicial: lugar),
+    );
+    if (datos == null || !mounted) return;
+
+    // Se parte de la versión ACTUAL del lugar en la lista (no de la que se
+    // pasó al diálogo): si lo movieron mientras tanto, se conserva la
+    // posición nueva.
+    final actual = _lugares.where((l) => l.id == lugar.id).firstOrNull ?? lugar;
+    final editado = LugarInteres(
+      id: actual.id,
+      pisoId: actual.pisoId,
+      nombre: datos.nombre,
+      posicion: actual.posicion,
+      descripcion: datos.descripcion,
+      tipo: datos.tipo,
+      sube: datos.sube,
+      baja: datos.baja,
+      direccionEntrada: datos.direccionEntrada,
+      palabrasClave: datos.palabrasClave,
+      rubro: datos.rubro,
+      esAscensor: datos.esAscensor,
+    );
+    try {
+      await DatabaseHelper.instance.actualizarLugarInteres(editado);
+      if (mounted) {
+        setState(() {
+          _lugares =
+              _lugares.map((l) => l.id == editado.id ? editado : l).toList();
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando los cambios: $e')),
         );
       }
     }
@@ -1880,7 +1930,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         case _ModoEdicion.zonas:
           return 'MODO BORRAR: tocá una zona para eliminarla. Tocá "Listo" para volver a editar.';
         default:
-          return 'MODO BORRAR: tocá un lugar o una escalera para eliminarlo. Tocá "Listo" para volver a editar.';
+          return 'MODO BORRAR: tocá un lugar, una escalera o un ascensor para eliminarlo. Tocá "Listo" para volver a editar.';
       }
     }
     switch (_modo) {
@@ -1892,7 +1942,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         }
         return '${_verticesEnCurso.length} punto(s) marcado(s). Arrastrá cualquier punto naranja para corregir su ubicación. Seguí tocando para agregar más, o cerrá la zona.';
       case _ModoEdicion.lugares:
-        return 'Tocá el mapa para agregar un lugar o una escalera. Arrastrá su ícono para moverlo. Para eliminar, usá el botón Borrar.';
+        return 'Tocá el mapa para agregar un lugar, una escalera o un ascensor. Arrastrá su ícono para moverlo. Para cambiarle el nombre o el rubro, tocalo en la lista de abajo. Para eliminar, usá el botón Borrar.';
       case _ModoEdicion.escala:
         final actual = 'Escala actual: ${_escalaX.toStringAsFixed(1)} m × ${_escalaY.toStringAsFixed(1)} m '
             '(grilla ${_grilla.celdasX}×${_grilla.celdasY}).';
@@ -2434,14 +2484,42 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                       itemCount: _lugares.length,
                       itemBuilder: (context, i) {
                         final l = _lugares[i];
+                        // Rubro, descripción y palabras propias, lo que haya.
+                        final rubro = Rubros.porId(l.rubro);
+                        final detalle = [
+                          if (rubro != null) 'Rubro: ${rubro.nombre}',
+                          if (l.descripcion != null && l.descripcion!.isNotEmpty)
+                            l.descripcion!,
+                          if (l.palabrasClave.isNotEmpty)
+                            'Otras palabras: ${l.palabrasClave.join(', ')}',
+                        ].join('\n');
                         return ListTile(
                           dense: true,
-                          leading: const Icon(Icons.place, color: Colors.purple),
+                          leading: Icon(
+                            !l.esEscalera
+                                ? Icons.place
+                                : (l.esAscensor ? Icons.elevator : Icons.stairs),
+                            color: l.esEscalera ? Colors.orange : Colors.purple,
+                          ),
                           title: Text(l.nombre),
-                          subtitle: l.descripcion != null ? Text(l.descripcion!) : null,
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () => _borrarLugar(l),
+                          subtitle: detalle.isEmpty ? null : Text(detalle),
+                          // Tocar la fila edita el lugar (nombre, rubro,
+                          // descripción, palabras propias).
+                          onTap: () => _editarLugar(l),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.edit, color: TemaApp.acento),
+                                tooltip: 'Editar',
+                                onPressed: () => _editarLugar(l),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                tooltip: 'Eliminar',
+                                onPressed: () => _borrarLugar(l),
+                              ),
+                            ],
                           ),
                         );
                       },
@@ -2934,6 +3012,9 @@ class _DatosNuevoLugar {
   final bool sube;
   final bool baja;
   final double? direccionEntrada;
+  final List<String> palabrasClave;
+  final String? rubro;
+  final bool esAscensor;
 
   const _DatosNuevoLugar({
     required this.nombre,
@@ -2942,6 +3023,9 @@ class _DatosNuevoLugar {
     this.sube = false,
     this.baja = false,
     this.direccionEntrada,
+    this.palabrasClave = const [],
+    this.rubro,
+    this.esAscensor = false,
   });
 }
 
@@ -2949,7 +3033,10 @@ class _DatosNuevoLugar {
 enum _SentidoEscalera { sube, baja, ambas }
 
 class _DialogoNuevoLugar extends StatefulWidget {
-  const _DialogoNuevoLugar();
+  /// Lugar que se está editando. Null = alta de uno nuevo.
+  final LugarInteres? inicial;
+
+  const _DialogoNuevoLugar({this.inicial});
 
   @override
   State<_DialogoNuevoLugar> createState() => _DialogoNuevoLugarState();
@@ -2958,19 +3045,71 @@ class _DialogoNuevoLugar extends StatefulWidget {
 class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
   final _nombreCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
+  final _clavesCtrl = TextEditingController();
 
   TipoLugar _tipo = TipoLugar.comun;
   _SentidoEscalera? _sentido;
   double? _direccion; // 0 arriba, 90 derecha, 180 abajo, 270 izquierda
 
+  /// Id del rubro elegido (null = sin rubro).
+  String? _rubro;
+
+  /// Con tipo escalera: si lo que se está cargando es un ascensor.
+  bool _esAscensor = false;
+
+  /// "la escalera" / "el ascensor", para los textos del diálogo.
+  String get _elMedio => _esAscensor ? 'el ascensor' : 'la escalera';
+
+  bool get _editando => widget.inicial != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final l = widget.inicial;
+    if (l == null) return;
+    _nombreCtrl.text = l.nombre;
+    _descCtrl.text = l.descripcion ?? '';
+    _clavesCtrl.text = LugarInteres.palabrasATexto(l.palabrasClave) ?? '';
+    // Si el mapa trae un rubro que esta versión no conoce, se muestra como
+    // "sin rubro" (el desplegable exige que el valor exista en la lista).
+    _rubro = Rubros.porId(l.rubro)?.id;
+    _tipo = l.tipo;
+    if (l.esEscalera) {
+      _esAscensor = l.esAscensor;
+      _sentido = l.sube && l.baja
+          ? _SentidoEscalera.ambas
+          : l.sube
+              ? _SentidoEscalera.sube
+              : l.baja
+                  ? _SentidoEscalera.baja
+                  : null;
+      _direccion = l.direccionEntrada;
+    }
+  }
+
   @override
   void dispose() {
     _nombreCtrl.dispose();
     _descCtrl.dispose();
+    _clavesCtrl.dispose();
     super.dispose();
   }
 
   bool get _esEscalera => _tipo == TipoLugar.escalera;
+
+  /// Muestra de las palabras que trae el rubro elegido, para que el admin
+  /// vea con qué se va a encontrar el lugar.
+  String get _ayudaRubro {
+    final r = Rubros.porId(_rubro);
+    if (r == null) {
+      return 'Elegilo para que el lugar se encuentre por lo que es '
+          '("quiero comer", "un kiosco").';
+    }
+    const muestra = 6;
+    final palabras = r.palabras.take(muestra).join(', ');
+    return 'Se encuentra diciendo: $palabras'
+        '${r.palabras.length > muestra ? '…' : ''}';
+  }
 
   /// Qué falta para poder guardar (null = se puede guardar).
   String? get _faltante {
@@ -2991,6 +3130,8 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
         _DatosNuevoLugar(
           nombre: _nombreCtrl.text.trim(),
           descripcion: desc.isEmpty ? null : desc,
+          palabrasClave: LugarInteres.palabrasDesdeTexto(_clavesCtrl.text),
+          rubro: _rubro,
         ),
       );
       return;
@@ -2999,9 +3140,12 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
     Navigator.pop(
       context,
       _DatosNuevoLugar(
-        nombre: nombre.isEmpty ? 'Escalera' : nombre,
+        nombre: nombre.isEmpty
+            ? (_esAscensor ? 'Ascensor' : 'Escalera')
+            : nombre,
         descripcion: desc.isEmpty ? null : desc,
         tipo: TipoLugar.escalera,
+        esAscensor: _esAscensor,
         sube: _sentido == _SentidoEscalera.sube ||
             _sentido == _SentidoEscalera.ambas,
         baja: _sentido == _SentidoEscalera.baja ||
@@ -3039,7 +3183,11 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(_esEscalera ? 'Nueva escalera' : 'Nuevo lugar de interés'),
+      title: Text(!_esEscalera
+          ? (_editando ? 'Editar lugar' : 'Nuevo lugar de interés')
+          : _esAscensor
+              ? (_editando ? 'Editar ascensor' : 'Nuevo ascensor')
+              : (_editando ? 'Editar escalera' : 'Nueva escalera')),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -3055,6 +3203,7 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
                 ButtonSegment(
                   value: TipoLugar.escalera,
                   icon: Icon(Icons.stairs),
+                  // Escalera o ascensor: se elige abajo, al entrar acá.
                   label: Text('Escalera'),
                 ),
               ],
@@ -3066,9 +3215,11 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
               controller: _nombreCtrl,
               onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
-                hintText: _esEscalera
-                    ? 'Nombre (opcional, ej: Escalera norte)'
-                    : 'Nombre (ej: Baño, Terminal 5)',
+                hintText: !_esEscalera
+                    ? 'Nombre (ej: Baño, Terminal 5)'
+                    : _esAscensor
+                        ? 'Nombre (opcional, ej: Ascensor norte)'
+                        : 'Nombre (opcional, ej: Escalera norte)',
                 border: const OutlineInputBorder(),
               ),
             ),
@@ -3080,10 +3231,80 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
                 border: OutlineInputBorder(),
               ),
             ),
+            if (!_esEscalera) ...[
+              const SizedBox(height: 12),
+              // Rubro: trae cargadas las palabras con las que la gente pide
+              // ese tipo de lugar (ver rubros.dart).
+              InputDecorator(
+                decoration: InputDecoration(
+                  labelText: 'Rubro',
+                  border: const OutlineInputBorder(),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  helperText: _ayudaRubro,
+                  helperMaxLines: 3,
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String?>(
+                    value: _rubro,
+                    isExpanded: true,
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('Sin rubro'),
+                      ),
+                      for (final r in Rubros.todos)
+                        DropdownMenuItem<String?>(
+                          value: r.id,
+                          child: Text(r.nombre),
+                        ),
+                    ],
+                    onChanged: (v) => setState(() => _rubro = v),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _clavesCtrl,
+                minLines: 1,
+                maxLines: 3,
+                textCapitalization: TextCapitalization.none,
+                decoration: const InputDecoration(
+                  labelText: 'Otras palabras (opcional)',
+                  hintText: 'el mac, mc',
+                  helperText:
+                      'Sólo lo propio de este lugar (apodos, marcas), separado '
+                      'por comas. Lo general ya viene con el rubro.',
+                  helperMaxLines: 3,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
             if (_esEscalera) ...[
               const SizedBox(height: 16),
-              const Text('Desde este piso, la escalera:',
+              const Text('¿Qué es?',
                   style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('Escalera'),
+                    avatar: const Icon(Icons.stairs, size: 18),
+                    selected: !_esAscensor,
+                    onSelected: (_) => setState(() => _esAscensor = false),
+                  ),
+                  ChoiceChip(
+                    label: const Text('Ascensor'),
+                    avatar: const Icon(Icons.elevator, size: 18),
+                    selected: _esAscensor,
+                    onSelected: (_) => setState(() => _esAscensor = true),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Text('Desde este piso, $_elMedio:',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
               const SizedBox(height: 6),
               Wrap(
                 spacing: 8,
@@ -3115,10 +3336,13 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
               const Text('¿Hacia qué lado del plano da la entrada?',
                   style: TextStyle(fontWeight: FontWeight.w600)),
               const SizedBox(height: 2),
-              const Text(
-                'Es el lado por donde se llega a la boca de la escalera, '
-                'tal como se ve el plano en pantalla.',
-                style: TextStyle(fontSize: 12),
+              Text(
+                _esAscensor
+                    ? 'Es el lado donde está la puerta del ascensor, '
+                        'tal como se ve el plano en pantalla.'
+                    : 'Es el lado por donde se llega a la boca de la escalera, '
+                        'tal como se ve el plano en pantalla.',
+                style: const TextStyle(fontSize: 12),
               ),
               const SizedBox(height: 10),
               Center(
@@ -3131,10 +3355,13 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
                       children: [
                         _botonDireccion(270, Icons.arrow_back, 'la izquierda'),
                         const SizedBox(width: 6),
-                        const SizedBox(
+                        SizedBox(
                           width: 56,
                           height: 56,
-                          child: Icon(Icons.stairs, size: 32),
+                          child: Icon(
+                            _esAscensor ? Icons.elevator : Icons.stairs,
+                            size: 32,
+                          ),
                         ),
                         const SizedBox(width: 6),
                         _botonDireccion(90, Icons.arrow_forward, 'la derecha'),

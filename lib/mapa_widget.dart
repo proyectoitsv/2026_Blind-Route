@@ -1171,7 +1171,10 @@ class _MarcadorEscalera extends StatelessWidget {
       children: [
         Positioned.fill(
           child: CustomPaint(
-            painter: _EscaleraPainter(direccionEntrada: lugar.direccionEntrada),
+            painter: _EscaleraPainter(
+              direccionEntrada: lugar.direccionEntrada,
+              esAscensor: lugar.esAscensor,
+            ),
           ),
         ),
         // Etiqueta debajo del cuadrado, centrada y más ancha que él si hace
@@ -1207,9 +1210,17 @@ class _MarcadorEscalera extends StatelessWidget {
 /// rotado según [direccionEntrada], donde la entrada queda siempre "arriba":
 /// los escalones son líneas horizontales y el triángulo va en el borde de
 /// arriba apuntando hacia afuera.
+///
+/// Un ASCENSOR usa el mismo cuadrado y el mismo triángulo de entrada (ahí es
+/// la puerta), pero en vez de escalones lleva dos flechas, arriba y abajo,
+/// que no rotan con la entrada.
 class _EscaleraPainter extends CustomPainter {
   final double? direccionEntrada;
-  const _EscaleraPainter({required this.direccionEntrada});
+  final bool esAscensor;
+  const _EscaleraPainter({
+    required this.direccionEntrada,
+    this.esAscensor = false,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1230,25 +1241,50 @@ class _EscaleraPainter extends CustomPainter {
         ..strokeWidth = max(1.0, lado * 0.05),
     );
 
+    final medio = lado / 2;
+
+    // Ascensor: flechas arriba / abajo, en el marco de la pantalla (antes de
+    // rotar): siempre se leen derechas, mire para donde mire la puerta.
+    if (esAscensor) {
+      final cx = size.width / 2;
+      final cy = size.height / 2;
+      final a = medio * 0.34; // medio ancho de cada flecha
+      final h = medio * 0.42; // alto de cada flecha
+      final sep = medio * 0.14; // separación al centro
+      final flechas = Path()
+        // ▲
+        ..moveTo(cx, cy - sep - h)
+        ..lineTo(cx - a, cy - sep)
+        ..lineTo(cx + a, cy - sep)
+        ..close()
+        // ▼
+        ..moveTo(cx, cy + sep + h)
+        ..lineTo(cx - a, cy + sep)
+        ..lineTo(cx + a, cy + sep)
+        ..close();
+      canvas.drawPath(flechas, Paint()..color = Colors.white);
+    }
+
     // Marco local centrado y rotado: la entrada queda hacia -y.
     canvas.save();
     canvas.translate(size.width / 2, size.height / 2);
     if (direccionEntrada != null) canvas.rotate(direccionEntrada! * pi / 180);
-    final medio = lado / 2;
 
     // Escalones.
-    final escalon = Paint()
-      ..color = Colors.white
-      ..strokeWidth = max(0.8, lado * 0.05)
-      ..strokeCap = StrokeCap.round;
-    const n = 4;
-    for (int i = 0; i < n; i++) {
-      final y = -medio * 0.45 + i * (medio * 1.2 / (n - 1));
-      canvas.drawLine(
-        Offset(-medio * 0.6, y),
-        Offset(medio * 0.6, y),
-        escalon,
-      );
+    if (!esAscensor) {
+      final escalon = Paint()
+        ..color = Colors.white
+        ..strokeWidth = max(0.8, lado * 0.05)
+        ..strokeCap = StrokeCap.round;
+      const n = 4;
+      for (int i = 0; i < n; i++) {
+        final y = -medio * 0.45 + i * (medio * 1.2 / (n - 1));
+        canvas.drawLine(
+          Offset(-medio * 0.6, y),
+          Offset(medio * 0.6, y),
+          escalon,
+        );
+      }
     }
 
     // Triángulo de la entrada, sobresaliendo del borde.
@@ -1274,5 +1310,5 @@ class _EscaleraPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_EscaleraPainter old) =>
-      old.direccionEntrada != direccionEntrada;
+      old.direccionEntrada != direccionEntrada || old.esAscensor != esAscensor;
 }

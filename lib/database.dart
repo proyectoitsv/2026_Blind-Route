@@ -27,7 +27,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 13, // v13: pisos.numero_piso + escaleras en lugares_interes
+      version: 16, // v14: lugares.palabras_clave · v15: .rubro · v16: .ascensor
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -98,6 +98,9 @@ class DatabaseHelper {
         sube INTEGER NOT NULL DEFAULT 0,
         baja INTEGER NOT NULL DEFAULT 0,
         direccion_entrada REAL,
+        palabras_clave TEXT,
+        rubro TEXT,
+        ascensor INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
       )
     ''');
@@ -271,6 +274,32 @@ class DatabaseHelper {
       if (!tiene('direccion_entrada')) {
         await db.execute(
             'ALTER TABLE lugares_interes ADD COLUMN direccion_entrada REAL');
+      }
+    }
+    if (oldVersion < 14) {
+      // v14: palabras clave de cada lugar (otras formas de pedirlo por voz).
+      // Texto separado por comas; null = sin palabras clave. Mismo cuidado
+      // que en las versiones anteriores: si la tabla se creó con el DDL nuevo
+      // la columna ya existe.
+      final cols = await db.rawQuery('PRAGMA table_info(lugares_interes)');
+      if (!cols.any((c) => (c['name'] as String?) == 'palabras_clave')) {
+        await db.execute(
+            'ALTER TABLE lugares_interes ADD COLUMN palabras_clave TEXT');
+      }
+    }
+    if (oldVersion < 15) {
+      // v15: rubro de cada lugar (id de rubros.dart; null = sin rubro).
+      final cols = await db.rawQuery('PRAGMA table_info(lugares_interes)');
+      if (!cols.any((c) => (c['name'] as String?) == 'rubro')) {
+        await db.execute('ALTER TABLE lugares_interes ADD COLUMN rubro TEXT');
+      }
+    }
+    if (oldVersion < 16) {
+      // v16: una "escalera" puede ser un ascensor (misma lógica, otro nombre).
+      final cols = await db.rawQuery('PRAGMA table_info(lugares_interes)');
+      if (!cols.any((c) => (c['name'] as String?) == 'ascensor')) {
+        await db.execute(
+            'ALTER TABLE lugares_interes ADD COLUMN ascensor INTEGER NOT NULL DEFAULT 0');
       }
     }
   }
@@ -625,6 +654,13 @@ class DatabaseHelper {
           'sube': (l['sube'] == true) ? 1 : 0,
           'baja': (l['baja'] == true) ? 1 : 0,
           'direccion_entrada': (l['direccion_entrada'] as num?)?.toDouble(),
+          // Opcional: un mapa publicado antes de v14 no las trae.
+          'palabras_clave': LugarInteres.palabrasATexto(
+              LugarInteres.palabrasDesdeJson(l['palabras_clave'])),
+          // Opcional: un mapa publicado antes de v15 no lo trae.
+          'rubro': l['rubro'] is String ? l['rubro'] : null,
+          // Opcional: un mapa publicado antes de v16 no lo trae.
+          'ascensor': (l['ascensor'] == true) ? 1 : 0,
         });
       }
 
@@ -814,6 +850,19 @@ class DatabaseHelper {
       {'x': posicion.dx, 'y': posicion.dy},
       where: 'id = ?',
       whereArgs: [id],
+    );
+  }
+
+  /// Guarda los cambios de un lugar ya existente (nombre, descripción,
+  /// palabras clave, datos de escalera). La posición también viaja en la
+  /// fila, así que queda la que tenga [lugar].
+  Future<void> actualizarLugarInteres(LugarInteres lugar) async {
+    final db = await instance.database;
+    await db.update(
+      'lugares_interes',
+      lugar.toRow(),
+      where: 'id = ?',
+      whereArgs: [lugar.id],
     );
   }
 
