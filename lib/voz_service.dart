@@ -75,18 +75,69 @@ class VozService {
  
   // ─── TTS: TEXT TO SPEECH ─────────────────────────────────────────────────────
  
+  /// Completer de la frase que está sonando por [hablar]. Null si no suena
+  /// nada, o si lo que suena lo lanzó [hablarSinEsperar] (nadie la espera).
+  Completer<void>? _finFraseActual;
+
+  /// Corta la frase en curso (si hay) y ESPERA el aviso de cancelación del
+  /// motor antes de devolver.
+  ///
+  /// POR QUÉ HAY QUE ESPERARLO: los handlers del motor son globales, no por
+  /// frase. Antes [hablar] hacía `stop()` y enseguida instalaba los handlers
+  /// de la frase NUEVA; el aviso de cancelación de la frase VIEJA llegaba un
+  /// instante después y lo recibía el handler nuevo, que entendía "terminé":
+  /// ponía `_hablando = false` y completaba el Future con la frase nueva
+  /// recién empezando. Con `_hablando` en false de forma espuria, la próxima
+  /// indicación de guiado la pisaba (el motor corta lo que suena al recibir
+  /// otro `speak`). Pasaba, por ejemplo, con "Ubicación lista." seguido de
+  /// "Ubicación lista. Vamos a la escalera.". Acá el aviso viejo lo consume
+  /// un handler temporal y recién después se instala el de la frase nueva.
+  Future<void> _cortarFraseEnCurso() async {
+    if (!_hablando) {
+      await _tts.stop();
+      return;
+    }
+    final cortada = Completer<void>();
+    void soltar() {
+      if (!cortada.isCompleted) cortada.complete();
+    }
+
+    _tts.setCompletionHandler(soltar);
+    _tts.setCancelHandler(soltar);
+    _tts.setErrorHandler((_) => soltar());
+    await _tts.stop();
+    // Tope corto: si el aviso no llega (frase que justo había terminado), no
+    // se demora la frase nueva más que esto.
+    await cortada.future
+        .timeout(const Duration(milliseconds: 500), onTimeout: () {});
+    _hablando = false;
+
+    // Si alguien estaba esperando la frase cortada, ya no tiene qué esperar.
+    final anterior = _finFraseActual;
+    _finFraseActual = null;
+    if (anterior != null && !anterior.isCompleted) anterior.complete();
+  }
+
   /// Habla el texto y espera a que el motor TTS confirme que terminó.
   /// Usa un Completer conectado al callback onCompletionHandler del motor,
   /// con un timeout de seguridad basado en la longitud del texto.
+  /// Si había otra frase sonando, la corta.
   Future<void> hablar(String texto) async {
     if (!_ttsInicializado || texto.trim().isEmpty) return;
-    await _tts.stop();
+    await _cortarFraseEnCurso();
     _hablando = true;
 
     final completer = Completer<void>();
+    _finFraseActual = completer;
 
     void completar() {
-      _hablando = false;
+      // El estado global sólo se toca si ESTA sigue siendo la frase en curso:
+      // el timeout de una frase que ya fue cortada por otra no tiene que
+      // marcar como libre al motor mientras suena la nueva.
+      if (identical(_finFraseActual, completer)) {
+        _finFraseActual = null;
+        _hablando = false;
+      }
       if (!completer.isCompleted) completer.complete();
     }
 
@@ -106,19 +157,23 @@ class VozService {
     // abrir el micrófono.
     final timeoutMs = (texto.length * 150).clamp(1500, 12000) + 600;
     await completer.future
-        .timeout(Duration(milliseconds: timeoutMs), onTimeout: () {
-      _hablando = false;
-    });
+        .timeout(Duration(milliseconds: timeoutMs), onTimeout: completar);
   }
  
   /// Habla sin esperar — para instrucciones de navegación que se actualizan
   /// continuamente y no deben bloquear el widget tree.
-  /// Si el motor ya está reproduciendo audio, descarta silenciosamente el
-  /// nuevo texto para no interrumpir la locución en curso.
-  void hablarSinEsperar(String texto) {
-    if (!_ttsInicializado || texto.trim().isEmpty) return;
+  /// Si el motor ya está reproduciendo audio, descarta el nuevo texto para no
+  /// interrumpir la locución en curso.
+  ///
+  /// Devuelve `true` si el texto se mandó al motor y `false` si se descartó.
+  /// El que llama TIENE que mirar ese resultado si necesita saber si la frase
+  /// se dijo: antes este método era `void` y [hablarSiCambio] daba por dicha
+  /// una indicación que en realidad se había descartado (ver el comentario
+  /// ahí), que es lo que demoraba ~15 s la primera indicación de cada ruta.
+  bool hablarSinEsperar(String texto) {
+    if (!_ttsInicializado || texto.trim().isEmpty) return false;
     // No interrumpir si ya se está hablando
-    if (_hablando) return;
+    if (_hablando) return false;
     _hablando = true;
     _tts.setCompletionHandler(() => _hablando = false);
     _tts.setCancelHandler(() => _hablando = false);
@@ -126,6 +181,7 @@ class VozService {
     _tts.speak(texto);
     _ultimaVezHablado = DateTime.now();
     _ultimaInstruccion = texto;
+    return true;
   }
  
   // Filtro de estabilidad: la instrucción debe repetirse N veces
@@ -197,8 +253,16 @@ class VozService {
           ahora.difference(_ultimaVezHablado!) < _intervaloEntreDistintas) {
         return; // se dirá en el próximo ciclo, sin perder la candidata
       }
-      _ultimaClaveHablada = k;
-      hablarSinEsperar(texto);
+      // FIX (primera indicación a los ~15 s): la clave se anota como dicha
+      // SÓLO si el motor aceptó la frase. Antes se anotaba siempre, y como
+      // hablarSinEsperar() descarta el texto cuando el TTS está ocupado, una
+      // indicación que caía mientras todavía sonaba "<destino>. Calculando
+      // ruta." quedaba registrada como dicha sin haber sonado nunca. A partir
+      // de ahí entraba en la rama de abajo ("misma indicación") y recién se
+      // decía cuando vencía _intervaloMinimo: 15 segundos. Ahora, si el motor
+      // está ocupado, la candidata queda viva y se reintenta en el próximo
+      // ciclo (~0,2 s), o sea apenas termina la frase en curso.
+      if (hablarSinEsperar(texto)) _ultimaClaveHablada = k;
       return;
     }
 
@@ -210,9 +274,58 @@ class VozService {
     }
   }
  
+  /// Dice YA una indicación de guiado, sin pasar por el filtro de estabilidad
+  /// de [hablarSiCambio] (4 confirmaciones + 1,8 s).
+  ///
+  /// Es para la PRIMERA indicación de una ruta recién calculada: ahí no hay
+  /// ningún rebote que filtrar —el usuario acaba de pedir el destino y está
+  /// esperando que le digan para dónde ir— y cada segundo de silencio se
+  /// siente como que la app no respondió.
+  ///
+  /// No interrumpe: si el motor está hablando devuelve `false` y no dice
+  /// nada; el que llama reintenta en el próximo ciclo. Si habló, deja el
+  /// filtro al día (ver [registrarInstruccionDicha]) y devuelve `true`.
+  bool hablarInstruccionYa(String texto, {required String clave}) {
+    if (!hablarSinEsperar(texto)) return false;
+    registrarInstruccionDicha(clave);
+    return true;
+  }
+
+  /// Avisa al filtro de [hablarSiCambio] que la indicación [clave] ya se dijo
+  /// por otro camino (por ejemplo dentro de una frase más larga dicha con
+  /// [hablar]). Sin esto el filtro la vería como una indicación nueva y la
+  /// repetiría a los dos segundos.
+  void registrarInstruccionDicha(String clave) {
+    _ultimaClaveHablada = clave;
+    _instruccionCandidata = clave;
+    _contadorConfirmaciones = _confirmacionesNecesarias;
+    _candidataDesde = DateTime.now();
+  }
+
+  /// Olvida la última indicación dicha y la candidata en curso. Se llama al
+  /// fijar un destino nuevo, al cancelar y al abrir la pantalla: VozService
+  /// es un singleton, así que sin esto la última indicación de la navegación
+  /// ANTERIOR seguía contando como "ya dicha" para la siguiente (si coincidía
+  /// con la primera de la ruta nueva, no se repetía hasta pasados 15 s).
+  void reiniciarFiltroInstrucciones() {
+    _ultimaClaveHablada = '';
+    _instruccionCandidata = '';
+    _contadorConfirmaciones = 0;
+    _candidataDesde = null;
+  }
+
+  /// Suelta a quien esté esperando la frase en curso de [hablar] (se usa al
+  /// detener el motor desde afuera: esa frase ya no va a terminar sola).
+  void _liberarEspera() {
+    final c = _finFraseActual;
+    _finFraseActual = null;
+    if (c != null && !c.isCompleted) c.complete();
+  }
+
   Future<void> detener() async {
     await _tts.stop();
     _hablando = false;
+    _liberarEspera();
   }
  
   bool get ttsDisponible => _ttsInicializado;
@@ -339,6 +452,7 @@ class VozService {
     _dueno = null;
     _tts.stop();
     _hablando = false;
+    _liberarEspera();
     _stt.stop();
     _escuchando = false;
   }
