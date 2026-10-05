@@ -171,6 +171,41 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   String? _beaconArrastrado;
   static const double _radioAgarreBeacon = 0.05;
 
+  // Igual que con los lugares: desfasaje entre el dedo y el beacon (para que
+  // no "salte" bajo el dedo al agarrarlo), punto donde empezó el gesto y si
+  // ya superó el umbral de movimiento. Un toque limpio cerca de un beacon NO
+  // tiene que moverlo: ese toque puede ser para ubicar otro al lado.
+  Offset _desfaseAgarreBeacon = Offset.zero;
+  Offset? _inicioAgarreBeacon;
+  bool _beaconEnMovimiento = false;
+
+  /// Beacon / lugar cuyo MARCADOR tocó el dedo en el gesto actual (lo avisa
+  /// el MapaWidget). Tiene prioridad sobre la búsqueda por distancia: lo que
+  /// se arrastra es lo que se tocó, no lo que quedó más cerca en coordenadas
+  /// del plano (que en un plano apaisado no coincide con lo que se ve).
+  String? _beaconTocado;
+  int? _lugarTocado;
+  bool _ultimoGestoBeaconFueArrastre = false;
+  static const double _umbralMovimientoBeacon = 0.012;
+
+  // ── MODO BORRAR ───────────────────────────────────────────────────────────
+  // Antes se borraba tocando el elemento (o con long-press en los beacons), y
+  // el mismo toque servía para agregar: al querer poner dos cosas pegadas, el
+  // toque caía sobre la anterior y se ofrecía borrarla. Ahora las dos cosas
+  // están separadas:
+  //   · modo normal → tocar AGREGA y arrastrar MUEVE; nada se borra tocando.
+  //   · modo borrar (botón "Borrar" sobre el mapa) → tocar un elemento lo
+  //     elimina; no se agrega ni se mueve nada.
+  bool _modoBorrar = false;
+
+  /// El modo borrar sólo existe donde hay algo que borrar sobre el mapa.
+  bool get _modoAdmiteBorrar =>
+      _modo == _ModoEdicion.beacons ||
+      _modo == _ModoEdicion.zonas ||
+      _modo == _ModoEdicion.lugares;
+
+  bool get _borrando => _modoBorrar && _modoAdmiteBorrar;
+
   // Arrastre de lugares de interés y escaleras (modo lugares). Mismo canal de
   // un dedo que beacons/zonas. Se guarda el id del lugar agarrado, el
   // desfasaje entre el dedo y el punto (para que no "salte" bajo el dedo) y
@@ -462,6 +497,23 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   void _borrarBeacon(String mac) async {
     try {
+      final nombre = _beaconsEnElMapa[mac]?.nombre ?? 'Beacon';
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Eliminar beacon?'),
+          content: Text('Se eliminara "$nombre" ($mac) de este piso.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Eliminar'),
+            ),
+          ],
+        ),
+      );
+      if (confirmar != true || !mounted) return;
       setState(() => _beaconsEnElMapa.remove(mac));
       await _sincronizarBeacons();
       if (mounted) {
@@ -478,13 +530,29 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
+  /// Distancia entre dos puntos del plano para comparar contra los radios de
+  /// agarre, expresada como fracción del lado MAYOR del piso.
+  ///
+  /// No se usa la distancia en coordenadas normalizadas directamente porque
+  /// 0.05 "de ancho" y 0.05 "de alto" sólo miden lo mismo en pantalla si el
+  /// piso es cuadrado: en un plano de 30 × 12 m, 0.05 de alto son menos de la
+  /// mitad de píxeles que 0.05 de ancho, y el radio de agarre quedaba chato.
+  /// En un piso cuadrado da exactamente lo mismo que antes.
+  double _distanciaAgarre(Offset a, Offset b) {
+    final lado = max(_grilla.metrosX, _grilla.metrosY);
+    if (lado <= 0) return (a - b).distance;
+    final dx = (a.dx - b.dx) * _grilla.metrosX;
+    final dy = (a.dy - b.dy) * _grilla.metrosY;
+    return sqrt(dx * dx + dy * dy) / lado;
+  }
+
   /// MAC del beacon ubicado cuyo ícono cae dentro del radio de agarre de [n],
   /// o null. Si hay varios, el más cercano.
   String? _beaconCercano(Offset n) {
     String? mejor;
     double mejorDist = _radioAgarreBeacon;
     for (final b in _beaconsEnElMapa.values) {
-      final d = (b.posicion - n).distance;
+      final d = _distanciaAgarre(b.posicion, n);
       if (d <= mejorDist) {
         mejorDist = d;
         mejor = b.mac;
@@ -501,35 +569,76 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   void _onArrastreInicioBeacon(Offset n) {
     if (!mounted) return;
-    final mac = _beaconCercano(n);
-    if (mac != null) setState(() => _beaconArrastrado = mac);
+    _ultimoGestoBeaconFueArrastre = false;
+    _inicioAgarreBeacon = n;
+    _beaconEnMovimiento = false;
+    // 1) El beacon cuyo marcador se tocó; 2) si el dedo cayó apenas afuera,
+    //    el más cercano dentro del radio de agarre.
+    final tocado = _beaconTocado;
+    _beaconTocado = null;
+    final mac = (tocado != null && _beaconsEnElMapa.containsKey(tocado))
+        ? tocado
+        : _beaconCercano(n);
+    final b = mac == null ? null : _beaconsEnElMapa[mac];
+    // Todavía no se resalta: recién cuando el dedo se mueva de verdad (ver
+    // _onArrastreActualizarBeacon). Así un toque al lado de un beacon no lo
+    // resalta ni lo corre.
+    _beaconArrastrado = b == null ? null : mac;
+    _desfaseAgarreBeacon = b == null ? Offset.zero : b.posicion - n;
+  }
+
+  /// El dedo se apoyó sobre la mira de un beacon (aviso del MapaWidget).
+  /// Funciona llegue antes o después que _onArrastreInicioBeacon: si el
+  /// gesto todavía no se abrió, se deja anotado; si ya se abrió, se corrige
+  /// lo que había elegido la búsqueda por distancia.
+  void _onAgarreBeacon(String mac) {
+    final b = _beaconsEnElMapa[mac];
+    if (b == null || _beaconEnMovimiento) return;
+    if (_inicioAgarreBeacon != null) {
+      _beaconArrastrado = mac;
+      _desfaseAgarreBeacon = b.posicion - _inicioAgarreBeacon!;
+    } else {
+      _beaconTocado = mac;
+    }
   }
 
   void _onArrastreActualizarBeacon(Offset n) {
     if (!mounted || _beaconArrastrado == null) return;
     final b = _beaconsEnElMapa[_beaconArrastrado!];
     if (b == null) return;
+    // Hasta superar el umbral el gesto se trata como toque (no se mueve).
+    if (!_beaconEnMovimiento) {
+      if (_inicioAgarreBeacon == null ||
+          (n - _inicioAgarreBeacon!).distance < _umbralMovimientoBeacon) {
+        return;
+      }
+      _beaconEnMovimiento = true;
+    }
+    final destino = n + _desfaseAgarreBeacon;
     // posicion es mutable; recortada a [0,1]. El repintado sale del setState.
     setState(() {
-      b.posicion = Offset(n.dx.clamp(0.0, 1.0), n.dy.clamp(0.0, 1.0));
+      b.posicion =
+          Offset(destino.dx.clamp(0.0, 1.0), destino.dy.clamp(0.0, 1.0));
     });
   }
 
-  Future<void> _onArrastreFinBeacon() async {
+  /// Soltar el dedo y cancelar (segundo dedo para zoom) hacen lo mismo: el
+  /// beacon queda donde se dejó y, si se movió, se persiste.
+  Future<void> _terminarArrastreBeacon() async {
     if (!mounted) return;
-    final movio = _beaconArrastrado != null;
-    setState(() => _beaconArrastrado = null);
+    final movio = _beaconArrastrado != null && _beaconEnMovimiento;
+    _ultimoGestoBeaconFueArrastre = movio;
+    _beaconTocado = null;
+    setState(() {
+      _beaconArrastrado = null;
+      _inicioAgarreBeacon = null;
+      _beaconEnMovimiento = false;
+    });
     if (movio) await _sincronizarBeacons(); // persistir la nueva ubicación
   }
 
-  void _onArrastreCancelarBeacon() {
-    if (!mounted) return;
-    // Segundo dedo (zoom): se deja el beacon donde quedó y se suelta el
-    // arrastre; se persiste igual para no perder el reacomodo parcial.
-    final movio = _beaconArrastrado != null;
-    setState(() => _beaconArrastrado = null);
-    if (movio) _sincronizarBeacons();
-  }
+  Future<void> _onArrastreFinBeacon() => _terminarArrastreBeacon();
+  void _onArrastreCancelarBeacon() => _terminarArrastreBeacon();
 
   void _conmutarEscaner() async {
     if (_escaneando) {
@@ -808,17 +917,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       return;
     }
 
-    // 2) Sin zona en curso, un toque dentro de una zona ya guardada significa
-    //    "borrar esa zona" (lo maneja el tap interno del MapaWidget): no se
-    //    empieza un polígono nuevo encima.
-    if (_verticesEnCurso.isEmpty) {
-      for (final zona in _zonas) {
-        if (zona.vertices.length >= 3 &&
-            MapaWidget.puntoEnPoligono(n, zona.vertices)) {
-          return;
-        }
-      }
-    }
+    // 2) (Ya no existe.) Antes, sin zona en curso, un toque dentro de una
+    //    zona guardada significaba "borrar esa zona" y no se podía empezar
+    //    un polígono nuevo ahí. Borrar ahora es un modo aparte (botón
+    //    "Borrar"), así que una zona puede arrancar pegada a otra o encima.
 
     // 3) Vértice nuevo, enganchado al dedo para poder corregirlo en el mismo
     //    gesto sin tener que soltarlo y volver a agarrarlo.
@@ -924,21 +1026,26 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   LugarInteres? _lugarCercano(Offset n) {
     LugarInteres? mejor;
     double mejorDist = double.infinity;
-    final mitadEscalera = max(
-      MapaWidget.anchoEscaleraMetros * 0.75 / _grilla.metrosX,
-      MapaWidget.anchoEscaleraMetros * 0.75 / _grilla.metrosY,
-    );
+    // Todo en la misma unidad que _distanciaAgarre: fracción del lado mayor.
+    final lado = max(_grilla.metrosX, _grilla.metrosY);
+    final mitadEscalera =
+        lado > 0 ? MapaWidget.anchoEscaleraMetros * 0.75 / lado : 0.0;
+    // Cuánto hay que bajar el dedo (en y normalizado) para compararlo con el
+    // ícono, que está por encima de la punta.
+    final bajarY = _grilla.metrosY > 0
+        ? _radioAgarreLugar * 0.6 * lado / _grilla.metrosY
+        : _radioAgarreLugar * 0.6;
     for (final l in _lugares) {
       if (l.id == null) continue;
       final double d;
       final double radio;
       if (l.esEscalera) {
-        d = (l.posicion - n).distance;
+        d = _distanciaAgarre(l.posicion, n);
         radio = max(_radioAgarreLugar, mitadEscalera);
       } else {
-        final dPunto = (l.posicion - n).distance;
+        final dPunto = _distanciaAgarre(l.posicion, n);
         final dIcono =
-            (l.posicion - Offset(n.dx, n.dy + _radioAgarreLugar * 0.6)).distance;
+            _distanciaAgarre(l.posicion, Offset(n.dx, n.dy + bajarY));
         d = min(dPunto, dIcono);
         radio = _radioAgarreLugar;
       }
@@ -953,14 +1060,33 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _onArrastreInicioLugar(Offset n) {
     if (!mounted) return;
     _ultimoGestoLugarFueArrastre = false;
-    final l = _lugarCercano(n);
-    if (l == null) return;
-    setState(() {
-      _lugarArrastrado = l.id;
-      _desfaseAgarreLugar = l.posicion - n;
-      _inicioAgarreLugar = n;
-      _lugarEnMovimiento = false;
-    });
+    _inicioAgarreLugar = n;
+    _lugarEnMovimiento = false;
+    // 1) El lugar cuyo marcador (ícono o etiqueta) se tocó; 2) si el dedo
+    //    cayó apenas afuera, el más cercano dentro del radio de agarre.
+    final tocado = _lugarTocado;
+    _lugarTocado = null;
+    final l = (tocado == null
+            ? null
+            : _lugares.where((x) => x.id == tocado).firstOrNull) ??
+        _lugarCercano(n);
+    // Sin setState: el marcador se resalta recién cuando empieza a moverse.
+    _lugarArrastrado = l?.id;
+    _desfaseAgarreLugar = l == null ? Offset.zero : l.posicion - n;
+  }
+
+  /// El dedo se apoyó sobre el marcador de un lugar (aviso del MapaWidget).
+  /// Funciona llegue antes o después que _onArrastreInicioLugar: si el gesto
+  /// todavía no se abrió, se deja anotado; si ya se abrió, se corrige lo que
+  /// había elegido la búsqueda por distancia.
+  void _onAgarreLugar(LugarInteres lugar) {
+    if (lugar.id == null || _lugarEnMovimiento) return;
+    if (_inicioAgarreLugar != null) {
+      _lugarArrastrado = lugar.id;
+      _desfaseAgarreLugar = lugar.posicion - _inicioAgarreLugar!;
+    } else {
+      _lugarTocado = lugar.id;
+    }
   }
 
   void _onArrastreActualizarLugar(Offset n) {
@@ -989,6 +1115,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     final id = _lugarArrastrado;
     final movio = _lugarEnMovimiento;
     _ultimoGestoLugarFueArrastre = movio;
+    _lugarTocado = null;
     setState(() {
       _lugarArrastrado = null;
       _inicioAgarreLugar = null;
@@ -1014,11 +1141,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _onArrastreCancelarLugar() => _terminarArrastreLugar();
 
   void _borrarLugar(LugarInteres lugar) async {
-    // Si el gesto terminó siendo un arrastre, no se ofrece borrar.
-    if (_ultimoGestoLugarFueArrastre) {
-      _ultimoGestoLugarFueArrastre = false;
-      return;
-    }
+    // Sólo se llega acá con el modo borrar activo (toque sobre el marcador) o
+    // desde el tacho de la lista: ya no hay que distinguirlo de un arrastre.
     try {
       final confirmar = await showDialog<bool>(
         context: context,
@@ -1052,11 +1176,16 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   // -- Tap en el mapa --------------------------------------------------------
 
   void _onTapMapa(Offset normalizado) {
+    // El toque llega al LEVANTAR el dedo (ver MapaWidget.onTapMapa), después
+    // de que el canal de un dedo cerró su gesto. Regla única: tocar agrega,
+    // en cualquier lugar, aunque sea pegado a un elemento existente. Lo único
+    // que se descarta es el "toque" con que termina un arrastre corto.
     if (_modo == _ModoEdicion.beacons) {
+      if (_ultimoGestoBeaconFueArrastre) {
+        _ultimoGestoBeaconFueArrastre = false;
+        return;
+      }
       if (_seleccionado == null) return;
-      // Si el toque cayó sobre un beacon ya ubicado, no se coloca uno nuevo
-      // encima: ese gesto es para arrastrar (lo maneja el canal de un dedo).
-      if (_beaconCercano(normalizado) != null) return;
       String mac = _seleccionado!.device.remoteId.str;
       if (mounted) {
         setState(() {
@@ -1076,9 +1205,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       // callback se vuelve a conectar.
       _agregarVertice(normalizado);
     } else if (_modo == _ModoEdicion.lugares) {
-      // Tocar sobre un lugar existente es para arrastrarlo o borrarlo, no
-      // para crear otro encima.
-      if (_lugarCercano(normalizado) != null) return;
+      if (_ultimoGestoLugarFueArrastre) {
+        _ultimoGestoLugarFueArrastre = false;
+        return;
+      }
       _agregarLugar(normalizado);
     } else if (_modo == _ModoEdicion.calibracion) {
       // Seleccionar la celda donde el operador dice estar parado.
@@ -1668,17 +1798,101 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   // -- UI --------------------------------------------------------------------
 
+  /// Botón flotante sobre el mapa que entra y sale del modo borrar. Va encima
+  /// del mapa (y no en una fila propia) porque el alto de esta pantalla está
+  /// contado: una fila más desbordaría en teléfonos chicos.
+  Widget _buildBotonBorrar() {
+    // Con una zona a medio dibujar no se entra a borrar: primero hay que
+    // cerrarla o descartarla, para no perder los puntos marcados.
+    final bloqueado =
+        !_modoBorrar && _modo == _ModoEdicion.zonas && _verticesEnCurso.isNotEmpty;
+    final activo = _borrando;
+    final Color fondo = activo
+        ? TemaApp.zonaRestringidaRelleno
+        : TemaApp.fondoSurface.withValues(alpha: 0.92);
+    final Color frente = bloqueado
+        ? TemaApp.textoSecundario
+        : (activo ? Colors.white : TemaApp.zonaRestringidaBorde);
+    return Semantics(
+      button: true,
+      toggled: activo,
+      label: activo ? 'Salir del modo borrar' : 'Entrar al modo borrar',
+      child: Material(
+        color: fondo,
+        elevation: 3,
+        shape: StadiumBorder(
+          side: BorderSide(color: frente.withValues(alpha: 0.7), width: 1.2),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: bloqueado
+              ? null
+              : () {
+                  if (!mounted) return;
+                  setState(() {
+                    _modoBorrar = !_modoBorrar;
+                    // Entrar a borrar suelta lo que hubiera a medio hacer.
+                    _seleccionado = null;
+                    _beaconArrastrado = null;
+                    _beaconEnMovimiento = false;
+                    _beaconTocado = null;
+                    _inicioAgarreBeacon = null;
+                    _lugarArrastrado = null;
+                    _lugarEnMovimiento = false;
+                    _lugarTocado = null;
+                    _inicioAgarreLugar = null;
+                  });
+                },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  activo ? Icons.check_rounded : Icons.delete_outline_rounded,
+                  size: 20,
+                  color: frente,
+                ),
+                const SizedBox(width: 6),
+                ExcludeSemantics(
+                  child: Text(
+                    activo ? 'Listo' : 'Borrar',
+                    style: TextStyle(
+                      color: frente,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   String _hintTexto() {
+    if (_borrando) {
+      switch (_modo) {
+        case _ModoEdicion.beacons:
+          return 'MODO BORRAR: tocá un beacon para eliminarlo. Tocá "Listo" para volver a editar.';
+        case _ModoEdicion.zonas:
+          return 'MODO BORRAR: tocá una zona para eliminarla. Tocá "Listo" para volver a editar.';
+        default:
+          return 'MODO BORRAR: tocá un lugar o una escalera para eliminarlo. Tocá "Listo" para volver a editar.';
+      }
+    }
     switch (_modo) {
       case _ModoEdicion.beacons:
-        return 'Seleccioná un dispositivo de la lista y tocá el mapa para ubicarlo. Arrastrá la mira de un beacon para reacomodarlo (zoom con dos dedos). Long-press sobre un beacon para eliminarlo.';
+        return 'Seleccioná un dispositivo de la lista y tocá el mapa para ubicarlo. Arrastrá la mira de un beacon para reacomodarlo (zoom con dos dedos). Para eliminar, usá el botón Borrar.';
       case _ModoEdicion.zonas:
         if (_verticesEnCurso.isEmpty) {
-          return 'Tocá el mapa para marcar los vértices de la zona (podés arrastrar sin soltar para afinar el punto). Necesitás al menos 3. Tocá una zona existente para borrarla.';
+          return 'Tocá el mapa para marcar los vértices de la zona (podés arrastrar sin soltar para afinar el punto). Necesitás al menos 3. Para eliminar una zona, usá el botón Borrar.';
         }
         return '${_verticesEnCurso.length} punto(s) marcado(s). Arrastrá cualquier punto naranja para corregir su ubicación. Seguí tocando para agregar más, o cerrá la zona.';
       case _ModoEdicion.lugares:
-        return 'Toca el mapa para agregar un lugar o una escalera. Arrastra su icono para moverlo, o tocalo para eliminarlo.';
+        return 'Tocá el mapa para agregar un lugar o una escalera. Arrastrá su ícono para moverlo. Para eliminar, usá el botón Borrar.';
       case _ModoEdicion.escala:
         final actual = 'Escala actual: ${_escalaX.toStringAsFixed(1)} m × ${_escalaY.toStringAsFixed(1)} m '
             '(grilla ${_grilla.celdasX}×${_grilla.celdasY}).';
@@ -1806,6 +2020,16 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                   }
                   setState(() {
                     _modo = nuevoModo;
+                    _modoBorrar = false;
+                    // Gesto de arrastre que hubiera quedado a medias.
+                    _beaconArrastrado = null;
+                    _beaconEnMovimiento = false;
+                    _beaconTocado = null;
+                    _inicioAgarreBeacon = null;
+                    _lugarArrastrado = null;
+                    _lugarEnMovimiento = false;
+                    _lugarTocado = null;
+                    _inicioAgarreLugar = null;
                     _verticesEnCurso = [];
                     _seleccionado = null;
                     // Reiniciar la medición de escala al cambiar de modo.
@@ -1839,7 +2063,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: Text(
               _hintTexto(),
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              style: TextStyle(
+                fontSize: 12,
+                color: _borrando
+                    ? TemaApp.zonaRestringidaBorde
+                    : Colors.grey[600],
+                fontWeight: _borrando ? FontWeight.w600 : FontWeight.normal,
+              ),
               textAlign: TextAlign.center,
             ),
           ),
@@ -1894,7 +2124,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               padding: const EdgeInsets.symmetric(horizontal: 10),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
-                child: InteractiveViewer(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                InteractiveViewer(
                   // En escala y en zonas, UN dedo dibuja o arrastra puntos, así
                   // que se desactiva el pan de un dedo; el zoom de dos dedos
                   // queda siempre activo (al apoyar el segundo dedo el gesto en
@@ -1902,10 +2135,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                   // En escala, zonas y beacons UN dedo dibuja/arrastra puntos,
                   // así que se desactiva el pan de un dedo; el zoom de dos dedos
                   // queda siempre activo.
-                  panEnabled: _modo != _ModoEdicion.escala &&
-                      _modo != _ModoEdicion.zonas &&
-                      _modo != _ModoEdicion.beacons &&
-                      _modo != _ModoEdicion.lugares,
+                  // En modo borrar nadie dibuja ni arrastra, así que un dedo
+                  // vuelve a desplazar el mapa.
+                  panEnabled: _borrando ||
+                      (_modo != _ModoEdicion.escala &&
+                          _modo != _ModoEdicion.zonas &&
+                          _modo != _ModoEdicion.beacons &&
+                          _modo != _ModoEdicion.lugares),
                   scaleEnabled: true,
                   child: MapaWidget(
                     rutaImagen: widget.rutaImagen,
@@ -1918,14 +2154,29 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     grilla: _grilla,
                     // En modo zonas los toques se atienden por los callbacks de
                     // arrastre (apoyar y corregir el vértice en un solo gesto).
-                    onTapMapa: _modo == _ModoEdicion.zonas ? null : _onTapMapa,
-                    onTapBeacon: _borrarBeacon,
-                    onTapLugar: _borrarLugar,
-                    // Borrar una zona existente solo cuando NO hay un polígono
-                    // en curso: mientras se dibuja, un toque adentro de otra
-                    // zona agrega un vértice (permite zonas superpuestas).
-                    onTapZona: _modo == _ModoEdicion.zonas && _verticesEnCurso.isEmpty
+                    // En modo borrar no se agrega nada: el toque sobre el
+                    // plano vacío no hace nada.
+                    onTapMapa: _borrando || _modo == _ModoEdicion.zonas
+                        ? null
+                        : _onTapMapa,
+                    // Tocar un elemento lo borra SÓLO en modo borrar, y sólo
+                    // los del modo en que se está (en "Lugares" no se borran
+                    // beacons ni zonas por error).
+                    onTapBeacon: _borrando && _modo == _ModoEdicion.beacons
+                        ? _borrarBeacon
+                        : null,
+                    onTapLugar: _borrando && _modo == _ModoEdicion.lugares
+                        ? _borrarLugar
+                        : null,
+                    onTapZona: _borrando && _modo == _ModoEdicion.zonas
                         ? _borrarZona
+                        : null,
+                    // Qué marcador tocó el dedo, para saber qué arrastrar.
+                    onAgarreBeacon: !_borrando && _modo == _ModoEdicion.beacons
+                        ? _onAgarreBeacon
+                        : null,
+                    onAgarreLugar: !_borrando && _modo == _ModoEdicion.lugares
+                        ? _onAgarreLugar
                         : null,
                     verticesEnCurso: _verticesEnCurso,
                     verticeArrastrado:
@@ -1941,7 +2192,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     elasticoHasta: _modo == _ModoEdicion.escala ? _elasticoHasta : null,
                     // Gestos de un dedo: la medición de escala y la edición de
                     // vértices de zonas comparten el mismo canal.
-                    onArrastreInicio: _modo == _ModoEdicion.escala
+                    // (En modo borrar no hay arrastres: los cuatro quedan
+                    // en null.)
+                    onArrastreInicio: _borrando
+                        ? null
+                        : _modo == _ModoEdicion.escala
                         ? _onArrastreInicio
                         : _modo == _ModoEdicion.zonas
                             ? _onArrastreInicioZona
@@ -1950,7 +2205,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                 : _modo == _ModoEdicion.lugares
                                     ? _onArrastreInicioLugar
                                     : null,
-                    onArrastreActualizar: _modo == _ModoEdicion.escala
+                    onArrastreActualizar: _borrando
+                        ? null
+                        : _modo == _ModoEdicion.escala
                         ? _onArrastreActualizar
                         : _modo == _ModoEdicion.zonas
                             ? _onArrastreActualizarZona
@@ -1959,7 +2216,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                 : _modo == _ModoEdicion.lugares
                                     ? _onArrastreActualizarLugar
                                     : null,
-                    onArrastreFin: _modo == _ModoEdicion.escala
+                    onArrastreFin: _borrando
+                        ? null
+                        : _modo == _ModoEdicion.escala
                         ? _onArrastreFin
                         : _modo == _ModoEdicion.zonas
                             ? _onArrastreFinZona
@@ -1968,7 +2227,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                 : _modo == _ModoEdicion.lugares
                                     ? _onArrastreFinLugar
                                     : null,
-                    onArrastreCancelar: _modo == _ModoEdicion.escala
+                    onArrastreCancelar: _borrando
+                        ? null
+                        : _modo == _ModoEdicion.escala
                         ? _onArrastreCancelar
                         : _modo == _ModoEdicion.zonas
                             ? _onArrastreCancelarZona
@@ -1977,10 +2238,16 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                 : _modo == _ModoEdicion.lugares
                                     ? _onArrastreCancelarLugar
                                     : null,
+                    // Se resaltan recién cuando el dedo se movió de verdad:
+                    // un toque al lado de un marcador no lo "agarra" a la vista.
                     beaconArrastrado:
-                        _modo == _ModoEdicion.beacons ? _beaconArrastrado : null,
+                        _modo == _ModoEdicion.beacons && _beaconEnMovimiento
+                            ? _beaconArrastrado
+                            : null,
                     lugarArrastrado:
-                        _modo == _ModoEdicion.lugares ? _lugarArrastrado : null,
+                        _modo == _ModoEdicion.lugares && _lugarEnMovimiento
+                            ? _lugarArrastrado
+                            : null,
                     // Calibración: celda seleccionada (amarillo) + pines de celdas calibradas.
                     celdaResaltada: _modo == _ModoEdicion.calibracion && _celdaCalSeleccionada != null
                         ? Offset(_grilla.centroX(_celdaCalSeleccionada!.ix),
@@ -1992,6 +2259,28 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                             .toList()
                         : const [],
                   ),
+                ),
+                    // Marco rojo: deja a la vista que el mapa está en modo
+                    // borrar aunque no se esté mirando el botón.
+                    if (_borrando)
+                      IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: TemaApp.zonaRestringidaBorde,
+                              width: 3,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (_modoAdmiteBorrar)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: _buildBotonBorrar(),
+                      ),
+                  ],
                 ),
               ),
             ),
