@@ -551,10 +551,23 @@ class MapaWidget extends StatelessWidget {
   final List<LugarInteres> lugares; // NUEVO
   final Offset? posicionUsuario;
   final bool modoEdicion;
+  /// Toque sobre el plano (modo edición). Se entrega al LEVANTAR el dedo y
+  /// sólo si el gesto fue un toque: un arrastre no lo dispara.
   final void Function(Offset normalizado)? onTapMapa;
+
+  /// Toque sobre un beacon, un lugar o una zona ya cargados. La pantalla de
+  /// configuración los pasa únicamente con el modo "Borrar" activo; si son
+  /// null, el toque sigue de largo hasta [onTapMapa].
   final void Function(String mac)? onTapBeacon;
   final void Function(LugarInteres lugar)? onTapLugar;
-  final void Function(ZonaNoTransitable zona)? onTapZona; // NUEVO: borrar zona
+  final void Function(ZonaNoTransitable zona)? onTapZona;
+
+  /// El dedo se apoyó sobre el marcador de un beacon / de un lugar. Sirve
+  /// para saber QUÉ se quiere arrastrar mirando el marcador que realmente se
+  /// tocó, en vez de adivinarlo por distancia a su posición. El movimiento
+  /// en sí sigue llegando por [onArrastreActualizar].
+  final void Function(String mac)? onAgarreBeacon;
+  final void Function(LugarInteres lugar)? onAgarreLugar;
   final List<Offset> verticesEnCurso;
 
   /// Camino calculado como lista de centros de celda (normalizados). Cada celda
@@ -637,6 +650,8 @@ class MapaWidget extends StatelessWidget {
     this.onTapBeacon,
     this.onTapLugar,
     this.onTapZona,
+    this.onAgarreBeacon,
+    this.onAgarreLugar,
     this.verticesEnCurso = const [],
     this.ruta,
     this.mostrarGrilla = false,
@@ -787,19 +802,28 @@ class MapaWidget extends StatelessWidget {
                   return Positioned(
                     left: px,
                     top: py,
-                    child: GestureDetector(
+                    child: Listener(
                       behavior: HitTestBehavior.translucent,
-                      onLongPress: modoEdicion && onTapBeacon != null
-                          ? () => onTapBeacon!(b.mac)
+                      onPointerDown: modoEdicion && onAgarreBeacon != null
+                          ? (_) => onAgarreBeacon!(b.mac)
                           : null,
-                      child: SizedBox(
-                        width: caja,
-                        height: caja,
-                        child: CustomPaint(
-                          painter: _MiraBeaconPainter(
-                            color: color,
-                            activo: activo,
-                            edicion: modoEdicion,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        // Toque simple (antes era long-press): sólo llega con
+                        // el modo "Borrar" activo, así que no hay con qué
+                        // confundirlo.
+                        onTap: modoEdicion && onTapBeacon != null
+                            ? () => onTapBeacon!(b.mac)
+                            : null,
+                        child: SizedBox(
+                          width: caja,
+                          height: caja,
+                          child: CustomPaint(
+                            painter: _MiraBeaconPainter(
+                              color: color,
+                              activo: activo,
+                              edicion: modoEdicion,
+                            ),
                           ),
                         ),
                       ),
@@ -830,14 +854,21 @@ class MapaWidget extends StatelessWidget {
                       top: cy - alto / 2,
                       width: ancho,
                       height: alto,
-                      child: GestureDetector(
-                        onTap: onTapLugar != null ? () => onTapLugar!(lugar) : null,
-                        child: Transform.scale(
-                          scale: arrastrado ? 1.35 : 1.0,
-                          child: _MarcadorEscalera(
-                            lugar: lugar,
-                            ancho: ancho,
-                            alto: alto,
+                      child: Listener(
+                        behavior: HitTestBehavior.opaque,
+                        onPointerDown: onAgarreLugar != null
+                            ? (_) => onAgarreLugar!(lugar)
+                            : null,
+                        child: GestureDetector(
+                          onTap:
+                              onTapLugar != null ? () => onTapLugar!(lugar) : null,
+                          child: Transform.scale(
+                            scale: arrastrado ? 1.35 : 1.0,
+                            child: _MarcadorEscalera(
+                              lugar: lugar,
+                              ancho: ancho,
+                              alto: alto,
+                            ),
                           ),
                         ),
                       ),
@@ -845,43 +876,71 @@ class MapaWidget extends StatelessWidget {
                   }
 
                   // LUGAR COMÚN: pin de tamaño fijo con la punta en la posición.
-                  final px = offsetX + lugar.posicion.dx * tamanoRenderizado.width - 14;
+                  //
+                  // FIX (pin corrido respecto del lugar real): el marcador es
+                  // una columna [ícono, etiqueta] y su ANCHO es el de la
+                  // etiqueta, con el ícono centrado adentro. Antes se ubicaba
+                  // con `left = x - 14`, que sólo deja la punta sobre la
+                  // posición si la columna mide 28 px (el ícono solo). Con
+                  // cualquier nombre más largo que eso el pin quedaba dibujado
+                  // a la derecha del lugar real, la mitad del ancho de la
+                  // etiqueta: unos 50 px con "restaurante burger king". Por eso
+                  // costaba arrastrarlos: se agarraba el pin que se veía, pero
+                  // el lugar "estaba" bastante más a la izquierda.
+                  // Ahora la columna se ancla en x y se corre media columna
+                  // hacia la izquierda, sea cual sea su ancho.
+                  final px = offsetX + lugar.posicion.dx * tamanoRenderizado.width;
                   final py = offsetY + lugar.posicion.dy * tamanoRenderizado.height - 28;
                   return Positioned(
                     left: px,
                     top: py,
-                    child: GestureDetector(
-                      onTap: onTapLugar != null ? () => onTapLugar!(lugar) : null,
-                      // Agrandado mientras se arrastra. La escala se ancla cerca
-                      // de la punta del ícono (la posición exacta); la etiqueta
-                      // cuelga por debajo de ese punto.
-                      child: Transform.scale(
-                        scale: arrastrado ? 1.35 : 1.0,
-                        alignment: const Alignment(0, 0.25),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.place,
-                              color: modoEdicion ? Colors.purple : Colors.purple[700],
-                              size: 28,
-                            ),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.85),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                lugar.nombre,
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  color: modoEdicion ? Colors.purple[800] : Colors.purple[900],
+                    child: FractionalTranslation(
+                      translation: const Offset(-0.5, 0),
+                      child: Listener(
+                        // Agarre por el marcador que se ve (ícono o etiqueta).
+                        onPointerDown: onAgarreLugar != null
+                            ? (_) => onAgarreLugar!(lugar)
+                            : null,
+                        child: GestureDetector(
+                          onTap:
+                              onTapLugar != null ? () => onTapLugar!(lugar) : null,
+                          // Agrandado mientras se arrastra. La escala se ancla
+                          // cerca de la punta del ícono (la posición exacta);
+                          // la etiqueta cuelga por debajo de ese punto.
+                          child: Transform.scale(
+                            scale: arrastrado ? 1.35 : 1.0,
+                            alignment: const Alignment(0, 0.25),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.place,
+                                  color: modoEdicion
+                                      ? Colors.purple
+                                      : Colors.purple[700],
+                                  size: 28,
                                 ),
-                              ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 4, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withValues(alpha: 0.85),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    lugar.nombre,
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      color: modoEdicion
+                                          ? Colors.purple[800]
+                                          : Colors.purple[900],
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ],
+                          ),
                         ),
                       ),
                     ),
@@ -924,7 +983,11 @@ class MapaWidget extends StatelessWidget {
 
             if (modoEdicion && onTapMapa != null) {
               mapa = GestureDetector(
-                onTapDown: (det) {
+                // onTapUp y no onTapDown: onTapDown se dispara a los 100 ms de
+                // apoyar el dedo aunque después el gesto resulte ser un
+                // arrastre, y entonces al querer mover un marcador también se
+                // agregaba uno nuevo. onTapUp sólo llega si fue un toque.
+                onTapUp: (det) {
                   final local = det.localPosition;
                   final dx = (local.dx - offsetX) / tamanoRenderizado.width;
                   final dy = (local.dy - offsetY) / tamanoRenderizado.height;
