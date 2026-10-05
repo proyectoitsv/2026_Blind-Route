@@ -15,6 +15,8 @@ import 'posicionador.dart';
 import 'mapa_widget.dart';
 import 'pathfinder.dart';
 import 'seguidor_ruta.dart';
+import 'buscador_lugares.dart';
+import 'rubros.dart';
 import 'bluetooth_helper.dart';
 import 'orientacion_service.dart';
 import 'voz_service.dart';
@@ -1555,7 +1557,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     final distancia = _calcularDistancia(camino).toStringAsFixed(1);
     if (_esTramoEntrePisos) {
       final pisoDestino = _numeroPisoDe(_destinoSeleccionado!);
-      return 'Escalera para ${_subiendo ? 'subir' : 'bajar'}: '
+      return '${_escaleraObjetivo?.medioNombre ?? 'Escalera'} '
+          'para ${_subiendo ? 'subir' : 'bajar'}: '
           '${distancia}m · destino en '
           '${pisoDestino != null ? PisoUtil.nombre(pisoDestino) : 'otro piso'}';
     }
@@ -1670,10 +1673,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           setState(() {
             _sinEscaleraDisponible = true;
             _rutaActual = null;
-            _estadoRuta = 'No hay escalera para ${sube ? 'subir' : 'bajar'} en este piso';
+            _estadoRuta = 'No hay escalera ni ascensor para '
+                '${sube ? 'subir' : 'bajar'} en este piso';
           });
-          _voz.hablar('No hay escalera para ${sube ? 'subir' : 'bajar'} '
-              'en este piso.');
+          _voz.hablar('No hay escalera ni ascensor para '
+              '${sube ? 'subir' : 'bajar'} en este piso.');
           return;
         }
         setState(() => _escaleraObjetivo = escalera);
@@ -1681,7 +1685,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         // Incluye "Ubicación lista" porque esta frase la interrumpe.
         if (widget.destinoFinalId != null && !_anuncioRetomadoHecho) {
           _anuncioRetomadoHecho = true;
-          _voz.hablar('Ubicación lista. Vamos a la escalera.');
+          _voz.hablar('Ubicación lista. Vamos ${escalera.medioComoDestino}.');
         }
       } else if (!_esTramoEntrePisos &&
           widget.destinoFinalId != null &&
@@ -1984,29 +1988,46 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     return null;
   }
 
+  /// ¿Este lugar es un baño? Por su rubro, por su nombre o por sus palabras
+  /// clave.
+  bool _esBano(LugarInteres l) =>
+      l.rubro == Rubros.bano ||
+      _mencionaBano(_normalizar(l.nombre)) ||
+      l.palabrasClave.any((p) => _mencionaBano(_normalizar(p)));
+
+  /// Género de un baño: el que diga su nombre y, si no dice, sus palabras
+  /// clave.
+  _GeneroBano? _generoDe(LugarInteres l) {
+    final porNombre = _generoEnTexto(_normalizar(l.nombre));
+    if (porNombre != null) return porNombre;
+    for (final p in l.palabrasClave) {
+      final g = _generoEnTexto(_normalizar(p));
+      if (g != null) return g;
+    }
+    return null;
+  }
+
   /// Resuelve lo que pidió el usuario (texto ya normalizado) a un destino
-  /// concreto. Para los baños puede preguntar; para el resto elige el más
-  /// cercano con el mismo nombre.
+  /// concreto. Para los baños pregunta el género si hace falta; para el
+  /// resto busca por nombre y por palabras clave, y si hay más de un lugar
+  /// posible le da a elegir.
   Future<LugarInteres?> _resolverPedido(String textoNorm) async {
+    _pedidoCancelado = false;
     if (!_mencionaBano(textoNorm)) {
-      final coincidencia = _buscarMejorCoincidencia(textoNorm);
-      return coincidencia == null
-          ? null
-          : _elegirDestino(_normalizar(coincidencia.nombre));
+      return _resolverPorNombreOClave(textoNorm);
     }
 
-    final banos = _lugaresEdificio
-        .where((l) => _puedeLlegarA(l) && _mencionaBano(_normalizar(l.nombre)))
-        .toList();
-    if (banos.isEmpty) return null;
+    final banos =
+        _lugaresEdificio.where((l) => _puedeLlegarA(l) && _esBano(l)).toList();
+    // Dijo "baño" pero no hay ninguno cargado como tal: se busca igual por
+    // nombre y palabras clave, por si algún lugar lo tiene de otra forma.
+    if (banos.isEmpty) return _resolverPorNombreOClave(textoNorm);
 
     // Género que pidió el usuario ("baño de hombres" no se pregunta).
     var genero = _generoEnTexto(textoNorm);
 
-    final disponibles = banos
-        .map((l) => _generoEnTexto(_normalizar(l.nombre)))
-        .whereType<_GeneroBano>()
-        .toSet();
+    final disponibles =
+        banos.map(_generoDe).whereType<_GeneroBano>().toSet();
     final hayDeLosDos = disponibles.length > 1;
 
     if (genero == null && hayDeLosDos) {
@@ -2014,11 +2035,344 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
     if (genero == null) return _elegirEntre(banos); // indistinto o sin datos
 
-    final delGenero = banos
-        .where((l) => _generoEnTexto(_normalizar(l.nombre)) == genero)
-        .toList();
+    final delGenero = banos.where((l) => _generoDe(l) == genero).toList();
     // Si no hay de ese género (datos incompletos), el más cercano igual.
     return _elegirEntre(delGenero.isNotEmpty ? delGenero : banos);
+  }
+
+  // ─── NOMBRE O PALABRA CLAVE, CON OPCIONES ─────────────────────────────────
+
+  /// Máximo de opciones que se leen en voz alta. Más que esto no se retiene
+  /// de oído; si hay más, se leen las más cercanas.
+  static const int _maxOpcionesDichas = 4;
+
+  /// A cuántas opciones se les calcula el camino real para saber cuál es la
+  /// más cercana (ver _medirOpciones).
+  static const int _maxCaminosMedidos = 6;
+
+  /// Qué tan lejos queda un lugar, para ordenar opciones: primero por pisos
+  /// de diferencia y, dentro de este piso, por metros hasta el usuario.
+  int _pisosHasta(LugarInteres l) {
+    if (l.pisoId == widget.pisoId) return 0;
+    final actual = _numeroPisoActual;
+    final n = _numeroPisoDe(l);
+    return (actual == null || n == null) ? 1 << 20 : (n - actual).abs();
+  }
+
+  /// true si el último pedido terminó porque el USUARIO lo dejó (dijo que no
+  /// a las opciones, o no se lo pudo entender al elegir). En ese caso ya se
+  /// le dijo algo y no corresponde el "No encontré…" del que llama.
+  bool _pedidoCancelado = false;
+
+  /// Busca el pedido por nombre, por rubro y por palabras clave (ver
+  /// BuscadorLugares).
+  ///  - Un solo lugar posible → ese.
+  ///  - Varios → se le ofrece el más cercano; si dice que no, las otras
+  ///    opciones (ver _ofrecerMasCercano).
+  ///  - Ninguno → queda la búsqueda aproximada de antes (por pedazos del
+  ///    nombre), que rescata lo que el reconocedor de voz escribió mal.
+  Future<LugarInteres?> _resolverPorNombreOClave(String textoNorm) async {
+    final alcanzables = _lugaresEdificio.where(_puedeLlegarA);
+    final candidatos = BuscadorLugares.candidatos(textoNorm, alcanzables);
+
+    if (candidatos.isEmpty) {
+      final coincidencia = _buscarMejorCoincidencia(textoNorm);
+      return coincidencia == null
+          ? null
+          : _elegirDestino(_normalizar(coincidencia.nombre));
+    }
+
+    // Una opción por NOMBRE: el mismo lugar repetido (en varios pisos, o dos
+    // veces en este) no son dos opciones para el usuario; de cada nombre se
+    // toma el más cercano.
+    final porNombre = <String, List<LugarInteres>>{};
+    for (final l in candidatos) {
+      porNombre.putIfAbsent(_normalizar(l.nombre), () => []).add(l);
+    }
+    final opciones = <LugarInteres>[
+      for (final grupo in porNombre.values) _elegirEntre(grupo)!,
+    ];
+    if (opciones.length == 1) return opciones.first;
+
+    // Sin posición todavía no se puede decir cuál es el más cercano: se leen
+    // las opciones y elige.
+    if (_posicionFinal == null) {
+      opciones.sort((a, b) => _pisosHasta(a).compareTo(_pisosHasta(b)));
+      return _preguntarOpcion(opciones);
+    }
+
+    final medidas = await _medirOpciones(opciones);
+    if (!mounted) return null;
+    return _ofrecerMasCercano(medidas);
+  }
+
+  // ─── "EL MÁS CERCANO ES…" ─────────────────────────────────────────────────
+  //
+  // Cuando lo que pidió el usuario corresponde a varios lugares ("quiero
+  // comer"), casi siempre quiere el que tiene más cerca. Así que no se le
+  // lee la lista entera: se le propone el más cercano, con la distancia, y
+  // con un "sí" ya está. Recién si dice que no se le nombran los otros.
+
+  /// Calcula a cuánto queda cada opción y las devuelve de más cerca a más
+  /// lejos: primero las de este piso, por metros de CAMINO (no en línea
+  /// recta: un lugar pegado pero del otro lado de una pared no es el más
+  /// cercano); después las de otros pisos, por pisos de diferencia.
+  Future<List<_OpcionMedida>> _medirOpciones(List<LugarInteres> opciones) async {
+    final origen = _posicionParaRuta();
+
+    // El camino real se calcula sólo para las más cercanas en línea recta:
+    // con 15 aulas en el piso no tiene sentido lanzar 15 búsquedas para
+    // decidir cuál es la primera. El resto queda con la línea recta.
+    final enEstePiso = opciones.where((l) => l.pisoId == widget.pisoId).toList()
+      ..sort((a, b) => _distanciaMetros(origen, a.posicion)
+          .compareTo(_distanciaMetros(origen, b.posicion)));
+    final conCamino = enEstePiso.take(_maxCaminosMedidos).toSet();
+
+    final salida = <_OpcionMedida>[];
+    for (final l in opciones) {
+      double? metros;
+      if (l.pisoId == widget.pisoId) {
+        // Respaldo: línea recta (si todavía no hay grilla o no hay camino).
+        metros = _distanciaMetros(origen, l.posicion);
+        if (_resolvedorListo && conCamino.contains(l)) {
+          final punto = l.esEscalera
+              ? l.puntoEntrada(
+                  metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
+              : l.posicion;
+          final camino = await _resolvedor.encontrarCamino(
+            origen,
+            Offset(punto.dx.clamp(0.001, 0.999), punto.dy.clamp(0.001, 0.999)),
+          );
+          if (camino != null) metros = _calcularDistancia(camino);
+        }
+      }
+      salida.add((lugar: l, pisos: _pisosHasta(l), metros: metros));
+    }
+    salida.sort((a, b) {
+      final porPiso = a.pisos.compareTo(b.pisos);
+      if (porPiso != 0) return porPiso;
+      return (a.metros ?? double.infinity)
+          .compareTo(b.metros ?? double.infinity);
+    });
+    return salida;
+  }
+
+  /// "McDonald's, a 20 metros" / "Havanna, en el piso 2".
+  String _nombreConDistancia(_OpcionMedida o) {
+    final metros = o.metros;
+    if (metros != null) {
+      return '${o.lugar.nombre}, a ${_distanciaParaVoz(metros)}';
+    }
+    final piso = _numeroPisoDe(o.lugar);
+    return piso == null
+        ? o.lugar.nombre
+        : '${o.lugar.nombre}, en ${PisoUtil.paraVoz(piso)}';
+  }
+
+  /// Dice [frase], escucha y devuelve la respuesta normalizada ('' si no se
+  /// escuchó nada). Null si la pantalla se cerró mientras tanto.
+  Future<String?> _preguntarYEscuchar(String frase) async {
+    await _voz.hablar(frase);
+    await Future.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return null;
+    setState(() => _escuchando = true);
+
+    final respuesta = Completer<String?>();
+    await _voz.escuchar(
+      timeout: const Duration(seconds: 8),
+      onEscuchando: (activo) {
+        if (mounted) setState(() => _escuchando = activo);
+      },
+      onResultado: (texto) {
+        if (!respuesta.isCompleted) respuesta.complete(texto);
+      },
+      onError: (_) {
+        if (!respuesta.isCompleted) respuesta.complete(null);
+      },
+    );
+    final texto = await respuesta.future;
+    if (!mounted) return null;
+    setState(() => _escuchando = false);
+    return texto == null ? '' : _normalizar(texto);
+  }
+
+  /// Propone la opción más cercana. Entiende:
+  ///  - "sí", "dale", "vamos" → va a esa;
+  ///  - el nombre de cualquiera de las opciones → va a la que nombró;
+  ///  - "no", "otro", "¿cuáles hay?" → le dice las otras;
+  ///  - "cualquiera" → la más cercana.
+  /// Si en dos intentos no se entiende, va a la más cercana (es lo que se le
+  /// estaba proponiendo y lo más probable que quiera).
+  Future<LugarInteres?> _ofrecerMasCercano(
+    List<_OpcionMedida> opciones, {
+    int intento = 1,
+  }) async {
+    final primera = opciones.first;
+    final norm = await _preguntarYEscuchar(intento == 1
+        ? 'El más cercano es ${_nombreConDistancia(primera)}. ¿Vamos ahí?'
+        : 'Decí sí para ir a ${primera.lugar.nombre}, '
+            'o no para escuchar las otras opciones.');
+    if (norm == null) return null;
+
+    final lugares = opciones.map((o) => o.lugar).toList();
+    final nombrada =
+        BuscadorLugares.opcionDicha(norm, lugares, ordinales: false);
+    final respuesta = BuscadorLugares.siONo(norm);
+
+    if (respuesta == true) {
+      // Un "sí" es para la que se propuso, salvo que además nombre OTRA con
+      // su nombre completo. Una palabra suelta no alcanza: en "sí, al
+      // restaurante" el "restaurante" es lo que pidió, no un cambio de idea.
+      if (nombrada != null &&
+          BuscadorLugares.dijoNombreCompleto(norm, lugares[nombrada])) {
+        return lugares[nombrada];
+      }
+      return primera.lugar;
+    }
+    // Sin un "sí": si nombró una opción (la propuesta u otra), va a esa.
+    if (nombrada != null) return lugares[nombrada];
+    if (respuesta == false) return _decirOtrasOpciones(opciones);
+    if (norm.split(' ').any(_palabrasIndistinto.contains)) return primera.lugar;
+
+    if (intento >= 2) {
+      await _voz.hablar('Te llevo al más cercano.');
+      return primera.lugar;
+    }
+    return _ofrecerMasCercano(opciones, intento: intento + 1);
+  }
+
+  static const Set<String> _palabrasCancelar = {
+    'ninguno', 'ninguna', 'nada', 'cancelar', 'cancela', 'cancelalo', 'deja',
+    'dejalo', 'olvidalo',
+  };
+
+  /// El usuario no quiso la más cercana: se le dicen las otras (hasta
+  /// [_maxOpcionesDichas], de más cerca a más lejos) y elige por nombre o
+  /// por orden. Si no quiere ninguna, o no se lo entiende en dos intentos,
+  /// no se va a ningún lado: acá ya dijo que NO a lo que se le propuso, así
+  /// que elegir por él sería llevarlo a donde no pidió.
+  Future<LugarInteres?> _decirOtrasOpciones(
+    List<_OpcionMedida> opciones, {
+    int intento = 1,
+  }) async {
+    final otras = opciones.skip(1).take(_maxOpcionesDichas).toList();
+    final lugaresOtras = otras.map((o) => o.lugar).toList();
+    final unaSola = otras.length == 1;
+
+    final String frase;
+    if (unaSola) {
+      frase = intento == 1
+          ? 'La otra opción es ${_nombreConDistancia(otras.first)}. ¿Vamos ahí?'
+          : 'Decí sí para ir a ${otras.first.lugar.nombre}, o no para cancelar.';
+    } else {
+      final lista = otras.map(_nombreConDistancia).join('. ');
+      frase = intento == 1
+          ? 'Las otras opciones son: $lista. ¿A cuál vas?'
+          : 'Decí el nombre, o primero, segundo'
+              '${otras.length > 2 ? ', tercero' : ''}. '
+              'Las opciones son: ${_enumerar(lugaresOtras.map((l) => l.nombre).toList())}.';
+    }
+    final norm = await _preguntarYEscuchar(frase);
+    if (norm == null) return null;
+    final palabras = norm.split(' ');
+
+    // Por nombre vale cualquiera, también la primera que había descartado
+    // ("mejor al McDonald's").
+    final todas = opciones.map((o) => o.lugar).toList();
+    final nombrada = BuscadorLugares.opcionDicha(norm, todas, ordinales: false);
+    final respuesta = BuscadorLugares.siONo(norm);
+
+    // Con una sola opción leída, un "sí" es para esa (salvo que nombre otra
+    // con su nombre completo; mismo criterio que en _ofrecerMasCercano).
+    if (unaSola && respuesta == true) {
+      if (nombrada != null &&
+          BuscadorLugares.dijoNombreCompleto(norm, todas[nombrada])) {
+        return todas[nombrada];
+      }
+      return otras.first.lugar;
+    }
+    if (nombrada != null) return todas[nombrada];
+    // Por orden ("el primero") vale sobre las que se acaban de leer.
+    final elegida = BuscadorLugares.opcionDicha(norm, lugaresOtras);
+    if (elegida != null) return lugaresOtras[elegida];
+
+    final cancela = palabras.any(_palabrasCancelar.contains) ||
+        respuesta == false;
+    if (cancela) {
+      _pedidoCancelado = true;
+      await _voz.hablar('Listo, no vamos a ninguno.');
+      return null;
+    }
+    if (palabras.any(_palabrasIndistinto.contains)) return otras.first.lugar;
+
+    if (intento >= 2) {
+      _pedidoCancelado = true;
+      await _voz.hablar(
+          'No te entendí. Tocá la pantalla para pedirlo de nuevo.');
+      return null;
+    }
+    return _decirOtrasOpciones(opciones, intento: intento + 1);
+  }
+
+  /// "A, B y C".
+  String _enumerar(List<String> nombres) {
+    if (nombres.length <= 1) return nombres.join();
+    return '${nombres.sublist(0, nombres.length - 1).join(', ')} '
+        'y ${nombres.last}';
+  }
+
+  /// Lee las opciones y escucha cuál quiere. Entiende el nombre (o una parte
+  /// que no se confunda con otra opción), "primero / segundo…", y "cualquiera"
+  /// o "el más cercano". Si en dos intentos no se entiende, va al más cercano.
+  Future<LugarInteres?> _preguntarOpcion(
+    List<LugarInteres> opciones, {
+    int intento = 1,
+  }) async {
+    final dichas = opciones.take(_maxOpcionesDichas).toList();
+    final nombres = _enumerar(dichas.map((l) => l.nombre).toList());
+    final String frase;
+    if (intento > 1) {
+      frase = 'Decí el nombre, o primero, segundo'
+          '${dichas.length > 2 ? ', tercero' : ''}. '
+          'Las opciones son: $nombres.';
+    } else if (opciones.length > dichas.length) {
+      frase = 'Hay ${opciones.length} opciones. Las más cercanas son: '
+          '$nombres. ¿A cuál vas?';
+    } else {
+      frase = 'Hay ${dichas.length} opciones: $nombres. ¿A cuál vas?';
+    }
+    await _voz.hablar(frase);
+    await Future.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return null;
+    setState(() => _escuchando = true);
+
+    final respuesta = Completer<String?>();
+    await _voz.escuchar(
+      timeout: const Duration(seconds: 8),
+      onEscuchando: (activo) {
+        if (mounted) setState(() => _escuchando = activo);
+      },
+      onResultado: (texto) {
+        if (!respuesta.isCompleted) respuesta.complete(texto);
+      },
+      onError: (_) {
+        if (!respuesta.isCompleted) respuesta.complete(null);
+      },
+    );
+    final texto = await respuesta.future;
+    if (!mounted) return null;
+    setState(() => _escuchando = false);
+
+    final norm = texto == null ? '' : _normalizar(texto);
+    final indice = BuscadorLugares.opcionDicha(norm, dichas);
+    if (indice != null) return dichas[indice];
+    // "Cualquiera", "el más cercano": la primera, que es la más cercana.
+    if (norm.split(' ').any(_palabrasIndistinto.contains)) return dichas.first;
+    if (intento >= 2) {
+      await _voz.hablar('Te llevo al más cercano.');
+      return dichas.first;
+    }
+    return _preguntarOpcion(opciones, intento: intento + 1);
   }
 
   /// Pregunta por voz si quiere el baño de hombres o el de mujeres. Devuelve
@@ -2107,13 +2461,24 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
     if (_esTramoEntrePisos) {
       final pisoDestino = _numeroPisoDe(destino)!;
+      // Se espera un instante a que _calcularRuta elija por dónde se cambia
+      // de piso, para poder decir si es una escalera o un ascensor.
+      await Future.any<void>([
+        calculo,
+        Future<void>.delayed(_esperaMaxPrimeraRuta),
+      ]);
+      if (!mounted) return;
+      // Sin escalera ni ascensor en el sentido necesario: _calcularRuta ya
+      // lo avisó; decir "vamos a…" encima sería contradecirlo.
+      if (_sinEscaleraDisponible) return;
+      final medio = _escaleraObjetivo;
       await _voz.hablar(
         '${destino.nombre}, ${PisoUtil.nombre(pisoDestino).toLowerCase()}. '
-        'Vamos a la escalera.',
+        '${medio == null ? 'Hay que cambiar de piso.' : 'Vamos ${medio.medioComoDestino}.'}',
       );
-      // La indicación hacia la escalera la dice _actualizarInstruccionVoz en
-      // el próximo ciclo de posición (queda pendiente): ~0,2 s después de
-      // que termina esta frase.
+      // La indicación hacia la escalera o el ascensor la dice
+      // _actualizarInstruccionVoz en el próximo ciclo de posición (queda
+      // pendiente): ~0,2 s después de que termina esta frase.
       return;
     }
 
@@ -2226,7 +2591,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     // Ej: "Escalera. Girá a la izquierda. Subí al piso 2 y mantené la
     // pantalla apretada."
     _voz.hablar(
-      'Escalera.$giro $accion'
+      '${esc.medioNombre}.$giro $accion'
       '${sig != null ? ' ${PisoUtil.destinoVoz(sig)}' : ''}'
       ' y mantené la pantalla apretada.',
     );
@@ -2246,7 +2611,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       return;
     }
     if (_sinEscaleraDisponible) {
-      _voz.hablar('No hay escalera en este piso.');
+      _voz.hablar('No hay escalera ni ascensor en este piso.');
       return;
     }
     final sig = _siguientePisoNumero;
@@ -2333,7 +2698,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
  
         if (destino != null) {
           await _establecerDestino(destino);
-        } else {
+        } else if (!_pedidoCancelado) {
+          // (Si lo canceló el usuario al elegir entre opciones, ya se le
+          // dijo; "no encontré" sería mentira.)
           await _voz.hablar('No encontré "$textoReconocido". Intentá de nuevo.');
         }
       },
@@ -2383,20 +2750,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     return mejorPuntaje > 0 ? mejorCandidato : null;
   }
  
-  String _normalizar(String texto) {
-    return texto
-        .toLowerCase()
-        .replaceAll(RegExp(r'[áàä]'), 'a')
-        .replaceAll(RegExp(r'[éèë]'), 'e')
-        .replaceAll(RegExp(r'[íìï]'), 'i')
-        .replaceAll(RegExp(r'[óòö]'), 'o')
-        .replaceAll(RegExp(r'[úùü]'), 'u')
-        // La ñ se pasa a n ANTES de limpiar: si no, "baño" quedaba como
-        // "bao" (la ñ caía en el filtro de caracteres).
-        .replaceAll('ñ', 'n')
-        .replaceAll(RegExp(r'[^a-z0-9 ]'), '')
-        .trim();
-  }
+  /// Minúsculas, sin tildes ni signos. Una sola definición, compartida con
+  /// la búsqueda por palabras clave.
+  String _normalizar(String texto) => BuscadorLugares.normalizar(texto);
  
   // ─── SELECCIÓN DE DESTINO POR LISTA (fallback táctil) ─────────────────────
  
@@ -2446,7 +2802,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
               final l = ls.first;
               return ListTile(
                 leading: Icon(
-                  l.esEscalera ? Icons.stairs : Icons.place,
+                  !l.esEscalera
+                      ? Icons.place
+                      : (l.esAscensor ? Icons.elevator : Icons.stairs),
                   color: l.esEscalera ? Colors.orange : Colors.purple,
                 ),
                 title: Text(l.nombre, style: const TextStyle(fontSize: 18)),
@@ -2768,9 +3126,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
     if (_llegoAEscalera) {
       final sig = _siguientePisoNumero;
+      final enAscensor = _escaleraObjetivo?.esAscensor ?? false;
       return _buildTarjetaEstado(
-        icono: Icons.stairs_rounded,
-        titulo: '${_subiendo ? 'Subí' : 'Bajá'} la escalera'
+        icono: enAscensor ? Icons.elevator_rounded : Icons.stairs_rounded,
+        titulo: '${_subiendo ? 'Subí' : 'Bajá'} '
+            '${enAscensor ? 'por el ascensor' : 'la escalera'}'
             '${sig != null ? ' a ${PisoUtil.nombre(sig)}' : ''}',
         subtitulo: 'Al llegar, mantené apretada la pantalla',
         acento: Colors.orange,
@@ -3265,3 +3625,7 @@ class _HisteresisCelda {
 
 /// Baño pedido por el usuario.
 enum _GeneroBano { hombres, mujeres }
+
+/// Una opción de destino con lo lejos que queda: pisos de diferencia y, si
+/// está en este piso, metros de camino (null en otro piso).
+typedef _OpcionMedida = ({LugarInteres lugar, int pisos, double? metros});
