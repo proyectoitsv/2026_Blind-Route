@@ -14,6 +14,7 @@ import 'procesador_senal.dart';
 import 'posicionador.dart';
 import 'mapa_widget.dart';
 import 'pathfinder.dart';
+import 'seguidor_ruta.dart';
 import 'bluetooth_helper.dart';
 import 'orientacion_service.dart';
 import 'voz_service.dart';
@@ -223,10 +224,56 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   /// (0.25 × 3.0 m/s = 0.75 m/s caminando).
   static const double _facTopePerp = 0.25;
 
-  /// Zona muerta (en metros) con el usuario detenido: si la posición filtrada
-  /// se movería menos que esto, se deja clavada. Elimina el jitter residual
-  /// que igual sobrevive al filtro y evita el parpadeo de celda.
+  /// Zona muerta (en metros) con el usuario detenido: mientras la salida del
+  /// filtro esté a menos de esto de la posición mostrada, la posición se deja
+  /// clavada. Elimina el jitter residual que igual sobrevive al filtro y evita
+  /// el parpadeo de celda. Se compara contra la DISCREPANCIA acumulada, no
+  /// contra el paso del ciclo (ver el comentario donde se aplica).
   static const double _zonaMuertaQuietoMetros = 0.35;
+
+  // ── FASE DE ADQUISICIÓN ───────────────────────────────────────────────────
+  //
+  // Con el usuario quieto el pipeline está armado para NO moverse: ancla
+  // temporal fuerte en el posicionador (×3), One Euro a 0,04 Hz, tope de paso
+  // y zona muerta. Eso es lo correcto cuando la posición ya es buena, pero al
+  // arrancar no lo es: el primer fix sale de ventanas de RSSI a medio llenar
+  // y a veces con sólo dos beacons a la vista. Si la persona no caminaba, ese
+  // primer fix quedaba clavado para siempre.
+  //
+  // Durante los primeros segundos después de obtener (o recuperar) la
+  // posición, el pipeline corre "como si el usuario caminara" —ancla floja,
+  // filtro rápido, sin zona muerta— y sin la restricción del rumbo, porque
+  // el error inicial no tiene nada que ver con hacia dónde mira la persona.
+  // Después el factor baja en rampa hasta el del acelerómetro, para que no
+  // haya un cambio brusco de régimen.
+  //
+  // Medido en simulación con el Posicionador y el filtro reales, usuario
+  // quieto y primer fix a 8 m: antes 8 m de error indefinidamente; con esto
+  // ~0,6 m a los 3 s y ~0,4 m al terminar la fase.
+
+  /// Momento en que arrancó la fase de adquisición en curso (null = no hay).
+  DateTime? _adquisicionDesde;
+
+  /// Tramo a factor pleno (1.0).
+  static const Duration _adquisicionPlena = Duration(seconds: 3);
+
+  /// Duración total: pleno + rampa de bajada.
+  static const Duration _adquisicionTotal = Duration(seconds: 6);
+
+  /// Si pasan más de estos segundos sin poder calcular una posición (pocos
+  /// beacons, scan caído), la posición guardada ya es vieja y al volver la
+  /// señal se readquiere igual que al arrancar.
+  static const double _silencioParaReadquirirSeg = 3.0;
+
+  /// Beacons que se esperan para dar el PRIMER fix (o todos los del piso, si
+  /// tiene menos). Con dos beacons y sin posición previa el posicionador sólo
+  /// puede devolver el punto medio entre ambos, que es un mal primer fix.
+  static const int _beaconsPrimerFix = 3;
+
+  /// Tope de la espera anterior: si en este tiempo no aparece el tercer
+  /// beacon, se arranca con los que haya.
+  static const Duration _esperaMaxPrimerFix = Duration(milliseconds: 1500);
+  DateTime? _esperandoPrimerFixDesde;
 
   // _historialPosiciones/_ventanaCentroid (promedio móvil redundante) fueron
   // eliminados: sumaban una segunda capa de latencia sin reducir ruido real,
@@ -327,11 +374,39 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
   // Navegacion
   LugarInteres? _destinoSeleccionado;
+  /// Lo que FALTA recorrer de la ruta: arranca en la celda del usuario y se
+  /// va acortando a medida que avanza (ver _seguirRuta).
   List<Offset>? _rutaActual;
   String _estadoRuta = '';
-  Offset? _ultimaPosicionRuta;
-  static const double _umbralRecalcularRuta = 0.10; // ≈ 1 celda (~1 m normalizado)
   bool _calculandoRuta = false; // evita cálculos solapados
+
+  // ── SEGUIMIENTO DE RUTA (ver SeguidorRuta en seguidor_ruta.dart) ──────────
+  //
+  // La ruta ya no se recalcula por distancia recorrida (el viejo umbral de
+  // 0.10 del plano), sino cuando el usuario se SALE de ella de forma
+  // sostenida. Mientras camina por el camino no se recalcula nada.
+
+  /// Desde cuándo el usuario está fuera de la ruta (null = está sobre ella).
+  DateTime? _fueraDeRutaDesde;
+
+  /// Celda desde la que se calculó la ruta vigente. Mientras el usuario siga
+  /// en esa misma celda, recalcular daría exactamente el mismo resultado
+  /// (pasa, por ejemplo, cuando la posición cae dentro de una zona prohibida
+  /// y el camino arranca en la celda libre de al lado): no se recalcula.
+  int? _celdaUltimoCalculo;
+
+  /// Cambia cada vez que se fija o se cancela un destino. Un cálculo de ruta
+  /// que termina con otra generación pertenece al destino anterior y se
+  /// descarta.
+  int _generacionRuta = 0;
+
+  /// Tiempo que hay que estar fuera de la ruta para que se recalcule. Evita
+  /// recalcular por una celda que parpadea un instante.
+  static const Duration _tiempoFueraDeRuta = Duration(milliseconds: 1500);
+
+  /// Desvío (m) a partir del cual no se espera [_tiempoFueraDeRuta]: a esa
+  /// distancia ya no es ruido de una celda.
+  static const double _desvioReplanInmediatoMetros = 3.0;
  
   // Orientacion
   StreamSubscription<CompassEvent>? _compassSubscription;
@@ -414,6 +489,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
  
   // Voz — STT
   bool _escuchando = false;
+
+  // ── PRIMERA INDICACIÓN DE UNA RUTA ────────────────────────────────────────
+  //
+  // true desde que se fija un destino hasta que se dice la primera indicación
+  // de guiado. Mientras esté en true, esa indicación NO pasa por el filtro de
+  // estabilidad de VozService (4 confirmaciones + 1,8 s): se dice apenas hay
+  // ruta y el motor de voz está libre. El filtro existe para no decir giros
+  // que son un rebote de una celda; en la primera indicación no hay rebote
+  // que filtrar y lo que el usuario percibe es silencio.
+  bool _primeraInstruccionPendiente = false;
+
+  /// Cuánto se espera a que el A* devuelva la ruta para decir el destino y la
+  /// primera indicación en UNA sola frase ("Baño. Girá a la izquierda."). El
+  /// cálculo tarda milisegundos; si alguna vez no llega a tiempo se dice
+  /// "<destino>. Calculando ruta." como antes y la indicación sale sola en
+  /// cuanto haya ruta.
+  static const Duration _esperaMaxPrimeraRuta = Duration(milliseconds: 1200);
  
   @override
   void initState() {
@@ -460,6 +552,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     try {
       _voz.registrarDueno(this);
       await _voz.inicializar();
+      // VozService es un singleton: la última indicación dicha en la pantalla
+      // anterior (otro piso, otra navegación) no tiene que contar acá.
+      _voz.reiniciarFiltroInstrucciones();
 
       final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
       final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
@@ -514,6 +609,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           _destinoSeleccionado = destinoRetomado;
           _destinoRefinado = false;
           _estadoRuta = 'Buscando tu ubicación para seguir...';
+          // Tras un salto de piso la primera indicación también sale sin
+          // esperar al filtro de estabilidad.
+          _primeraInstruccionPendiente = true;
         }
         _nombrePiso = nombrePiso;
         _rotacionMapaEfectiva = rotacionDb;
@@ -914,6 +1012,30 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         }
         return;
       }
+
+      // ── PRIMER FIX: ESPERAR (UN MOMENTO) AL TERCER BEACON ────────────────
+      // Los beacons no aparecen todos juntos: cada uno entra cuando junta sus
+      // primeras muestras. Si el primer fix se calcula en el instante en que
+      // hay dos, sale el punto medio entre esos dos (ver Posicionador.estimar
+      // con menos de 3 rangos y sin posición previa). Se espera hasta
+      // _esperaMaxPrimerFix a que haya tres; pasado ese tiempo se sigue con
+      // lo que haya, así un piso con poca cobertura no queda sin posición.
+      if (_posicionFiltrada == null) {
+        final deseados = min(_beaconsPrimerFix, _beaconsEnElMapa.length);
+        if (candidatos.length < deseados) {
+          final ahoraFix = DateTime.now();
+          _esperandoPrimerFixDesde ??= ahoraFix;
+          if (ahoraFix.difference(_esperandoPrimerFixDesde!) <
+              _esperaMaxPrimerFix) {
+            final texto =
+                'Beacons cercanos: ${candidatos.length} (esperando más señal)';
+            if (mounted && texto != _estadoScan) {
+              setState(() => _estadoScan = texto);
+            }
+            return;
+          }
+        }
+      }
  
       // Orden: primero por RSSI (más cercano) DESC, y entre beacons de fuerza
       // similar, por varianza (más estable) ASC. Cuantizamos el RSSI a bandas
@@ -972,6 +1094,21 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           : ahoraMuestra.difference(_ultimaMuestraPos!).inMicroseconds / 1e6;
       _ultimaMuestraPos = ahoraMuestra;
 
+      // ── FASE DE ADQUISICIÓN ──────────────────────────────────────────────
+      // Arranca con el primer fix y cada vez que la posición se recupera
+      // después de un silencio largo. `fPos` es el factor con el que corre
+      // TODO el posicionamiento de este ciclo: el del acelerómetro o el de la
+      // adquisición, el que sea mayor. `_factorMovimiento` sigue siendo el
+      // real y es el que se muestra y el que ajusta la ventana de RSSI.
+      if (_posicionFiltrada == null || dt > _silencioParaReadquirirSeg) {
+        _adquisicionDesde = ahoraMuestra;
+        debugPrint('[Posicionamiento] Adquisición iniciada '
+            '(${_posicionFiltrada == null ? "primer fix" : "posición recuperada tras ${dt.toStringAsFixed(1)} s"}).');
+      }
+      final fAdq = _factorAdquisicion(ahoraMuestra);
+      final adquiriendo = fAdq > 0.0;
+      final fPos = max(_factorMovimiento, fAdq);
+
       // ── ¿SE PUEDE USAR EL RUMBO PARA RESTRINGIR EL MOVIMIENTO? ───────────
       //
       // Tres condiciones, y las tres importan:
@@ -1015,8 +1152,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           ? calidadRumbo >= _calidadRumboApagar
           : calidadRumbo >= _calidadRumboMinima;
 
+      // Durante la adquisición el rumbo NO restringe: el error de un primer
+      // fix puede estar en cualquier dirección, y la puerta direccional lo
+      // dejaría pasar al 3 % si cae de costado y al 15 % si cae hacia atrás.
       Offset? rumboPlano;
-      if (_compassDisponible && _movimiento.disponible && _rumboActivo) {
+      if (!adquiriendo &&
+          _compassDisponible &&
+          _movimiento.disponible &&
+          _rumboActivo) {
         final h = _orientacion.heading;
         if (h != null) {
           final hp = ((h - _rotacionMapaEfectiva) % 360 + 360) % 360;
@@ -1039,7 +1182,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         metrosX: _grilla.metrosX,
         metrosY: _grilla.metrosY,
         posPrevia: _posicionFiltrada,
-        factorMovimiento: _factorMovimiento,
+        factorMovimiento: fPos,
         rumboPlano: rumboPlano,
       );
 
@@ -1056,7 +1199,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           rumboPlano: rumboPlano,
           metrosX: _grilla.metrosX,
           metrosY: _grilla.metrosY,
-          factorMovimiento: _factorMovimiento,
+          factorMovimiento: fPos,
           dt: dt,
           velocidadAngularGrados: _orientacion.velocidadAngularGrados,
         );
@@ -1169,6 +1312,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
             '(R=${_orientacion.resultante.toStringAsFixed(3)}) '
             'compass=$_compassDisponible acel=${_movimiento.disponible} '
             'mov=${_factorMovimiento.toStringAsFixed(2)} '
+            'adq=${fAdq.toStringAsFixed(2)} '
             'velAng=${_orientacion.velocidadAngularGrados.toStringAsFixed(0)}°/s '
             'puerta(apertura=${_puertaRumbo.apertura.toStringAsFixed(2)}, '
             'evid=${_puertaRumbo.evidenciaLateralMs.toStringAsFixed(2)} m/s)');
@@ -1184,7 +1328,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       final filtrada = _filtroPosicion.filtrar(
         nuevaPosicionRaw,
         dt: dt,
-        factorMovimiento: _factorMovimiento,
+        factorMovimiento: fPos,
       );
 
       Offset nuevaPosicionFiltrada;
@@ -1200,7 +1344,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         final dtPaso =
             (dt.isFinite && dt > 0) ? dt.clamp(0.05, 1.0) : 0.18;
         final velMax = _velMaxQuietoMs +
-            (_velMaxMoviendoMs - _velMaxQuietoMs) * _factorMovimiento;
+            (_velMaxMoviendoMs - _velMaxQuietoMs) * fPos;
         final topeAlong = velMax * dtPaso;
 
         double dxM = (filtrada.dx - _posicionFiltrada!.dx) * _grilla.metrosX;
@@ -1216,7 +1360,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
             hy /= hn;
             final nx = -hy, ny = hx;
             final topePerp = topeAlong *
-                (1.0 + (_facTopePerp - 1.0) * _factorMovimiento);
+                (1.0 + (_facTopePerp - 1.0) * fPos);
             final a = (dxM * hx + dyM * hy).clamp(-topeAlong, topeAlong);
             final l = (dxM * nx + dyM * ny).clamp(-topePerp, topePerp);
             dxM = a * hx + l * nx;
@@ -1236,14 +1380,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           _posicionFiltrada!.dy + dyM / _grilla.metrosY,
         );
 
-        // Zona muerta con el usuario detenido: por debajo de este
-        // desplazamiento no se mueve nada. Es lo que termina de eliminar el
-        // parpadeo del ícono cuando la persona está parada. Se desactiva de
-        // forma progresiva apenas el acelerómetro detecta movimiento.
-        if (_factorMovimiento < 0.25) {
-          final movMetros =
-              _distanciaMetros(_posicionFiltrada!, nuevaPosicionFiltrada);
-          if (movMetros < _zonaMuertaQuietoMetros) {
+        // Zona muerta con el usuario detenido: mientras la salida del filtro
+        // esté cerca de la posición mostrada no se mueve nada. Es lo que
+        // termina de eliminar el parpadeo del ícono cuando la persona está
+        // parada. Se desactiva apenas el acelerómetro detecta movimiento.
+        //
+        // FIX (posición clavada en un lugar equivocado): antes se comparaba
+        // el PASO YA RECORTADO de este ciclo contra la zona muerta. Pero con
+        // el usuario quieto el tope de paso es 1,2 m/s × ~0,18 s ≈ 0,22 m, que
+        // es MENOR que los 0,35 m de la zona muerta: la condición se cumplía
+        // siempre y la posición no podía moverse nunca, por más lejos que el
+        // filtro dijera que estaba el usuario. Ahora se compara la distancia
+        // entre la posición mostrada y la salida del filtro (antes del tope):
+        // el ruido de un ciclo no la supera, pero un error sostenido sí, y
+        // entonces la posición avanza hacia ahí a la velocidad del tope.
+        if (fPos < 0.25) {
+          final discrepancia = _distanciaMetros(_posicionFiltrada!, filtrada);
+          if (discrepancia < _zonaMuertaQuietoMetros) {
             nuevaPosicionFiltrada = _posicionFiltrada!;
           }
         }
@@ -1295,7 +1448,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         // Histéresis de celda adaptativa: parado exige más confirmaciones
         // (nada debería cambiar de celda), caminando confirma casi de
         // inmediato para no agregar latencia sobre el filtro.
-        final ciclosConfirmar = _factorMovimiento > 0.5 ? 1 : 3;
+        final ciclosConfirmar = fPos > 0.5 ? 1 : 3;
         final celdaFirme =
             _histeresisCelda.actualizar(ix, iy, _grilla, ciclosConfirmar);
         final posicionSnap = celdaFirme != null
@@ -1311,9 +1464,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         // así un cambio que cae dentro del tope no se pierde, se dibuja en
         // el próximo ciclo. El giro del usuario lo refresca el timer de la
         // brújula.
-        final modo = !_movimiento.disponible
-            ? ''
-            : (_factorMovimiento > 0.5 ? ' · en movimiento' : ' · quieto');
+        // "ajustando" = fase de adquisición en curso: la posición todavía
+        // se está acomodando y puede moverse aunque la persona esté quieta.
+        final modo = adquiriendo
+            ? ' · ajustando'
+            : !_movimiento.disponible
+                ? ''
+                : (_factorMovimiento > 0.5 ? ' · en movimiento' : ' · quieto');
         final textoEstado = 'Ubicacion estable (${activos.length} beacons)$modo';
         final bool cambioUI = posicionSnap != _posicionMostradaUI ||
             textoEstado != _estadoScan ||
@@ -1347,19 +1504,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           _posicionFinal != null &&
           !_llegoADestino &&
           !(_esTramoEntrePisos && _sinEscaleraDisponible)) {
-        final ahora = DateTime.now();
-        final debeRecalcular = _ultimaPosicionRuta == null ||
-            (_posicionFinal! - _ultimaPosicionRuta!).distance > _umbralRecalcularRuta;
-        // Cooldown: si el último intento de ruta falló (null), no reintentar
-        // antes de _cooldownRuta para no saturar con compute() isolates.
-        final fueraDeCooldown = _ultimoIntentoRuta == null ||
-            ahora.difference(_ultimoIntentoRuta!) >= _cooldownRuta;
-
-        if (debeRecalcular && fueraDeCooldown) {
-          _ultimaPosicionRuta = _posicionFinal;
-          _ultimoIntentoRuta = ahora;
-          _calcularRuta();
-        }
+        _seguirRuta();
       }
     } catch (e) {
       // Antes esto se ignoraba en silencio. Si algo del pipeline de
@@ -1371,6 +1516,24 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
   }
  
+  /// Factor de movimiento que impone la fase de adquisición en [ahora]:
+  /// 1.0 durante [_adquisicionPlena], después baja en rampa hasta 0 al llegar
+  /// a [_adquisicionTotal]. 0 si no hay adquisición en curso.
+  double _factorAdquisicion(DateTime ahora) {
+    final desde = _adquisicionDesde;
+    if (desde == null) return 0.0;
+    final ms = ahora.difference(desde).inMilliseconds;
+    final total = _adquisicionTotal.inMilliseconds;
+    final plena = _adquisicionPlena.inMilliseconds;
+    if (ms >= total) {
+      _adquisicionDesde = null;
+      debugPrint('[Posicionamiento] Adquisición terminada.');
+      return 0.0;
+    }
+    if (ms <= plena) return 1.0;
+    return (total - ms) / (total - plena);
+  }
+
   /// Distancia real (m) entre dos posiciones normalizadas, usando la escala
   /// del piso en cada eje. Los ejes pueden tener escalas muy distintas, así
   /// que una distancia en unidades normalizadas no es comparable entre planos.
@@ -1378,6 +1541,89 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     final dx = (a.dx - b.dx) * _grilla.metrosX;
     final dy = (a.dy - b.dy) * _grilla.metrosY;
     return sqrt(dx * dx + dy * dy);
+  }
+
+  /// Posición recortada al interior del plano, que es lo que acepta el
+  /// pathfinder (ver el comentario en _calcularRuta).
+  Offset _posicionParaRuta() => Offset(
+        _posicionFinal!.dx.clamp(0.001, 0.999),
+        _posicionFinal!.dy.clamp(0.001, 0.999),
+      );
+
+  /// Texto de la ruta para el panel superior, con la distancia que falta.
+  String _textoEstadoRuta(List<Offset> camino) {
+    final distancia = _calcularDistancia(camino).toStringAsFixed(1);
+    if (_esTramoEntrePisos) {
+      final pisoDestino = _numeroPisoDe(_destinoSeleccionado!);
+      return 'Escalera para ${_subiendo ? 'subir' : 'bajar'}: '
+          '${distancia}m · destino en '
+          '${pisoDestino != null ? PisoUtil.nombre(pisoDestino) : 'otro piso'}';
+    }
+    return 'Ruta a ${_destinoSeleccionado!.nombre}: ${distancia}m';
+  }
+
+  /// Se llama en cada ciclo de posición mientras hay un destino. Decide si
+  /// hay que calcular una ruta, y si ya hay una, la va consumiendo.
+  ///
+  ///  • Sin ruta → se calcula (con cooldown si el último intento falló).
+  ///  • Sobre la ruta → no se recalcula; se descartan las celdas que el
+  ///    usuario ya pasó, así la ruta siempre arranca donde está.
+  ///  • Fuera de la ruta → si se sostiene [_tiempoFueraDeRuta] (o el desvío
+  ///    es grande), se recalcula desde donde está. Qué se hace con ese
+  ///    camino nuevo lo decide [SeguidorRuta.decidir] dentro de _calcularRuta.
+  void _seguirRuta() {
+    if (_calculandoRuta) return;
+    final ahora = DateTime.now();
+    // Cooldown: no lanzar un compute() por cada callback BLE.
+    final fueraDeCooldown = _ultimoIntentoRuta == null ||
+        ahora.difference(_ultimoIntentoRuta!) >= _cooldownRuta;
+
+    final ruta = _rutaActual;
+    if (ruta == null || ruta.isEmpty) {
+      if (fueraDeCooldown) {
+        _ultimoIntentoRuta = ahora;
+        _calcularRuta();
+      }
+      return;
+    }
+
+    // Mismo origen que usaría el pathfinder: tras un salto de piso, mientras
+    // el usuario siga junto a la escalera por la que llegó, es la salida de
+    // esa escalera y no su posición (que cae sobre un obstáculo).
+    final origen = _origenRuta(_posicionParaRuta());
+    final ubicacion = SeguidorRuta.ubicar(ruta, origen, _grilla);
+
+    if (ubicacion.enRuta) {
+      _fueraDeRutaDesde = null;
+      if (ubicacion.indice > 0) {
+        // Avanzó: lo ya recorrido se descarta.
+        final resto = ruta.sublist(ubicacion.indice);
+        // La ruta ya no arranca donde se calculó: la marca de "misma celda,
+        // mismo resultado" deja de valer.
+        _celdaUltimoCalculo = null;
+        setState(() {
+          _rutaActual = resto;
+          _estadoRuta = _textoEstadoRuta(resto);
+        });
+      }
+      return;
+    }
+
+    // Fuera de la ruta.
+    _fueraDeRutaDesde ??= ahora;
+    if (!fueraDeCooldown) return;
+    if (SeguidorRuta.claveCelda(origen, _grilla) == _celdaUltimoCalculo) {
+      return; // desde esta misma celda ya se calculó: saldría lo mismo
+    }
+    final sostenido =
+        ahora.difference(_fueraDeRutaDesde!) >= _tiempoFueraDeRuta;
+    if (sostenido ||
+        ubicacion.desvioMetros >= _desvioReplanInmediatoMetros) {
+      debugPrint('[Ruta] Fuera de ruta '
+          '(${ubicacion.desvioMetros.toStringAsFixed(1)} m). Recalculando.');
+      _ultimoIntentoRuta = ahora;
+      _calcularRuta();
+    }
   }
 
   Future<void> _calcularRuta() async {
@@ -1395,6 +1641,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
 
     _calculandoRuta = true;
+    // Si mientras se calcula el usuario cambia o cancela el destino, este
+    // resultado ya no sirve (ver _generacionRuta).
+    final generacion = _generacionRuta;
     debugPrint('[Ruta] Iniciando cálculo hacia "${_destinoSeleccionado!.nombre}"...');
     try {
       // Clampear la posición a [0, 1) en ambos ejes antes de pasarla al
@@ -1403,10 +1652,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       // _aStarIsolate los clampea con clampX/clampY, pero si esa celda de
       // borde es un obstáculo, _celdaLibreCercana puede no encontrar alternativa
       // y retornar null, haciendo que la ruta nunca aparezca.
-      final origen = _origenRuta(Offset(
-        _posicionFinal!.dx.clamp(0.001, 0.999),
-        _posicionFinal!.dy.clamp(0.001, 0.999),
-      ));
+      final origen = _origenRuta(_posicionParaRuta());
+      final celdaOrigen = SeguidorRuta.claveCelda(origen, _grilla);
 
       // Destino en este piso con nombre repetido: ahora que se conoce la
       // posición, quedarse con el más cercano.
@@ -1417,7 +1664,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       // Tramo entre pisos: elegir la escalera una sola vez por piso.
       if (_esTramoEntrePisos && _escaleraObjetivo == null) {
         final escalera = await _elegirEscalera(origen);
-        if (!mounted) return;
+        if (!mounted || generacion != _generacionRuta) return;
         if (escalera == null) {
           final sube = _subiendo;
           setState(() {
@@ -1452,45 +1699,60 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         objetivo.dy.clamp(0.001, 0.999),
       );
 
-      final camino = await _resolvedor.encontrarCamino(origen, destino);
+      final nueva = await _resolvedor.encontrarCamino(origen, destino);
+      if (!mounted || generacion != _generacionRuta) return;
 
-      if (!mounted) return;
+      // ── ¿CAMINO NUEVO O EL QUE SE VENÍA SIGUIENDO? ───────────────────────
+      // Si ya había una ruta, el camino recién calculado no se adopta a
+      // ciegas: SeguidorRuta.decidir lo compara con lo que quedaba de la
+      // anterior. Devuelve siempre una ruta que arranca en la celda actual
+      // del usuario; lo que cambia es si reusa el recorrido anterior o no.
+      List<Offset>? camino = nueva;
+      if (nueva != null) {
+        final decision = await SeguidorRuta.decidir(
+          nueva: nueva,
+          vieja: _rutaActual,
+          grilla: _grilla,
+          buscarCamino: _resolvedor.encontrarCamino,
+        );
+        if (!mounted || generacion != _generacionRuta) return;
+        camino = decision.ruta;
+        _celdaUltimoCalculo = celdaOrigen;
+        _fueraDeRutaDesde = null;
+        debugPrint('[Ruta] ${decision.esNueva ? "Camino nuevo" : "Ruta anterior"}'
+            ': ${decision.motivo}.');
+      }
+
+      final rutaFinal = camino;
       setState(() {
-        _rutaActual = camino;
-        if (camino == null) {
+        _rutaActual = rutaFinal;
+        if (rutaFinal == null) {
           _estadoRuta = 'No se encontró ruta disponible';
-          // Resetear para que el pathfinder reintente cuando el usuario se mueva
-          // a una celda diferente. El cooldown (_cooldownRuta) evita que cada
-          // callback BLE dispare un nuevo compute() durante el período de espera.
-          _ultimaPosicionRuta = null;
+          // Sin ruta, _seguirRuta reintenta solo: el cooldown (_cooldownRuta)
+          // evita que cada callback BLE dispare un nuevo compute().
+          //
+          // Sin ruta no hay "primera indicación de la ruta" que esperar: el
+          // guiado sigue como antes (apuntando directo al destino, por el
+          // filtro de estabilidad) en lugar de quedarse callado.
+          _primeraInstruccionPendiente = false;
         } else {
-          final distancia = _calcularDistancia(camino).toStringAsFixed(1);
-          if (_esTramoEntrePisos) {
-            final pisoDestino = _numeroPisoDe(_destinoSeleccionado!);
-            _estadoRuta = 'Escalera para ${_subiendo ? 'subir' : 'bajar'}: '
-                '${distancia}m · destino en '
-                '${pisoDestino != null ? PisoUtil.nombre(pisoDestino) : 'otro piso'}';
-          } else {
-            _estadoRuta = 'Ruta a ${_destinoSeleccionado!.nombre}: ${distancia}m';
-          }
+          _estadoRuta = _textoEstadoRuta(rutaFinal);
         }
       });
     } catch (e) {
       // BUG ORIGINAL: este catch no hacía nada. Si encontrarCamino() (el A*
       // que corre en un isolate vía compute()) tiraba cualquier excepción,
-      // _estadoRuta se quedaba pegado en "Calculando ruta..." para siempre:
-      // no se actualizaba el texto, y como _ultimaPosicionRuta tampoco se
-      // reseteaba, el gate de recálculo en _calcularPosicionRobusta jamás
-      // volvía a intentarlo. Resultado: "queda siempre pensando".
+      // _estadoRuta se quedaba pegado en "Calculando ruta..." para siempre.
+      // Ahora el reintento no depende de nada que haya que resetear acá: si
+      // no hay ruta, _seguirRuta vuelve a intentar pasado el cooldown; y si
+      // había una, sigue vigente y _celdaUltimoCalculo no se tocó, así que
+      // el próximo ciclo fuera de ruta recalcula.
       debugPrint('[Pathfinder] Error calculando ruta: $e');
       if (mounted) {
         setState(() {
           _estadoRuta = 'Error calculando ruta. Reintentando...';
         });
       }
-      // Permitir que el próximo ciclo de posicionamiento reintente en vez de
-      // quedar bloqueado por el gate de "posición sin cambios".
-      _ultimaPosicionRuta = null;
     } finally {
       _calculandoRuta = false;
     }
@@ -1828,21 +2090,64 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       _destinoRefinado = _posicionFinal != null;
       _rutaActual = null;
       _estadoRuta = 'Calculando ruta...';
-      _ultimaPosicionRuta = null;
       _ultimoIntentoRuta = null;
       _anuncioRetomadoHecho = true;
     });
-    _calcularRuta();
+    // Estado del seguimiento de ruta: todo de cero para el destino nuevo.
+    _generacionRuta++;
+    _fueraDeRutaDesde = null;
+    _celdaUltimoCalculo = null;
 
-    if (!_esTramoEntrePisos) {
-      await _voz.hablar('${destino.nombre}. Calculando ruta.');
+    // Destino nuevo: el filtro de voz arranca de cero y la primera indicación
+    // queda marcada como pendiente (ver _primeraInstruccionPendiente).
+    _voz.reiniciarFiltroInstrucciones();
+    _primeraInstruccionPendiente = true;
+
+    final calculo = _calcularRuta();
+
+    if (_esTramoEntrePisos) {
+      final pisoDestino = _numeroPisoDe(destino)!;
+      await _voz.hablar(
+        '${destino.nombre}, ${PisoUtil.nombre(pisoDestino).toLowerCase()}. '
+        'Vamos a la escalera.',
+      );
+      // La indicación hacia la escalera la dice _actualizarInstruccionVoz en
+      // el próximo ciclo de posición (queda pendiente): ~0,2 s después de
+      // que termina esta frase.
       return;
     }
-    final pisoDestino = _numeroPisoDe(destino)!;
-    await _voz.hablar(
-      '${destino.nombre}, ${PisoUtil.nombre(pisoDestino).toLowerCase()}. '
-      'Vamos a la escalera.',
-    );
+
+    // ── DESTINO + PRIMERA INDICACIÓN EN UNA SOLA FRASE ──────────────────────
+    //
+    // Antes se decía "<destino>. Calculando ruta." y la indicación quedaba a
+    // cargo del filtro de voz, que la dejaba para cuando terminara esa frase
+    // (y, por el bug de hablarSiCambio, en la práctica para 15 s después).
+    // La ruta se calcula en milisegundos, así que conviene esperarla un
+    // instante y decir todo junto: el usuario escucha el destino que se
+    // entendió y, pegado, para dónde tiene que ir.
+    await Future.any<void>([
+      calculo,
+      Future<void>.delayed(_esperaMaxPrimeraRuta),
+    ]);
+    if (!mounted) return;
+
+    final primera = _rutaActual != null ? _indicacionParaVoz() : null;
+    if (primera != null && _primeraInstruccionPendiente) {
+      _primeraInstruccionPendiente = false;
+      // Se registra ANTES de hablar: mientras suena la frase el loop de
+      // posición sigue llamando al filtro, y no tiene que volver a decirla.
+      _voz.registrarInstruccionDicha(primera.clave);
+      // _destinoSeleccionado y no `destino`: con nombres repetidos en el piso,
+      // _calcularRuta puede haberlo cambiado por el más cercano.
+      final nombre = _destinoSeleccionado?.nombre ?? destino.nombre;
+      await _voz.hablar('$nombre. ${primera.texto}.');
+      return;
+    }
+
+    // Todavía no hay ruta (no hay posición, no hay brújula, o el cálculo se
+    // demoró): se confirma el destino y la indicación sale sola en cuanto
+    // haya ruta, porque sigue pendiente.
+    await _voz.hablar('${destino.nombre}. Calculando ruta.');
   }
 
   /// Revisa, en cada ciclo de posición, si el usuario llegó a la escalera del
@@ -2179,8 +2484,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         _ciclosEnLlegada = 0;
         _rutaActual = null;
         _estadoRuta = '';
-        _ultimaPosicionRuta = null;
       });
+      _generacionRuta++;
+      _fueraDeRutaDesde = null;
+      _celdaUltimoCalculo = null;
+      _primeraInstruccionPendiente = false;
+      _voz.reiniciarFiltroInstrucciones();
       _voz.hablar('Navegación cancelada.');
     }
   }
@@ -2219,23 +2528,24 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     return n == 1 ? '1 metro' : '$n metros';
   }
 
-  /// Calcula la indicación de giro actual y la pasa al filtro de voz.
-  /// Se invoca desde el loop de posicionamiento (NO desde build()) para que
-  /// hablar() no sea un efecto colateral del repintado del widget y para que
-  /// el filtro de confirmaciones de VozService reciba un ritmo estable.
-  void _actualizarInstruccionVoz() {
+  /// Indicación de guiado de ESTE instante, lista para decir: el texto
+  /// completo y la clave (la indicación sin la distancia) con la que el
+  /// filtro de voz decide si es "la misma" que la anterior. Null si todavía
+  /// no hay con qué calcularla (sin brújula, sin posición, sin destino) o si
+  /// ya se llegó.
+  ({String texto, String clave})? _indicacionParaVoz() {
     final heading = _orientacion.heading;
     if (heading == null || _posicionFinal == null || _destinoSeleccionado == null) {
-      return;
+      return null;
     }
     // Ya llegó (a la escalera o al destino): no más indicaciones de giro.
-    if (_llegoAEscalera || _llegoADestino) return;
-    final objetivo = _objetivoNavegacion();
-    if (objetivo == null) return;
+    if (_llegoAEscalera || _llegoADestino) return null;
+    final tramo = _tramoDeGuiado();
+    if (tramo == null) return null;
     final indicacion = OrientacionService.calcularIndicacion(
       headingUsuario: heading,
-      posicionUsuario: _posicionFinal!,
-      posicionDestino: objetivo,
+      posicionUsuario: tramo.desde,
+      posicionDestino: tramo.hacia,
       rotacionMapa: _rotacionMapaEfectiva,
       metrosX: widget.escalaX,
       metrosY: widget.escalaY,
@@ -2251,18 +2561,48 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     final texto = indicacion.instruccion == 'Seguí derecho'
         ? '${indicacion.instruccion}, ${_distanciaParaVoz(indicacion.distanciaMetros)}'
         : indicacion.instruccion;
-    _voz.hablarSiCambio(texto, clave: indicacion.instruccion);
+    return (texto: texto, clave: indicacion.instruccion);
   }
 
-  /// Punto al que deben apuntar las instrucciones: la próxima esquina del camino
-  /// pintado (sigue las cuadrículas). Si todavía no hay ruta, el destino directo.
-  /// En un tramo entre pisos el objetivo es la entrada de la escalera; null
-  /// si todavía no se eligió (no hay a dónde apuntar).
-  Offset? _objetivoNavegacion() {
-    if (_rutaActual != null && _rutaActual!.isNotEmpty && _posicionFinal != null) {
-      return OrientacionService.proximoObjetivo(_rutaActual!, _posicionFinal!);
+  /// Calcula la indicación de giro actual y la manda a la voz.
+  /// Se invoca desde el loop de posicionamiento (NO desde build()) para que
+  /// hablar() no sea un efecto colateral del repintado del widget y para que
+  /// el filtro de confirmaciones de VozService reciba un ritmo estable.
+  void _actualizarInstruccionVoz() {
+    final ind = _indicacionParaVoz();
+    if (ind == null) return;
+
+    if (_primeraInstruccionPendiente) {
+      // Primera indicación del destino: se espera a que exista la ruta (sin
+      // ella el objetivo es el destino en línea recta, y se diría un giro que
+      // puede cambiar medio segundo después) y se dice sin filtro. Si el
+      // motor está ocupado con otra frase, se reintenta en el próximo ciclo.
+      if (_rutaActual == null) return;
+      if (_voz.hablarInstruccionYa(ind.texto, clave: ind.clave)) {
+        _primeraInstruccionPendiente = false;
+      }
+      return;
     }
-    return _puntoObjetivoTramo();
+
+    _voz.hablarSiCambio(ind.texto, clave: ind.clave);
+  }
+
+  /// Tramo que hay que indicar: hacia la próxima esquina del camino pintado
+  /// (sigue las cuadrículas) y medido desde el camino mientras el usuario
+  /// esté a menos de [SeguidorRuta.toleranciaProyeccionMetros] de él (ver
+  /// [SeguidorRuta.guia] para el porqué). Si todavía no hay ruta, desde la
+  /// posición directo al destino. En un tramo entre pisos el objetivo es la
+  /// entrada de la escalera; null si todavía no se eligió (no hay a dónde
+  /// apuntar).
+  TramoGuiado? _tramoDeGuiado() {
+    final pos = _posicionFinal;
+    if (pos == null) return null;
+    final ruta = _rutaActual;
+    if (ruta != null && ruta.isNotEmpty) {
+      return SeguidorRuta.guia(ruta, pos, _grilla);
+    }
+    final objetivo = _puntoObjetivoTramo();
+    return objetivo == null ? null : TramoGuiado(pos, objetivo);
   }
  
   // ─── WIDGETS ──────────────────────────────────────────────────────────────
@@ -2438,15 +2778,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
 
     final heading = _orientacion.heading;
-    final objetivo = _destinoSeleccionado == null ? null : _objetivoNavegacion();
-    if (heading == null || _posicionFinal == null || objetivo == null) {
+    final tramo = _destinoSeleccionado == null ? null : _tramoDeGuiado();
+    if (heading == null || tramo == null) {
       return const SizedBox.shrink();
     }
  
     final indicacion = OrientacionService.calcularIndicacion(
       headingUsuario: heading,
-      posicionUsuario: _posicionFinal!,
-      posicionDestino: objetivo,
+      posicionUsuario: tramo.desde,
+      posicionDestino: tramo.hacia,
       rotacionMapa: _rotacionMapaEfectiva,
       metrosX: widget.escalaX,
       metrosY: widget.escalaY,
