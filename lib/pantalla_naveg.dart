@@ -578,9 +578,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
   /// Cuánto se espera a que el A* devuelva la ruta para decir el destino y la
   /// primera indicación en UNA sola frase ("Baño. Girá a la izquierda."). El
-  /// cálculo tarda milisegundos; si alguna vez no llega a tiempo se dice
-  /// "<destino>. Calculando ruta." como antes y la indicación sale sola en
-  /// cuanto haya ruta.
+  /// cálculo tarda milisegundos; si alguna vez no llega a tiempo se dice el
+  /// destino seguido de "Calculando ruta.", como antes, y la indicación sale
+  /// sola en cuanto haya ruta.
   static const Duration _esperaMaxPrimeraRuta = Duration(milliseconds: 1200);
  
   @override
@@ -1173,7 +1173,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       // ── FASE DE ADQUISICIÓN ──────────────────────────────────────────────
       // Arranca con el primer fix y cada vez que la posición se recupera
       // después de un silencio largo. `fPos` es el factor con el que corre
-      // TODO el posicionamiento de este ciclo: el del acelerómetro o el de la
+      // todo el posicionamiento de este ciclo: el del acelerómetro o el de la
       // adquisición, el que sea mayor. `_factorMovimiento` sigue siendo el
       // real y es el que se muestra y el que ajusta la ventana de RSSI.
       if (_posicionFiltrada == null || dt > _silencioParaReadquirirSeg) {
