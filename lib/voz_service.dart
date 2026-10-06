@@ -61,11 +61,19 @@ class VozService {
       _sttDisponible = await _stt.initialize(
         onError: (error) {
           _escuchando = false;
+          // Silencio o "no se entendió" llegan por acá y no por onResult:
+          // hay que avisarle a quien está escuchando (ver "una sesión, un
+          // aviso" más abajo).
+          _cerrarSesionTrasGracia('sin texto');
         },
         onStatus: (status) {
           if (status == 'done' || status == 'notListening') {
             _escuchando = false;
           }
+          // "done" = el motor terminó. Si para entonces no hubo resultado
+          // final, no va a haber. ("notListening" no alcanza: llega ANTES
+          // del resultado final.)
+          if (status == 'done') _cerrarSesionTrasGracia('sin texto');
         },
       );
     } catch (e) {
@@ -356,11 +364,63 @@ class VozService {
     }
   }
  
-  /// Escucha una frase del usuario y la devuelve via [onResultado].
-  /// Solo dispara el callback cuando el motor marca el resultado como final
-  /// (flag finalResult = true), lo que garantiza que el usuario terminó de
-  /// hablar. Los resultados parciales con texto vacío que llegan al arrancar
-  /// se descartan silenciosamente.
+  // ─── ESCUCHA: una sesión, un aviso ──────────────────────────────────────────
+  //
+  // Cada llamada a [escuchar] es una SESIÓN y termina exactamente una vez,
+  // avisando por onResultado o por onError. Antes eso no estaba garantizado:
+  //
+  //  • Cuando el usuario no decía nada, o no se le entendía, el motor avisa
+  //    con un ERROR (no con un resultado), y ese error sólo llegaba al
+  //    listener global de initialize(), que apagaba la bandera _escuchando y
+  //    nada más. El timeout de seguridad de escuchar() preguntaba justamente
+  //    por esa bandera, así que tampoco avisaba. Resultado: ni onResultado
+  //    ni onError; quien había preguntado algo ("¿Vamos ahí?") se quedaba
+  //    esperando para siempre y la pantalla quedaba "escuchando" hasta que
+  //    el usuario la tocaba.
+  //  • El timeout de seguridad de una escucha vieja podía dispararse durante
+  //    una escucha NUEVA y cortarla (miraba la bandera global, no su sesión).
+  //
+  // Ahora la sesión se cierra con lo primero que pase: un resultado final,
+  // un error del motor, el aviso de "terminé" sin resultado, que alguien la
+  // corte, o el timeout. Todo lo que llega después se ignora.
+
+  /// Motivo con el que termina (por onError) una escucha que se cortó a
+  /// propósito: [detenerEscucha], otra llamada a [escuchar] o [limpiar]. El
+  /// que escucha lo distingue para no decir "no te escuché" cuando en
+  /// realidad fue el propio usuario el que la cortó.
+  static const String errorCancelado = 'cancelado';
+
+  /// Cierra con error la sesión en curso. Null si no hay ninguna abierta.
+  void Function(String motivo)? _cerrarSesion;
+
+  /// Número de la sesión en curso (para que los avisos demorados de una
+  /// sesión no toquen a la siguiente).
+  int _sesionEscucha = 0;
+
+  /// true desde que se le pidió al motor que escuche para la sesión en
+  /// curso. Antes de eso, un "done" o un error que llegue del motor es la
+  /// cola de la escucha ANTERIOR (por ejemplo, la que se acaba de cortar) y
+  /// no tiene que cerrar la sesión nueva.
+  bool _motorPedido = false;
+
+  /// El motor avisó que terminó (error, o "done" sin resultado). Se le da un
+  /// instante por si el resultado final viene atrás —en algunos equipos
+  /// llega después del aviso— y, si no vino, se cierra la sesión.
+  void _cerrarSesionTrasGracia(String motivo) {
+    final cerrar = _cerrarSesion;
+    if (cerrar == null || !_motorPedido) return;
+    final sesion = _sesionEscucha;
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (sesion == _sesionEscucha) cerrar(motivo);
+    });
+  }
+
+  /// Escucha una frase del usuario. Termina SIEMPRE con un aviso, y uno solo:
+  /// [onResultado] con lo que dijo, u [onError] con el motivo ('sin texto' si
+  /// no dijo nada o no se entendió, [errorCancelado] si se la cortó).
+  ///
+  /// Si ya había una escucha abierta, se la corta (su dueño recibe
+  /// [errorCancelado]) y arranca esta.
   Future<void> escuchar({
     required void Function(String texto) onResultado,
     void Function(String error)? onError,
@@ -371,80 +431,99 @@ class VozService {
       onError?.call('Reconocimiento de voz no disponible');
       return;
     }
-    if (_escuchando) {
-      await detenerEscucha();
-      return;
+    final anterior = _cerrarSesion;
+    if (anterior != null) {
+      anterior(errorCancelado);
+      try {
+        await _stt.stop();
+      } catch (_) {}
     }
- 
+
+    final sesion = ++_sesionEscucha;
+    _motorPedido = false;
+    bool cerrada = false;
+    // Lo último que el motor entendió sin darlo por final. Si la escucha
+    // termina sin resultado final pero con esto cargado (pasa en algunos
+    // equipos), se entrega: es mejor que descartar lo que el usuario dijo.
+    String parcial = '';
+
+    void cerrar({String? texto, String motivo = 'sin texto'}) {
+      if (cerrada) return;
+      cerrada = true;
+      if (sesion == _sesionEscucha) {
+        _escuchando = false;
+        _cerrarSesion = null;
+      }
+      onEscuchando?.call(false);
+      final dicho = texto ?? (motivo == errorCancelado ? '' : parcial);
+      if (dicho.isNotEmpty) {
+        onResultado(dicho.toLowerCase());
+      } else {
+        onError?.call(motivo);
+      }
+    }
+
+    _cerrarSesion = (motivo) => cerrar(motivo: motivo);
+
     // Pequeña pausa para que el altavoz se silencie antes de abrir el micrófono
     await Future.delayed(const Duration(milliseconds: 200));
- 
+    if (cerrada) return;
+
     _escuchando = true;
     onEscuchando?.call(true);
- 
-    bool resultadoEntregado = false;
- 
+
     // Resolver locale de español disponible en el dispositivo
     final localeId = await _resolverLocaleEspanol();
- 
+    if (cerrada) return;
+
     try {
+      _motorPedido = true;
       await _stt.listen(
         localeId: localeId,
         listenFor: timeout,
         // pauseFor: tiempo de silencio antes de considerar que terminó de hablar.
         // 3 segundos da margen suficiente sin hacer esperar demasiado.
         pauseFor: const Duration(seconds: 3),
-        // Activamos parciales solo para que el motor quede "vivo",
-        // pero SOLO procesamos el resultado cuando finalResult == true.
+        // Los parciales mantienen "vivo" al motor; el pedido se resuelve con
+        // el resultado FINAL (el usuario terminó de hablar).
         listenOptions: stt.SpeechListenOptions(partialResults: true),
         onResult: (result) {
-          // Ignorar resultados parciales — solo nos interesa el resultado final.
-          if (!result.finalResult) return;
- 
-          // Descartar si no hay texto reconocido.
+          if (cerrada) return;
           final texto = result.recognizedWords.trim();
-          if (texto.isEmpty) {
-            _escuchando = false;
-            onEscuchando?.call(false);
-            onError?.call('sin texto');
+          if (!result.finalResult) {
+            if (texto.isNotEmpty) parcial = texto;
             return;
           }
- 
-          if (!resultadoEntregado) {
-            resultadoEntregado = true;
-            _escuchando = false;
-            onEscuchando?.call(false);
-            onResultado(texto.toLowerCase());
+          if (texto.isEmpty) {
+            cerrar(); // final vacío: vale el parcial si hubo, si no 'sin texto'
+          } else {
+            cerrar(texto: texto);
           }
         },
       );
- 
-      // Timeout de seguridad: si el motor nunca dispara finalResult
-      // (puede pasar en algunos dispositivos), informar al caller.
-      // Solo se activa si aún no se entregó ningún resultado.
-      Future.delayed(timeout + const Duration(seconds: 3), () {
-        if (!resultadoEntregado && _escuchando) {
-          _escuchando = false;
-          onEscuchando?.call(false);
-          onError?.call('sin texto');
-        }
-      });
+
+      // Timeout de seguridad, por si el motor no avisa nada de nada. Cierra
+      // SU sesión (si ya se cerró, no hace nada).
+      Future.delayed(timeout + const Duration(seconds: 3), () => cerrar());
     } catch (e) {
-      _escuchando = false;
-      onEscuchando?.call(false);
-      if (!resultadoEntregado) {
-        onError?.call('Error: $e');
-      }
+      cerrar(motivo: 'Error: $e');
     }
   }
- 
+
+  /// Corta la escucha en curso. Quien la había pedido recibe
+  /// onError([errorCancelado]).
   Future<void> detenerEscucha() async {
-    if (_escuchando) {
+    final cerrar = _cerrarSesion;
+    if (!_escuchando && cerrar == null) return;
+    // Primero se cierra la sesión: lo que el motor entregue al frenar ya no
+    // cuenta como respuesta.
+    cerrar?.call(errorCancelado);
+    _escuchando = false;
+    try {
       await _stt.stop();
-      _escuchando = false;
-    }
+    } catch (_) {}
   }
- 
+
   /// Detiene TTS y STT. Si se pasa [dueno], la limpieza se ignora cuando ese
   /// objeto ya no es la pantalla de voz activa (ver [_dueno]).
   void limpiar({Object? dueno}) {
@@ -453,6 +532,9 @@ class VozService {
     _tts.stop();
     _hablando = false;
     _liberarEspera();
+    // La pantalla se va: la escucha en curso termina como cancelada, para
+    // que nadie diga "no te escuché" sobre una pantalla que ya no está.
+    _cerrarSesion?.call(errorCancelado);
     _stt.stop();
     _escuchando = false;
   }
