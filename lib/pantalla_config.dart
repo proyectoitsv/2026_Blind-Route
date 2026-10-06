@@ -3245,21 +3245,25 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
                   helperMaxLines: 3,
                 ),
                 child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String?>(
-                    value: _rubro,
+                  // "Sin rubro" va como texto vacío y no como null: para el
+                  // desplegable, null significa "no hay nada elegido" y
+                  // dejaría el campo EN BLANCO en vez de mostrar "Sin rubro".
+                  child: DropdownButton<String>(
+                    value: _rubro ?? '',
                     isExpanded: true,
                     items: [
-                      const DropdownMenuItem<String?>(
-                        value: null,
+                      const DropdownMenuItem<String>(
+                        value: '',
                         child: Text('Sin rubro'),
                       ),
                       for (final r in Rubros.todos)
-                        DropdownMenuItem<String?>(
+                        DropdownMenuItem<String>(
                           value: r.id,
                           child: Text(r.nombre),
                         ),
                     ],
-                    onChanged: (v) => setState(() => _rubro = v),
+                    onChanged: (v) => setState(
+                        () => _rubro = (v == null || v.isEmpty) ? null : v),
                   ),
                 ),
               ),

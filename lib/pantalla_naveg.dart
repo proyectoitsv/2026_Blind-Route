@@ -2060,9 +2060,35 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   }
 
   /// true si el último pedido terminó porque el USUARIO lo dejó (dijo que no
-  /// a las opciones, o no se lo pudo entender al elegir). En ese caso ya se
-  /// le dijo algo y no corresponde el "No encontré…" del que llama.
+  /// a las opciones, cortó la escucha, o no se lo pudo entender al elegir).
+  /// En ese caso no corresponde el "No encontré…" del que llama.
   bool _pedidoCancelado = false;
+
+  /// Cambia cada vez que arranca un pedido de destino nuevo (o se cancela la
+  /// navegación). Un pedido es una conversación de varios pasos —"¿A dónde
+  /// vas?", "¿Vamos ahí?", "Las otras opciones son…"— con esperas en el
+  /// medio. Si el usuario toca la pantalla mientras se le leen las opciones,
+  /// arranca un pedido nuevo; sin esto, el viejo seguía por su cuenta y los
+  /// dos hablaban y escuchaban encima. Cada paso mira el turno y, si ya no
+  /// es el suyo, se retira en silencio.
+  int _turnoVoz = 0;
+
+  /// Cuándo arrancó el pedido de destino que está en curso (null = ninguno).
+  /// Mientras haya uno, las indicaciones de giro NO se dicen: caerían encima
+  /// de las preguntas o, peor, con el micrófono abierto, y el reconocedor
+  /// tomaría "seguí derecho" como si fuera la respuesta del usuario. Pasa al
+  /// cambiar de destino en plena navegación.
+  DateTime? _pedidoDesde;
+
+  /// Tope de seguridad: si por lo que sea un pedido no cerrara, las
+  /// indicaciones vuelven solas pasado este tiempo.
+  static const Duration _maxDuracionPedido = Duration(seconds: 60);
+
+  bool get _pedidoEnCurso {
+    final desde = _pedidoDesde;
+    return desde != null &&
+        DateTime.now().difference(desde) < _maxDuracionPedido;
+  }
 
   /// Busca el pedido por nombre, por rubro y por palabras clave (ver
   /// BuscadorLugares).
@@ -2073,6 +2099,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   ///    nombre), que rescata lo que el reconocedor de voz escribió mal.
   Future<LugarInteres?> _resolverPorNombreOClave(String textoNorm) async {
     final alcanzables = _lugaresEdificio.where(_puedeLlegarA);
+
+    // Si lo pedido ES el nombre de un lugar, tal cual, va a ese sin más
+    // vueltas. Es el caso de la lista táctil (manda el nombre exacto) y evita
+    // que "Aula" y "Aulas", que el buscador trata como la misma palabra, se
+    // ofrezcan como dos opciones cuando se eligió una de las dos.
+    if (alcanzables.any((l) => _normalizar(l.nombre) == textoNorm)) {
+      return _elegirDestino(textoNorm);
+    }
+
     final candidatos = BuscadorLugares.candidatos(textoNorm, alcanzables);
 
     if (candidatos.isEmpty) {
@@ -2169,30 +2204,43 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         : '${o.lugar.nombre}, en ${PisoUtil.paraVoz(piso)}';
   }
 
-  /// Dice [frase], escucha y devuelve la respuesta normalizada ('' si no se
-  /// escuchó nada). Null si la pantalla se cerró mientras tanto.
+  /// Dice [frase], escucha y devuelve la respuesta normalizada ('' si no
+  /// dijo nada o no se entendió). Devuelve null cuando hay que ABANDONAR la
+  /// conversación sin decir nada más: la pantalla se cerró, arrancó otro
+  /// pedido (ver _turnoVoz) o el usuario cortó la escucha con un toque.
   Future<String?> _preguntarYEscuchar(String frase) async {
+    final turno = _turnoVoz;
     await _voz.hablar(frase);
     await Future.delayed(const Duration(milliseconds: 200));
-    if (!mounted) return null;
+    if (!mounted || turno != _turnoVoz) return null;
     setState(() => _escuchando = true);
 
     final respuesta = Completer<String?>();
+    bool cortada = false;
     await _voz.escuchar(
       timeout: const Duration(seconds: 8),
       onEscuchando: (activo) {
-        if (mounted) setState(() => _escuchando = activo);
+        if (mounted && turno == _turnoVoz) {
+          setState(() => _escuchando = activo);
+        }
       },
       onResultado: (texto) {
         if (!respuesta.isCompleted) respuesta.complete(texto);
       },
-      onError: (_) {
+      onError: (error) {
+        cortada = error == VozService.errorCancelado;
         if (!respuesta.isCompleted) respuesta.complete(null);
       },
     );
     final texto = await respuesta.future;
-    if (!mounted) return null;
+    if (!mounted || turno != _turnoVoz) return null;
     setState(() => _escuchando = false);
+    if (cortada) {
+      // La cortó el usuario (tocó la pantalla mientras se escuchaba): no se
+      // insiste ni se elige por él.
+      _pedidoCancelado = true;
+      return null;
+    }
     return texto == null ? '' : _normalizar(texto);
   }
 
@@ -2231,6 +2279,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
     // Sin un "sí": si nombró una opción (la propuesta u otra), va a esa.
     if (nombrada != null) return lugares[nombrada];
+    // "No importa", "me da igual", "cualquiera": le sirve la propuesta. Va
+    // ANTES de mirar el "no", porque "no importa" trae un "no" adentro.
+    if (norm.split(' ').any(_palabrasDaIgual.contains)) return primera.lugar;
     if (respuesta == false) return _decirOtrasOpciones(opciones);
     if (norm.split(' ').any(_palabrasIndistinto.contains)) return primera.lugar;
 
@@ -2240,6 +2291,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     }
     return _ofrecerMasCercano(opciones, intento: intento + 1);
   }
+
+  /// Formas de decir "cualquiera me sirve" que pueden venir con un "no"
+  /// adelante ("no importa"): se miran antes que el sí / no.
+  static const Set<String> _palabrasDaIgual = {
+    'cualquiera', 'cualquier', 'indistinto', 'igual', 'importa',
+  };
 
   static const Set<String> _palabrasCancelar = {
     'ninguno', 'ninguna', 'nada', 'cancelar', 'cancela', 'cancelalo', 'deja',
@@ -2296,6 +2353,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     final elegida = BuscadorLugares.opcionDicha(norm, lugaresOtras);
     if (elegida != null) return lugaresOtras[elegida];
 
+    // "No importa", "cualquiera": la primera de las que se leyeron. Antes
+    // del "no", por lo mismo que en _ofrecerMasCercano.
+    if (palabras.any(_palabrasDaIgual.contains)) return otras.first.lugar;
+
     final cancela = palabras.any(_palabrasCancelar.contains) ||
         respuesta == false;
     if (cancela) {
@@ -2341,29 +2402,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     } else {
       frase = 'Hay ${dichas.length} opciones: $nombres. ¿A cuál vas?';
     }
-    await _voz.hablar(frase);
-    await Future.delayed(const Duration(milliseconds: 200));
-    if (!mounted) return null;
-    setState(() => _escuchando = true);
-
-    final respuesta = Completer<String?>();
-    await _voz.escuchar(
-      timeout: const Duration(seconds: 8),
-      onEscuchando: (activo) {
-        if (mounted) setState(() => _escuchando = activo);
-      },
-      onResultado: (texto) {
-        if (!respuesta.isCompleted) respuesta.complete(texto);
-      },
-      onError: (_) {
-        if (!respuesta.isCompleted) respuesta.complete(null);
-      },
-    );
-    final texto = await respuesta.future;
-    if (!mounted) return null;
-    setState(() => _escuchando = false);
-
-    final norm = texto == null ? '' : _normalizar(texto);
+    final norm = await _preguntarYEscuchar(frase);
+    if (norm == null) return null;
     final indice = BuscadorLugares.opcionDicha(norm, dichas);
     if (indice != null) return dichas[indice];
     // "Cualquiera", "el más cercano": la primera, que es la más cercana.
@@ -2379,30 +2419,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   /// null si el usuario dice que le da igual o si no se entiende en dos
   /// intentos (ahí se usa el más cercano de cualquiera).
   Future<_GeneroBano?> _preguntarGeneroBano({int intento = 1}) async {
-    await _voz.hablar(intento == 1
+    final norm = await _preguntarYEscuchar(intento == 1
         ? '¿De hombres o de mujeres?'
         : 'Decí hombres, mujeres, o cualquiera.');
-    await Future.delayed(const Duration(milliseconds: 200));
-    if (!mounted) return null;
-    setState(() => _escuchando = true);
-
-    final respuesta = Completer<String?>();
-    await _voz.escuchar(
-      timeout: const Duration(seconds: 8),
-      onEscuchando: (activo) {
-        if (mounted) setState(() => _escuchando = activo);
-      },
-      onResultado: (texto) {
-        if (!respuesta.isCompleted) respuesta.complete(texto);
-      },
-      onError: (_) {
-        if (!respuesta.isCompleted) respuesta.complete(null);
-      },
-    );
-    final texto = await respuesta.future;
-    if (mounted) setState(() => _escuchando = false);
-
-    final norm = texto == null ? '' : _normalizar(texto);
+    // Conversación abandonada (otro pedido, escucha cortada, pantalla
+    // cerrada): el que llama lo ve por _turnoVoz / _pedidoCancelado.
+    if (norm == null) return null;
     final genero = _generoEnTexto(norm);
     if (genero != null) return genero;
     if (norm.split(' ').any(_palabrasIndistinto.contains)) return null;
@@ -2623,6 +2645,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
     _saltandoDePiso = true;
     HapticFeedback.heavyImpact();
+    _turnoVoz++; // un pedido a medio conversar no sigue en el piso nuevo
+    _pedidoDesde = null;
     if (_escuchando) {
       _voz.detenerEscucha();
       _escuchando = false;
@@ -2676,36 +2700,62 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     // Primero hablar y esperar que termine el audio (hablar() ya usa el
     // callback real del motor TTS + margen de 600ms). Añadimos 200ms extra
     // por si el altavoz del dispositivo tiene latencia de apagado alta.
+    // Pedido nuevo: cualquier conversación anterior que siga en curso se
+    // retira (ver _turnoVoz).
+    final turno = ++_turnoVoz;
+    _pedidoDesde = DateTime.now();
+    // El pedido termina cuando termina ESTE turno; si arrancó otro, el dueño
+    // de la marca es el nuevo.
+    void cerrarPedido() {
+      if (turno == _turnoVoz) _pedidoDesde = null;
+    }
+
     await _voz.hablar('¿A dónde vas?');
     await Future.delayed(const Duration(milliseconds: 200));
  
     // Solo ahora activar el indicador visual de escucha
-    if (!mounted) return;
+    if (!mounted || turno != _turnoVoz) {
+      cerrarPedido();
+      return;
+    }
     setState(() => _escuchando = true);
  
     await _voz.escuchar(
       timeout: const Duration(seconds: 8),
       onEscuchando: (activo) {
-        if (mounted) setState(() => _escuchando = activo);
+        if (mounted && turno == _turnoVoz) {
+          setState(() => _escuchando = activo);
+        }
       },
       onResultado: (textoReconocido) async {
-        if (!mounted) return;
+        if (!mounted || turno != _turnoVoz) return;
         setState(() => _escuchando = false);
  
         // Resuelve el pedido: con nombres repetidos elige el del piso más
         // cercano, y si pidió "baño" sin aclarar, pregunta cuál.
-        final destino = await _resolverPedido(_normalizar(textoReconocido));
+        final LugarInteres? destino;
+        try {
+          destino = await _resolverPedido(_normalizar(textoReconocido));
+        } finally {
+          cerrarPedido();
+        }
+        // Mientras se resolvía pudo arrancar otro pedido, o el usuario pudo
+        // dejar este (dijo que no, o cortó la escucha): en los dos casos no
+        // hay nada más que hacer ni que decir.
+        if (!mounted || turno != _turnoVoz || _pedidoCancelado) return;
  
         if (destino != null) {
           await _establecerDestino(destino);
-        } else if (!_pedidoCancelado) {
-          // (Si lo canceló el usuario al elegir entre opciones, ya se le
-          // dijo; "no encontré" sería mentira.)
+        } else {
           await _voz.hablar('No encontré "$textoReconocido". Intentá de nuevo.');
         }
       },
       onError: (error) async {
-        if (mounted) setState(() => _escuchando = false);
+        cerrarPedido();
+        if (!mounted || turno != _turnoVoz) return;
+        setState(() => _escuchando = false);
+        // La cortó el propio usuario con un toque: no es "no te escuché".
+        if (error == VozService.errorCancelado) return;
         await _voz.hablar('No te escuché. Intentá de nuevo.');
       },
     );
@@ -2826,7 +2876,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     if (seleccion != null && mounted) {
       // Misma resolución que por voz: si tocó un "Baño" sin género y el
       // edificio tiene de hombres y de mujeres, se pregunta cuál.
+      final turno = ++_turnoVoz;
       final destino = await _resolverPedido(seleccion);
+      if (!mounted || turno != _turnoVoz || _pedidoCancelado) return;
       if (destino != null) await _establecerDestino(destino);
     }
   }
@@ -2844,6 +2896,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
         _estadoRuta = '';
       });
       _generacionRuta++;
+      _turnoVoz++; // si había un pedido a medio conversar, se retira
+      _pedidoDesde = null;
       _fueraDeRutaDesde = null;
       _celdaUltimoCalculo = null;
       _primeraInstruccionPendiente = false;
@@ -2927,6 +2981,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   /// hablar() no sea un efecto colateral del repintado del widget y para que
   /// el filtro de confirmaciones de VozService reciba un ritmo estable.
   void _actualizarInstruccionVoz() {
+    // Con un pedido de destino en curso no se dan indicaciones (ver
+    // _pedidoDesde).
+    if (_pedidoEnCurso) return;
     final ind = _indicacionParaVoz();
     if (ind == null) return;
 
