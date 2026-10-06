@@ -502,6 +502,80 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   // que filtrar y lo que el usuario percibe es silencio.
   bool _primeraInstruccionPendiente = false;
 
+  // ── GIROS ANTICIPADOS ─────────────────────────────────────────────────────
+  //
+  // El problema: "Girá a la izquierda" recién aparecía cuando la posición
+  // medida llegaba a la celda de la esquina. Pero la posición medida viene
+  // atrasada respecto del usuario (ventana de RSSI + filtro: más de un
+  // segundo), la indicación tenía que pasar el filtro anti-rebote de la voz
+  // (1,8 s) y decirla lleva otro segundo y pico. Caminando a 0,9 m/s eso son
+  // unos 4 metros: el giro se decía con la esquina ya pasada, o sólo si el
+  // usuario se quedaba parado en ella.
+  //
+  // Ahora los giros se anuncian por DISTANCIA A LA ESQUINA, antes de llegar,
+  // en dos pasos:
+  //   1. "En 5 metros, girá a la izquierda"  (para que lo espere)
+  //   2. "Girá a la izquierda"               (con el tiempo justo para que
+  //      termine de escucharlo cuando está llegando a la esquina)
+  // El momento de cada aviso sale de la distancia, la velocidad a la que
+  // viene y el atraso del posicionamiento; no pasan por el filtro anti-rebote
+  // (se disparan una sola vez por esquina, no hay rebote que filtrar).
+  //
+  // Los cuatro primeros valores son los que conviene tocar si en la práctica
+  // los avisos salen temprano o tarde.
+
+  /// Velocidad (m/s) que se supone cuando el acelerómetro dice que camina.
+  /// Una persona ciega con bastón anda entre 0,7 y 1,0.
+  static const double _velocidadCaminataMs = 0.9;
+
+  /// Atraso (s) de la posición medida respecto de la real, caminando.
+  /// Si los giros siguen llegando tarde, SUBIR este valor.
+  static const double _retardoPosicionSeg = 1.3;
+
+  /// Con cuánto tiempo (s) de anticipación a la esquina se dice el giro.
+  /// Tiene que cubrir lo que tarda en decirse (~1,4 s) y en reaccionar.
+  static const double _anticipoGiroSeg = 2.2;
+
+  /// Con cuánto tiempo (s) de anticipación se dice el aviso previo.
+  static const double _anticipoAvisoSeg = 6.0;
+
+  /// Lo mismo, pero en metros, para cuando el usuario está quieto (ahí no
+  /// hay velocidad con la que calcular tiempos).
+  static const double _distGiroQuietoMetros = 1.0;
+  static const double _distAvisoQuietoMetros = 3.0;
+
+  /// El aviso previo sólo se da si queda al menos esto (m) hasta el punto
+  /// donde se va a decir el giro; si no, serían dos frases pegadas.
+  static const double _separacionAvisoGiroMetros = 1.5;
+
+  /// Una misma maniobra no se vuelve a anunciar antes de este tiempo (por
+  /// ejemplo si la posición retrocede una celda y vuelve a pasar el umbral).
+  static const Duration _noRepetirManiobra = Duration(seconds: 12);
+
+  /// Dos esquinas a menos de esto (m) y con el mismo sentido de giro son la
+  /// misma maniobra: cuando la ruta se corre una celda, la esquina también.
+  static const double _mismaManiobraMetros = 2.5;
+
+  /// Cuánto dura como máximo el "ya le dije que doble" (ver
+  /// [SeguidorRuta.guia], parámetro comprometida).
+  static const Duration _maxCompromisoGiro = Duration(seconds: 8);
+
+  /// Maniobras ya anunciadas: 1 = aviso previo, 2 = giro.
+  final List<({Offset esquina, SentidoGiro? giro, int nivel, DateTime cuando})>
+      _maniobrasAnunciadas = [];
+
+  /// Esquina cuyo giro ya se le dijo al usuario, y cuándo.
+  ({Offset esquina, DateTime desde})? _giroComprometido;
+
+  /// Velocidad estimada del usuario: la de caminata, escalada por lo que
+  /// dice el acelerómetro (0 quieto … 1 caminando).
+  double get _velocidadEstimadaMs =>
+      _velocidadCaminataMs * _factorMovimiento.clamp(0.0, 1.0);
+
+  /// Cuánto más adelante está el usuario respecto de la posición medida.
+  double get _avancePorRetardoMetros =>
+      _velocidadEstimadaMs * _retardoPosicionSeg;
+
   /// Cuánto se espera a que el A* devuelva la ruta para decir el destino y la
   /// primera indicación en UNA sola frase ("Baño. Girá a la izquierda."). El
   /// cálculo tarda milisegundos; si alguna vez no llega a tiempo se dice
@@ -1490,6 +1564,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
 
         // Actualizar la instruccion de voz aca (no en build()) para que hablar()
         // no sea un efecto colateral del repintado del widget.
+        // Los giros anticipados van primero: si en este ciclo toca anunciar
+        // uno, la indicación común de abajo ya lo encuentra dicho.
+        _anunciarManiobras();
         _actualizarInstruccionVoz();
 
         // ¿Llegó a la escalera o al destino final?
@@ -2473,6 +2550,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     _generacionRuta++;
     _fueraDeRutaDesde = null;
     _celdaUltimoCalculo = null;
+    _maniobrasAnunciadas.clear();
+    _giroComprometido = null;
 
     // Destino nuevo: el filtro de voz arranca de cero y la primera indicación
     // queda marcada como pendiente (ver _primeraInstruccionPendiente).
@@ -2898,6 +2977,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       _generacionRuta++;
       _turnoVoz++; // si había un pedido a medio conversar, se retira
       _pedidoDesde = null;
+      _maniobrasAnunciadas.clear();
+      _giroComprometido = null;
       _fueraDeRutaDesde = null;
       _celdaUltimoCalculo = null;
       _primeraInstruccionPendiente = false;
@@ -3014,10 +3095,140 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     if (pos == null) return null;
     final ruta = _rutaActual;
     if (ruta != null && ruta.isNotEmpty) {
-      return SeguidorRuta.guia(ruta, pos, _grilla);
+      // La indicación se calcula desde donde el usuario ESTÁ (la posición
+      // medida más lo que avanzó mientras se la medía) y, si ya se le dijo
+      // que doble en una esquina, como si ya estuviera en ella.
+      var comprometido = _giroComprometido;
+      if (comprometido != null &&
+          DateTime.now().difference(comprometido.desde) >= _maxCompromisoGiro) {
+        comprometido = null;
+        _giroComprometido = null;
+      }
+      return SeguidorRuta.guia(
+        ruta,
+        pos,
+        _grilla,
+        avanceMetros: _avancePorRetardoMetros,
+        comprometida: comprometido?.esquina,
+      );
     }
     final objetivo = _puntoObjetivoTramo();
     return objetivo == null ? null : TramoGuiado(pos, objetivo);
+  }
+
+  /// ¿Esta maniobra ya se anunció (a ese nivel o más) hace poco?
+  bool _maniobraYaAnunciada(Maniobra m, int nivel, DateTime ahora) {
+    _maniobrasAnunciadas
+        .removeWhere((a) => ahora.difference(a.cuando) > _noRepetirManiobra);
+    return _maniobrasAnunciadas.any((a) =>
+        a.nivel >= nivel &&
+        a.giro == m.giro &&
+        _distanciaMetros(a.esquina, m.esquina) <= _mismaManiobraMetros);
+  }
+
+  /// Cómo se nombra lo que hay al final de la ruta, para el aviso previo de
+  /// llegada: "llegás a Kiosco", "está la escalera".
+  String _fraseFinDeRuta() {
+    if (_esTramoEntrePisos) {
+      return 'está ${_escaleraObjetivo?.medioConArticulo ?? 'la escalera'}';
+    }
+    final d = _destinoSeleccionado!;
+    return d.esEscalera ? 'está ${d.medioConArticulo}' : 'llegás a ${d.nombre}';
+  }
+
+  /// Anuncia, ANTES de llegar, lo próximo que hay que hacer sobre la ruta
+  /// (ver "GIROS ANTICIPADOS" arriba). Se llama en cada ciclo de posición.
+  void _anunciarManiobras() {
+    if (_pedidoEnCurso) return;
+    if (_destinoSeleccionado == null || _llegoADestino || _llegoAEscalera) {
+      return;
+    }
+    // Primero va la primera indicación de la ruta (que necesita brújula; sin
+    // brújula no va a salir nunca, así que no se la espera).
+    if (_primeraInstruccionPendiente && _orientacion.heading != null) return;
+    final ruta = _rutaActual;
+    final pos = _posicionFinal;
+    if (ruta == null || ruta.length < 2 || pos == null) return;
+
+    final maniobra = SeguidorRuta.proximaManiobra(
+      ruta,
+      pos,
+      _grilla,
+      posicionFina: _posicionFiltrada,
+    );
+    if (maniobra == null) return;
+
+    // Sólo si el usuario viene caminando PARA ESE LADO. Si está mirando para
+    // otro (recién dobló y todavía no se acomodó, o se dio vuelta), primero
+    // tiene que enderezarse, y de eso se ocupa la indicación común. Sin
+    // brújula no se puede saber: se anuncia igual.
+    final heading = _orientacion.heading;
+    if (heading != null) {
+      final tramo = SeguidorRuta.guia(ruta, pos, _grilla);
+      final ind = OrientacionService.calcularIndicacion(
+        headingUsuario: heading,
+        posicionUsuario: tramo.desde,
+        posicionDestino: tramo.hacia,
+        rotacionMapa: _rotacionMapaEfectiva,
+        metrosX: widget.escalaX,
+        metrosY: widget.escalaY,
+      );
+      if (ind.instruccion != 'Seguí derecho') return;
+    }
+
+    final ahora = DateTime.now();
+    final v = _velocidadEstimadaMs;
+    // Distancia REAL estimada a la esquina: la medida, menos lo que el
+    // usuario ya avanzó mientras la posición se actualizaba.
+    final falta = max(0.0, maniobra.metros - _avancePorRetardoMetros);
+    final umbralGiro = max(v * _anticipoGiroSeg, _distGiroQuietoMetros);
+    final umbralAviso = max(v * _anticipoAvisoSeg, _distAvisoQuietoMetros);
+
+    // ── 2) El giro ──────────────────────────────────────────────────────────
+    if (!maniobra.esFinal && falta <= umbralGiro) {
+      if (_maniobraYaAnunciada(maniobra, 2, ahora)) return;
+      final clave = maniobra.giro == SentidoGiro.derecha
+          ? 'Girá a la derecha'
+          : 'Girá a la izquierda';
+      if (_voz.hablarUrgente(clave, clave: clave)) {
+        HapticFeedback.mediumImpact();
+        _maniobrasAnunciadas.add((
+          esquina: maniobra.esquina,
+          giro: maniobra.giro,
+          nivel: 2,
+          cuando: ahora,
+        ));
+        _giroComprometido = (esquina: maniobra.esquina, desde: ahora);
+      }
+      return;
+    }
+
+    // ── 1) El aviso previo ──────────────────────────────────────────────────
+    // Para un giro: sólo si todavía falta un trecho hasta el punto donde se
+    // va a decir el giro. Para el final de la ruta: hasta que quede a tiro
+    // del anuncio de llegada, que tiene su propia lógica.
+    final piso = maniobra.esFinal
+        ? _radioLlegadaMetros + 0.5
+        : umbralGiro + _separacionAvisoGiroMetros;
+    if (falta <= umbralAviso && falta >= piso) {
+      if (_maniobraYaAnunciada(maniobra, 1, ahora)) return;
+      final distancia = _distanciaParaVoz(falta);
+      final texto = maniobra.esFinal
+          ? 'En $distancia, ${_fraseFinDeRuta()}'
+          : 'En $distancia, girá a la '
+              '${maniobra.giro == SentidoGiro.derecha ? 'derecha' : 'izquierda'}';
+      // Se registra como "Seguí derecho": es lo que el usuario tiene que
+      // hacer hasta la esquina, y así el filtro no agrega atrás un "Seguí
+      // derecho, N metros" que diría lo mismo.
+      if (_voz.hablarInstruccionYa(texto, clave: 'Seguí derecho')) {
+        _maniobrasAnunciadas.add((
+          esquina: maniobra.esquina,
+          giro: maniobra.giro,
+          nivel: 1,
+          cuando: ahora,
+        ));
+      }
+    }
   }
  
   // ─── WIDGETS ──────────────────────────────────────────────────────────────

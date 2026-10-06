@@ -25,6 +25,26 @@ class TramoGuiado {
   const TramoGuiado(this.desde, this.hacia);
 }
 
+/// Para qué lado dobla el camino en una esquina, visto por quien lo recorre.
+enum SentidoGiro { izquierda, derecha }
+
+/// Lo próximo que hay que hacer sobre la ruta: doblar en una esquina, o
+/// llegar al final.
+class Maniobra {
+  /// Celda donde termina el tramo recto actual.
+  final Offset esquina;
+
+  /// Metros que faltan hasta [esquina], medidos por el camino.
+  final double metros;
+
+  /// Para qué lado se dobla ahí. Null si [esquina] es el final de la ruta.
+  final SentidoGiro? giro;
+
+  const Maniobra(this.esquina, this.metros, this.giro);
+
+  bool get esFinal => giro == null;
+}
+
 /// Resultado de comparar la ruta recién calculada con la que se venía
 /// siguiendo.
 class DecisionRuta {
@@ -122,6 +142,12 @@ class SeguidorRuta {
   static double longitudMetros(List<Offset> ruta, GrillaNav g) =>
       ruta.length < 2 ? 0.0 : (ruta.length - 1) * g.tamCeldaMetros;
 
+  /// Cantidad de celdas que abarca [ventanaMetros].
+  static int _ventanaCeldas(List<Offset> ruta, GrillaNav g) {
+    final tam = g.tamCeldaMetros > 0 ? g.tamCeldaMetros : 1.0;
+    return max(8, (ventanaMetros / tam).ceil() + 1);
+  }
+
   // ── Dónde está el usuario ─────────────────────────────────────────────────
 
   /// Ubica a [posicion] sobre [ruta]. Sólo mira el primer tramo de la ruta
@@ -134,8 +160,7 @@ class SeguidorRuta {
   ) {
     if (ruta.isEmpty) return const UbicacionEnRuta(0, double.infinity, false);
     final celda = g.centroDeCelda(posicion);
-    final tam = g.tamCeldaMetros > 0 ? g.tamCeldaMetros : 1.0;
-    final ventana = min(ruta.length, max(8, (ventanaMetros / tam).ceil() + 1));
+    final ventana = min(ruta.length, _ventanaCeldas(ruta, g));
 
     int mejor = 0;
     double dMejor = double.infinity;
@@ -176,17 +201,106 @@ class SeguidorRuta {
   /// para convertir un "Seguí derecho" en un "Girá", y después de vuelta.
   /// Midiendo desde el camino, la indicación es la dirección del tramo y no
   /// depende de ese error.
-  static TramoGuiado guia(List<Offset> ruta, Offset posicion, GrillaNav g) {
+  ///
+  /// [avanceMetros]: cuánto más adelante se supone que está el usuario
+  /// respecto de donde lo ubica el posicionamiento, que llega con atraso
+  /// (ver el comentario de los giros anticipados en la pantalla de
+  /// navegación). La indicación se calcula desde ahí.
+  ///
+  /// [comprometida]: esquina cuyo giro YA se le anunció al usuario. Mientras
+  /// siga adelante en la ruta, la indicación se calcula como si ya estuviera
+  /// parado en ella. Sin esto, alguien que empieza a doblar apenas escucha
+  /// "girá a la izquierda" —todavía sin haber "llegado" a la esquina según
+  /// el posicionamiento— recibiría un "girá a la derecha" para volver a
+  /// enderezarse.
+  static TramoGuiado guia(
+    List<Offset> ruta,
+    Offset posicion,
+    GrillaNav g, {
+    double avanceMetros = 0.0,
+    Offset? comprometida,
+  }) {
     if (ruta.isEmpty) return TramoGuiado(posicion, posicion);
     final u = ubicar(ruta, posicion, g);
+    final enCamino = u.desvioMetros <= toleranciaProyeccionMetros;
+    final ultimo = ruta.length - 1;
+
+    // Posición "virtual" sobre la ruta: la medida, más el avance por atraso,
+    // y nunca antes de una esquina cuyo giro ya se anunció. Sólo si el
+    // usuario está sobre el camino: lejos de él no hay sobre qué avanzar.
+    int indice = u.indice;
+    if (enCamino) {
+      final tam = g.tamCeldaMetros > 0 ? g.tamCeldaMetros : 1.0;
+      indice = min(ultimo, indice + (avanceMetros / tam).round());
+      if (comprometida != null) {
+        final clave = claveCelda(comprometida, g);
+        final tope = min(ruta.length, u.indice + _ventanaCeldas(ruta, g));
+        for (int i = indice + 1; i < tope; i++) {
+          if (claveCelda(ruta[i], g) == clave) {
+            indice = i;
+            break;
+          }
+        }
+      }
+    }
+
     // Última celda: se apunta al final desde la posición real (el tramo ya
     // no tiene dirección propia).
-    if (u.indice >= ruta.length - 1) return TramoGuiado(posicion, ruta.last);
-    final esquina = ruta[_proximaEsquina(ruta, u.indice)];
-    final desde = u.desvioMetros <= toleranciaProyeccionMetros
-        ? ruta[u.indice]
-        : posicion;
-    return TramoGuiado(desde, esquina);
+    if (indice >= ultimo) return TramoGuiado(posicion, ruta.last);
+    final esquina = ruta[_proximaEsquina(ruta, indice)];
+    return TramoGuiado(enCamino ? ruta[indice] : posicion, esquina);
+  }
+
+  /// Lo próximo que hay que hacer: en qué esquina termina el tramo recto en
+  /// el que está el usuario, a cuántos metros, y para qué lado dobla ahí el
+  /// camino (o si ahí termina la ruta). Null si no hay ruta o el usuario
+  /// está lejos de ella.
+  ///
+  /// [posicionFina]: la posición SIN ajustar a la grilla, si se tiene. La
+  /// distancia a la esquina sale de ella (medida a lo largo del tramo), así
+  /// no avanza de a saltos de una celda: con celdas de 1 m y caminando a
+  /// 0,9 m/s, cada salto son 1,1 s de diferencia en el momento del aviso.
+  static Maniobra? proximaManiobra(
+    List<Offset> ruta,
+    Offset posicion,
+    GrillaNav g, {
+    Offset? posicionFina,
+  }) {
+    if (ruta.length < 2) return null;
+    final u = ubicar(ruta, posicion, g);
+    if (u.desvioMetros > toleranciaProyeccionMetros) return null;
+    final ultimo = ruta.length - 1;
+    if (u.indice >= ultimo) return Maniobra(ruta.last, 0.0, null);
+
+    final j = _proximaEsquina(ruta, u.indice);
+    final tam = g.tamCeldaMetros > 0 ? g.tamCeldaMetros : 1.0;
+    double metros = (j - u.indice) * tam;
+
+    if (posicionFina != null) {
+      // Distancia a la esquina a lo largo del tramo (que es horizontal o
+      // vertical). Se acota a ±1 celda de la medida por celdas, para que una
+      // posición fina que todavía no "alcanzó" a la celda no la contradiga.
+      final dxM = ((ruta[j].dx - posicionFina.dx) * g.metrosX).abs();
+      final dyM = ((ruta[j].dy - posicionFina.dy) * g.metrosY).abs();
+      final horizontal = (ruta[j].dx - ruta[j - 1].dx).abs() >
+          (ruta[j].dy - ruta[j - 1].dy).abs();
+      final fina = horizontal ? dxM : dyM;
+      metros = fina.clamp(max(0.0, metros - tam), metros + tam).toDouble();
+    }
+
+    if (j >= ultimo) return Maniobra(ruta[j], metros, null);
+
+    // Para qué lado dobla: producto cruz entre el tramo que llega y el que
+    // sale. En pantalla el eje y crece hacia abajo, así que positivo es giro
+    // horario = a la derecha de quien camina.
+    final d1 = ruta[j] - ruta[j - 1];
+    final d2 = ruta[j + 1] - ruta[j];
+    final cruz = d1.dx.sign * d2.dy.sign - d1.dy.sign * d2.dx.sign;
+    return Maniobra(
+      ruta[j],
+      metros,
+      cruz > 0 ? SentidoGiro.derecha : SentidoGiro.izquierda,
+    );
   }
 
   // ── Camino nuevo o camino viejo ───────────────────────────────────────────

@@ -299,6 +299,47 @@ class VozService {
     return true;
   }
 
+  /// Dice un aviso que no puede esperar (el giro que hay que hacer ya).
+  ///
+  ///  - Motor libre → lo dice.
+  ///  - Sonando una indicación común (de [hablarSinEsperar]) a la que le
+  ///    falta bastante → la corta y dice el aviso: llegar tarde con un giro
+  ///    es peor que dejar un "seguí derecho" por la mitad.
+  ///  - Sonando una indicación que ya termina → espera (devuelve `false` y
+  ///    el que llama reintenta en el próximo ciclo): cortarla para ganar
+  ///    medio segundo sólo deja dos frases mochas.
+  ///  - Sonando una frase de [hablar] (un anuncio, una pregunta) → espera
+  ///    siempre; esas no se pisan.
+  ///
+  /// Si lo dijo, deja el filtro al día con [clave] y devuelve `true`.
+  bool hablarUrgente(String texto, {required String clave}) {
+    if (!_ttsInicializado || texto.trim().isEmpty) return false;
+    if (_hablando) {
+      if (_finFraseActual != null) return false;
+      final desde = _ultimaVezHablado;
+      final restanteMs = desde == null
+          ? 0
+          : _ultimaInstruccion.length * _msPorCaracterEstimado -
+              DateTime.now().difference(desde).inMilliseconds;
+      if (restanteMs <= _esperaMaxUrgenteMs) return false;
+      // Cortar y decir. hablar() espera el aviso de corte del motor antes
+      // de arrancar la frase nueva; acá no hace falta esperarla a ella.
+      hablar(texto);
+    } else if (!hablarSinEsperar(texto)) {
+      return false;
+    }
+    registrarInstruccionDicha(clave);
+    return true;
+  }
+
+  /// Duración estimada del habla, para saber cuánto le falta a la frase en
+  /// curso (a velocidad 0.48 el motor anda por los 70-90 ms por carácter).
+  static const int _msPorCaracterEstimado = 80;
+
+  /// Si a la frase en curso le falta menos que esto, un aviso urgente la
+  /// deja terminar en vez de cortarla.
+  static const int _esperaMaxUrgenteMs = 600;
+
   /// Avisa al filtro de [hablarSiCambio] que la indicación [clave] ya se dijo
   /// por otro camino (por ejemplo dentro de una frase más larga dicha con
   /// [hablar]). Sin esto el filtro la vería como una indicación nueva y la
