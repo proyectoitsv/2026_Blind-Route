@@ -447,6 +447,26 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Tamaño del plano a zoom 1 (en píxeles lógicos).
   Size? _tamPlano;
 
+  // ── VER OTROS PISOS SIN NAVEGAR ───────────────────────────────────────────
+  //
+  // Mientras no hay destino elegido, una fila de botones (PB, 1, 2…) deja
+  // mirar el plano de cualquier piso del edificio, con sus lugares, zonas y
+  // escaleras. Es sólo para mirar: en otro piso no se dibuja la posición del
+  // usuario ni hay ruta. La navegación (BLE, voz, posición) sigue corriendo
+  // en el piso real todo el tiempo; esto sólo cambia lo que se DIBUJA.
+  // Al elegir un destino, el mapa vuelve solo al piso del usuario.
+
+  /// Piso que se está mirando cuando NO es el del usuario. Null = se ve el
+  /// piso del usuario (lo normal).
+  _VistaPiso? _otroPiso;
+
+  /// Pisos ya leídos de la base, para no releerlos al ir y volver.
+  final Map<int, _VistaPiso> _cachePisos = {};
+
+  /// Piso que se está leyendo de la base. Si se tocan dos pisos seguidos,
+  /// la carga del primero se descarta al terminar.
+  int? _pisoCargando;
+
   // Navegacion
   LugarInteres? _destinoSeleccionado;
   /// Lo que FALTA recorrer de la ruta: arranca en la celda del usuario y se
@@ -2618,6 +2638,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Fija un nuevo destino final y reinicia todo el estado del tramo.
   Future<void> _establecerDestino(LugarInteres destino) async {
     if (!mounted) return;
+    // Si se estaba mirando otro piso, el mapa vuelve al del usuario: la ruta
+    // arranca acá.
+    _volverAMiPiso();
     setState(() {
       _destinoSeleccionado = destino;
       _escaleraObjetivo = null;
@@ -3588,9 +3611,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// no el del recuadro del mapa porque el recuadro cambia de alto cuando
   /// aparecen o desaparecen la tarjeta de giro o el aviso de "buscando
   /// ubicación", y eso cambiaría la escala del plano.
-  Size _calcularTamPlano(Size pantalla) {
-    final mx = _grilla.metrosX > 0 ? _grilla.metrosX : 1.0;
-    final my = _grilla.metrosY > 0 ? _grilla.metrosY : 1.0;
+  Size _calcularTamPlano(Size pantalla, GrillaNav grilla) {
+    final mx = grilla.metrosX > 0 ? grilla.metrosX : 1.0;
+    final my = grilla.metrosY > 0 ? grilla.metrosY : 1.0;
     final llenarPantalla = min(pantalla.width / mx, pantalla.height / my);
     final ppm = max(_pixelesPorMetro, llenarPantalla);
     return Size(mx * ppm, my * ppm);
@@ -3653,6 +3676,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Centra el mapa en la posición del usuario. Conserva el zoom, salvo que
   /// esté más alejado que la escala base: ahí vuelve a zoom 1.
   void _centrarEnUsuario({bool animado = true}) {
+    // Mirando otro piso el usuario no está en ese plano: no hay qué centrar.
+    if (_otroPiso != null) return;
     final pos = _posicionFinal;
     final viewport = _viewportMapa;
     final plano = _tamPlano;
@@ -3788,11 +3813,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Botón redondo sobre el mapa para volver a centrarlo en el usuario y
   /// reactivar el seguimiento. Se resalta (relleno de color) cuando el mapa
   /// NO está siguiendo al usuario, que es cuando hace falta.
+  ///
+  /// Mirando otro piso, el mismo botón vuelve al piso del usuario.
   Widget _buildBotonCentrar() {
-    final siguiendo = _seguirUsuario;
+    final enOtroPiso = _otroPiso != null;
+    final siguiendo = _seguirUsuario && !enOtroPiso;
     return Semantics(
       button: true,
-      label: 'Centrar el mapa en tu ubicación',
+      label: enOtroPiso
+          ? 'Volver a tu piso'
+          : 'Centrar el mapa en tu ubicación',
       child: Material(
         color: siguiendo ? TemaApp.fondoCard : TemaApp.acento,
         shape: CircleBorder(
@@ -3805,6 +3835,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         child: InkWell(
           customBorder: const CircleBorder(),
           onTap: () {
+            if (enOtroPiso) {
+              _volverAMiPiso();
+              return;
+            }
             setState(() => _seguirUsuario = true);
             if (_posicionFinal != null) {
               _centrarEnUsuario();
@@ -3825,6 +3859,190 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
               size: 28,
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  // ─── VER OTROS PISOS ──────────────────────────────────────────────────────
+
+  /// Muestra en el mapa el piso [piso] (sólo para mirar).
+  Future<void> _verPiso(PisoInfo piso) async {
+    if (piso.id == widget.pisoId) {
+      _volverAMiPiso();
+      return;
+    }
+    if (_otroPiso?.info.id == piso.id) return;
+    _pisoCargando = piso.id;
+    final vista = _cachePisos[piso.id] ?? await _leerVistaPiso(piso);
+    // Se descarta si mientras tanto se tocó otro piso o se eligió destino.
+    if (!mounted || vista == null || _pisoCargando != piso.id) return;
+    _pisoCargando = null;
+    _cachePisos[piso.id] = vista;
+    _detenerCamara();
+    setState(() {
+      _otroPiso = vista;
+      _seguirUsuario = false;
+      // El LayoutBuilder del mapa arma la vista inicial del piso nuevo
+      // (el plano entero) en el próximo frame.
+      _vistaMapaInicializada = false;
+    });
+  }
+
+  /// Vuelve a mostrar el piso del usuario, centrado en él.
+  void _volverAMiPiso() {
+    _pisoCargando = null;
+    if (_otroPiso == null) return;
+    _detenerCamara();
+    setState(() {
+      _otroPiso = null;
+      _seguirUsuario = true;
+      _vistaMapaInicializada = false;
+    });
+  }
+
+  /// Lee de la base lo que hace falta para DIBUJAR un piso. Null si falla.
+  Future<_VistaPiso?> _leerVistaPiso(PisoInfo piso) async {
+    try {
+      final beacons =
+          await DatabaseHelper.instance.obtenerBeaconsPorPiso(piso.id);
+      final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(piso.id);
+      final lugares =
+          await DatabaseHelper.instance.obtenerLugaresPorPiso(piso.id);
+      return _VistaPiso(
+        info: piso,
+        grilla: GrillaNav(
+          metrosX: piso.escalaX,
+          metrosY: piso.escalaY,
+          tamCeldaMetros: piso.tamCeldaMetros,
+        ),
+        beacons: {for (final b in beacons) b.mac: b},
+        zonas: zonas,
+        lugares: lugares,
+      );
+    } catch (e) {
+      debugPrint('[Ver piso] No se pudo cargar ${piso.nombreVisible}: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo abrir ${piso.nombreVisible}')),
+        );
+      }
+      return null;
+    }
+  }
+
+  /// Fila de botones de piso. Sólo sin destino elegido y si el edificio
+  /// tiene más de un piso descargado. El piso del usuario lleva el ícono de
+  /// ubicación; el que se está viendo va relleno.
+  Widget _buildSelectorPisos() {
+    final pisos = _pisosEdificio.values.toList();
+    final vistoId = _otroPiso?.info.id ?? widget.pisoId;
+    return Container(
+      height: 60,
+      decoration: const BoxDecoration(
+        color: TemaApp.fondoCard,
+        border: Border(bottom: BorderSide(color: Color(0xFF21262D))),
+      ),
+      child: Row(
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(left: 14, right: 6),
+            child: Icon(Icons.layers_rounded,
+                color: TemaApp.textoSecundario, size: 22),
+          ),
+          Expanded(
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(4, 8, 12, 8),
+              itemCount: pisos.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, i) {
+                final p = pisos[i];
+                final esMio = p.id == widget.pisoId;
+                final visto = p.id == vistoId;
+                final etiqueta = p.numero != null
+                    ? PisoUtil.etiquetaCorta(p.numero!)
+                    : p.nombre;
+                final colorTexto =
+                    visto ? TemaApp.fondo : TemaApp.textoBlanco;
+                return Semantics(
+                  button: true,
+                  selected: visto,
+                  label: 'Ver ${p.nombreVisible}${esMio ? ', tu piso' : ''}',
+                  excludeSemantics: true,
+                  child: Material(
+                    color: visto ? TemaApp.acento : TemaApp.fondoSurface,
+                    borderRadius: BorderRadius.circular(12),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => _verPiso(p),
+                      child: Container(
+                        constraints: const BoxConstraints(minWidth: 52),
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        alignment: Alignment.center,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (esMio) ...[
+                              Icon(Icons.my_location_rounded,
+                                  size: 16,
+                                  color: visto ? TemaApp.fondo : TemaApp.acento),
+                              const SizedBox(width: 6),
+                            ],
+                            Text(
+                              etiqueta,
+                              style: TextStyle(
+                                color: colorTexto,
+                                fontSize: 17,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Cartel sobre el mapa mientras se mira otro piso, para que quede claro
+  /// que no es donde está el usuario.
+  Widget _buildCartelOtroPiso(_VistaPiso vista) {
+    final mio = _pisosEdificio[widget.pisoId]?.nombreVisible;
+    return Semantics(
+      liveRegion: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: TemaApp.fondoCard.withValues(alpha: 0.92),
+          borderRadius: BorderRadius.circular(TemaApp.radiusButton),
+          border: Border.all(color: TemaApp.advertencia.withValues(alpha: 0.7)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.visibility_rounded,
+                color: TemaApp.advertencia, size: 18),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                'Viendo ${vista.info.nombreVisible}'
+                '${mio != null ? ' · estás en $mio' : ''}',
+                style: const TextStyle(
+                  color: TemaApp.textoBlanco,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -4076,6 +4294,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
               ),
             ),
 
+            // Selector de piso para mirar otros pisos (sólo sin destino).
+            if (_destinoSeleccionado == null && _pisosEdificio.length > 1)
+              _buildSelectorPisos(),
+
             // Indicacion de giro
             if (_destinoSeleccionado != null) _buildIndicacionGiro(),
 
@@ -4119,8 +4341,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
                   builder: (context, constraints) {
                     final viewport =
                         Size(constraints.maxWidth, constraints.maxHeight);
-                    final plano =
-                        _calcularTamPlano(MediaQuery.sizeOf(context));
+                    // Piso que se dibuja: el del usuario, o el que se está
+                    // mirando con el selector de pisos.
+                    final otro = _otroPiso;
+                    final grillaVista = otro?.grilla ?? _grilla;
+                    final plano = _calcularTamPlano(
+                        MediaQuery.sizeOf(context), grillaVista);
                     // Si el recuadro cambió de tamaño (aparece o se va la
                     // tarjeta de giro, el aviso de "buscando ubicación"...),
                     // se revisan los límites con el tamaño nuevo.
@@ -4134,13 +4360,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
                       });
                     }
 
-                    // Vista inicial: centrada en el usuario si ya se lo
-                    // ubicó; si no, el plano entero.
+                    // Vista inicial (al abrir y al cambiar de piso mirado):
+                    // centrada en el usuario si ya se lo ubicó y es su piso;
+                    // si no, el plano entero.
                     if (!_vistaMapaInicializada) {
                       _vistaMapaInicializada = true;
                       WidgetsBinding.instance.addPostFrameCallback((_) {
                         if (!mounted) return;
-                        if (_posicionFinal != null) {
+                        if (_posicionFinal != null && _otroPiso == null) {
                           _centrarEnUsuario(animado: false);
                         } else {
                           _verMapaCompleto();
@@ -4170,16 +4397,25 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
                               width: plano.width,
                               height: plano.height,
                               child: MapaWidget(
-                                rutaImagen: widget.rutaImagen,
-                                beacons: _beaconsEnElMapa,
-                                zonas: _zonas,
-                                lugares: _lugares,
-                                posicionUsuario: _posicionFinal,
+                                // Una clave por piso: al cambiar de piso se
+                                // arma un mapa nuevo en vez de reciclar el
+                                // anterior con la imagen de otro.
+                                key: ValueKey(otro?.info.id ?? widget.pisoId),
+                                rutaImagen:
+                                    otro?.info.rutaImagen ?? widget.rutaImagen,
+                                beacons: otro?.beacons ?? _beaconsEnElMapa,
+                                zonas: otro?.zonas ?? _zonas,
+                                lugares: otro?.lugares ?? _lugares,
+                                // En otro piso no se dibuja al usuario ni la
+                                // ruta: no está ahí.
+                                posicionUsuario:
+                                    otro == null ? _posicionFinal : null,
                                 modoEdicion: false,
                                 mostrarGrilla: true,
-                                grilla: _grilla,
-                                ruta: _rutaActual,
-                                headingUsuario: _orientacion.heading != null
+                                grilla: grillaVista,
+                                ruta: otro == null ? _rutaActual : null,
+                                headingUsuario: otro == null &&
+                                        _orientacion.heading != null
                                     ? ((_orientacion.heading! -
                                                     _rotacionMapaEfectiva) %
                                                 360 +
@@ -4190,6 +4426,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
                             ),
                           ),
                         ),
+                        if (otro != null)
+                          Positioned(
+                            top: 10,
+                            left: 10,
+                            right: 10,
+                            child: Align(
+                              alignment: Alignment.topLeft,
+                              child: _buildCartelOtroPiso(otro),
+                            ),
+                          ),
                         Positioned(
                           right: 12,
                           bottom: 12,
@@ -4313,3 +4559,21 @@ enum _GeneroBano { hombres, mujeres }
 /// Una opción de destino con lo lejos que queda: pisos de diferencia y, si
 /// está en este piso, metros de camino (null en otro piso).
 typedef _OpcionMedida = ({LugarInteres lugar, int pisos, double? metros});
+
+/// Lo necesario para DIBUJAR un piso que no es el del usuario (ver
+/// "VER OTROS PISOS SIN NAVEGAR" en la pantalla de navegación).
+class _VistaPiso {
+  final PisoInfo info;
+  final GrillaNav grilla;
+  final Map<String, BeaconMarcado> beacons;
+  final List<ZonaNoTransitable> zonas;
+  final List<LugarInteres> lugares;
+
+  const _VistaPiso({
+    required this.info,
+    required this.grilla,
+    required this.beacons,
+    required this.zonas,
+    required this.lugares,
+  });
+}
