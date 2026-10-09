@@ -25,7 +25,8 @@ import 'filtro_un_euro.dart';
 import 'detector_movimiento.dart';
 import 'tema.dart';
 import 'piso_util.dart';
- 
+import 'package:wakelock_plus/wakelock_plus.dart';
+
 class PantallaNavegacion extends StatefulWidget {
   final int pisoId;
   final String rutaImagen;
@@ -586,6 +587,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   @override
   void initState() {
     super.initState();
+    // La pantalla no se oscurece mientras la navegación esté abierta.
+    WakelockPlus.enable();
     _procesador = widget.procesadorCompartido ?? ProcesadorSenal();
     _grilla = GrillaNav(metrosX: widget.escalaX, metrosY: widget.escalaY, tamCeldaMetros: widget.tamCeldaMetros);
     // La escala del piso entra al filtro para que la velocidad se calcule en
@@ -603,6 +606,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     _scanReinicioTimer?.cancel();
     _compassUITimer?.cancel();
     _compassSubscription?.cancel();
+    // En un salto de piso la pantalla nueva ya prendió el wakelock (se crea
+    // antes de que se destruya esta), así que acá no se apaga.
+    if (!_saltandoDePiso) WakelockPlus.disable();
     _orientacion.limpiar();
     // Guarda de dueño, misma razón que en BluetoothHelper: si esta pantalla se
     // destruye DESPUÉS de que la siguiente ya arrancó, limpiar el TTS acá corta
