@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:math';
@@ -77,7 +78,8 @@ class PantallaNavegacion extends StatefulWidget {
   State<PantallaNavegacion> createState() => _PantallaNavegacionState();
 }
  
-class _PantallaNavegacionState extends State<PantallaNavegacion> {
+class _PantallaNavegacionState extends State<PantallaNavegacion>
+    with SingleTickerProviderStateMixin {
   late final ProcesadorSenal _procesador;
   final ResolvedorCaminos _resolvedor = ResolvedorCaminos();
   final OrientacionService _orientacion = OrientacionService();
@@ -372,8 +374,78 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   /// de ahí, alejarse más de [_radioSalidaEscaleraMetros] cuenta como "salió".
   bool _vistoEnEscaleraLlegada = false;
 
+  // ── MAPA DESPLAZABLE (zoom + arrastre, estilo Google Maps) ─────────────────
+  //
+  // El plano ya no se achica para entrar en la pantalla: se dibuja a una
+  // escala fija en píxeles por metro, con la proporción real del piso
+  // (escalaX : escalaY), y se mira a través de un InteractiveViewer. Un dedo
+  // lo arrastra, dos dedos hacen zoom.
+  //
+  // El arrastre y el zoom no chocan con los gestos de toda la pantalla: si el
+  // dedo se mueve, Flutter descarta el toque y el doble toque, así que un
+  // arrastre nunca abre la selección de destino ni cambia de piso.
+  //
+  // SEGUIMIENTO: mientras _seguirUsuario esté en true, el mapa se re-centra
+  // solo en la posición del usuario cada vez que se redibuja la posición.
+  // Apenas la persona arrastra o hace zoom, se deja de seguir (para que el
+  // mapa no "se le escape" mientras mira otra parte); el botón de centrar lo
+  // vuelve a activar.
+
   /// Tiempo que hay que mantener apretada la pantalla para cambiar de piso.
   static const Duration _duracionMantener = Duration(milliseconds: 1000);
+
+  /// Escala base del plano (zoom 1): píxeles lógicos por metro. Con 28, una
+  /// celda de 1 m mide 28 px. Si el piso es tan chico que a esta escala no
+  /// llena la pantalla, se agranda hasta llenarla.
+  static const double _pixelesPorMetro = 28.0;
+
+  /// Zoom máximo respecto de la escala base.
+  static const double _zoomMaximo = 5.0;
+
+  final TransformationController _transformMapa = TransformationController();
+
+  // ── CÁMARA DEL MAPA ──
+  //
+  // La vista se mueve con un "resorte" amortiguado en vez de una animación
+  // de duración fija. La posición se redibuja hasta 4 veces por segundo; una
+  // animación de 300 ms se reiniciaba antes de terminar y el mapa avanzaba a
+  // los tirones (arranca, frena, arranca). Con el resorte, cada posición
+  // nueva sólo cambia el OBJETIVO y la cámara sigue su movimiento sin cortes:
+  // en cada frame recorre una fracción fija de lo que le falta.
+  //
+  // La cámara se guarda como "punto del plano que está en el centro" + zoom.
+  // Interpolar eso (y no la matriz) hace que el zoom se acerque sobre el
+  // centro de la vista y no derrape hacia una esquina.
+  //
+  // El ticker sólo corre mientras la cámara se está moviendo: quieta, no
+  // gasta nada.
+
+  /// Constante de tiempo del resorte (s): a los ~0,2 s recorrió el 63 % del
+  /// camino y a los ~0,7 s llegó. Más chico = sigue más pegado pero más
+  /// brusco; más grande = más suave pero más atrasado.
+  static const double _tauCamaraSeg = 0.22;
+
+  late final Ticker _tickerCamara;
+  Duration? _ultimoTickCamara;
+
+  /// Estado actual de la cámara y hacia dónde va (coordenadas del plano a
+  /// zoom 1). Null = la cámara no está en movimiento.
+  Offset? _camaraFoco;
+  double? _camaraZoom;
+  Offset? _camaraFocoObjetivo;
+  double? _camaraZoomObjetivo;
+
+  /// El mapa sigue la posición del usuario.
+  bool _seguirUsuario = true;
+
+  /// Ya se fijó la vista inicial del mapa (centrado o vista completa).
+  bool _vistaMapaInicializada = false;
+
+  /// Tamaño del recuadro donde se ve el mapa (lo deja el LayoutBuilder).
+  Size? _viewportMapa;
+
+  /// Tamaño del plano a zoom 1 (en píxeles lógicos).
+  Size? _tamPlano;
 
   // Navegacion
   LugarInteres? _destinoSeleccionado;
@@ -589,6 +661,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     super.initState();
     // La pantalla no se oscurece mientras la navegación esté abierta.
     WakelockPlus.enable();
+    _tickerCamara = createTicker(_onTickCamara);
+    // Toda vista nueva (dedo, inercia o cámara) pasa por los límites del plano.
+    _transformMapa.addListener(_corregirVista);
     _procesador = widget.procesadorCompartido ?? ProcesadorSenal();
     _grilla = GrillaNav(metrosX: widget.escalaX, metrosY: widget.escalaY, tamCeldaMetros: widget.tamCeldaMetros);
     // La escala del piso entra al filtro para que la velocidad se calcule en
@@ -627,6 +702,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
       // "vivo pero mudo" y la pantalla siguiente puede quedarse sin datos.
       BluetoothHelper.liberarSuscripcion(this);
     }
+    _tickerCamara.dispose();
+    _transformMapa.dispose();
     super.dispose();
   }
  
@@ -1566,6 +1643,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           _posicionMostradaUI = posicionSnap;
           _beaconsMostradosUI = candidatos.length;
           setState(() => _estadoScan = textoEstado);
+          // El mapa acompaña al usuario mientras no lo haya movido a mano.
+          if (_seguirUsuario) _centrarEnUsuario();
         }
 
         // Actualizar la instruccion de voz aca (no en build()) para que hablar()
@@ -2996,9 +3075,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
   /// Punto de entrada accesible: tocar CUALQUIER parte de la pantalla inicia la
   /// selección de destino por voz. Pensado para personas ciegas: no hay que
   /// buscar un botón chico. Los controles con su propio onTap (lista, cancelar,
-  /// barra de micrófono) siguen funcionando porque capturan el toque primero;
-  /// el zoom/desplazamiento del mapa está desactivado, así que el toque siempre
-  /// llega. Si ya se estaba escuchando (o el estado quedó trabado), el toque lo
+  /// barra de micrófono, botón de centrar) siguen funcionando porque capturan
+  /// el toque primero; arrastrar o hacer zoom en el mapa no cuenta como toque,
+  /// así que desplazar el mapa nunca abre la selección. Si ya se estaba escuchando (o el estado quedó trabado), el toque lo
   /// detiene para poder reintentar sin quedar bloqueado.
   void _iniciarSeleccionDestinoPorPantalla() {
     if (_escuchando) {
@@ -3499,6 +3578,258 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
     );
   }
  
+  // ─── MAPA DESPLAZABLE ─────────────────────────────────────────────────────
+
+  /// Tamaño del plano a zoom 1.
+  ///
+  /// El plano mide metrosX × metrosY a [_pixelesPorMetro] (proporción real:
+  /// las celdas de 1 m quedan cuadradas). Si a esa escala no llena la
+  /// [pantalla], se agranda hasta llenarla. Se usa el tamaño de la PANTALLA y
+  /// no el del recuadro del mapa porque el recuadro cambia de alto cuando
+  /// aparecen o desaparecen la tarjeta de giro o el aviso de "buscando
+  /// ubicación", y eso cambiaría la escala del plano.
+  Size _calcularTamPlano(Size pantalla) {
+    final mx = _grilla.metrosX > 0 ? _grilla.metrosX : 1.0;
+    final my = _grilla.metrosY > 0 ? _grilla.metrosY : 1.0;
+    final llenarPantalla = min(pantalla.width / mx, pantalla.height / my);
+    final ppm = max(_pixelesPorMetro, llenarPantalla);
+    return Size(mx * ppm, my * ppm);
+  }
+
+  /// Zoom mínimo: el plano entero entra en el recuadro.
+  double _zoomMinimo(Size viewport, Size plano) =>
+      min(viewport.width / plano.width, viewport.height / plano.height);
+
+  // ── LÍMITES DE LA VISTA ──
+  //
+  // El plano tiene bordes (no es un mapa infinito como Google Maps), así que
+  // la vista nunca muestra afuera del plano. Se decide EJE POR EJE:
+  //  - si en ese eje el plano (con el zoom actual) es más grande que el
+  //    recuadro, el borde del plano no puede despegarse del borde del
+  //    recuadro: cuando el usuario se acerca a un borde y ese lado ya se ve
+  //    entero, la vista deja de centrarlo en esa dirección. Si se aleja del
+  //    borde, hacia donde todavía queda plano por ver, vuelve a centrarlo;
+  //  - si en ese eje el plano entra entero, queda centrado en ese eje.
+  //
+  // La misma regla vale para el seguimiento automático, el botón de centrar
+  // y el arrastre a mano (ver _corregirVista), así se comportan igual.
+
+  /// Traslación permitida en un eje. [t] = traslación pedida, [vista] = largo
+  /// del recuadro, [plano] = largo del plano ya multiplicado por el zoom.
+  double _limitarEje(double t, double vista, double plano) {
+    if (plano <= vista) return (vista - plano) / 2;
+    return t.clamp(vista - plano, 0.0).toDouble();
+  }
+
+  /// Se llama cada vez que cambia la vista (dedo, inercia, cámara). Si la
+  /// vista quedó mostrando afuera del plano, la corrige. El InteractiveViewer
+  /// no limita nada por su cuenta (boundaryMargin infinito): su límite propio
+  /// deja el plano pegado arriba a la izquierda cuando entra entero en un eje.
+  void _corregirVista() {
+    final viewport = _viewportMapa;
+    final plano = _tamPlano;
+    if (viewport == null || plano == null) return;
+    final m = _transformMapa.value;
+    final zoom = m.getMaxScaleOnAxis();
+    if (zoom <= 0) return;
+    final t = m.getTranslation();
+    final tx = _limitarEje(t.x, viewport.width, plano.width * zoom);
+    final ty = _limitarEje(t.y, viewport.height, plano.height * zoom);
+    // Sólo se reescribe si hace falta: escribir el valor vuelve a disparar
+    // este mismo listener, y con la vista ya válida no hace nada.
+    if ((tx - t.x).abs() < 0.01 && (ty - t.y).abs() < 0.01) return;
+    _transformMapa.value = m.clone()
+      ..setEntry(0, 3, tx)
+      ..setEntry(1, 3, ty);
+  }
+
+  /// La persona arrastró o hizo zoom: el mapa deja de seguirla y la cámara
+  /// suelta el control (si no, pelearía con el dedo).
+  void _dejarDeSeguir() {
+    _detenerCamara();
+    if (_seguirUsuario && mounted) setState(() => _seguirUsuario = false);
+  }
+
+  /// Centra el mapa en la posición del usuario. Conserva el zoom, salvo que
+  /// esté más alejado que la escala base: ahí vuelve a zoom 1.
+  void _centrarEnUsuario({bool animado = true}) {
+    final pos = _posicionFinal;
+    final viewport = _viewportMapa;
+    final plano = _tamPlano;
+    if (pos == null || viewport == null || plano == null) return;
+    // Si la cámara ya va hacia un zoom, se respeta ese y no el de este frame
+    // (que está a mitad de camino).
+    final zoomBase = _camaraZoomObjetivo ?? _transformMapa.value.getMaxScaleOnAxis();
+    final zoom = max(zoomBase, 1.0)
+        .clamp(_zoomMinimo(viewport, plano), _zoomMaximo)
+        .toDouble();
+    final punto = Offset(pos.dx * plano.width, pos.dy * plano.height);
+    _moverVistaA(punto, zoom, animado: animado);
+  }
+
+  /// Muestra el plano entero, centrado.
+  void _verMapaCompleto({bool animado = false}) {
+    final viewport = _viewportMapa;
+    final plano = _tamPlano;
+    if (viewport == null || plano == null) return;
+    _moverVistaA(
+      Offset(plano.width / 2, plano.height / 2),
+      _zoomMinimo(viewport, plano),
+      animado: animado,
+    );
+  }
+
+  /// Lleva la cámara a [punto] (coordenadas del plano, a zoom 1) con el
+  /// [zoom] pedido. Animado: sólo fija el objetivo y el resorte la lleva.
+  void _moverVistaA(Offset punto, double zoom, {required bool animado}) {
+    if (!animado) {
+      _detenerCamara();
+      _aplicarVista(punto, zoom);
+      return;
+    }
+    // Si la cámara estaba quieta, arranca desde lo que se ve ahora.
+    if (_camaraFoco == null || _camaraZoom == null) {
+      final actual = _vistaActual();
+      if (actual == null) return;
+      _camaraFoco = actual.foco;
+      _camaraZoom = actual.zoom;
+    }
+    _camaraFocoObjetivo = punto;
+    _camaraZoomObjetivo = zoom;
+    if (!_tickerCamara.isActive) {
+      _ultimoTickCamara = null;
+      _tickerCamara.start();
+    }
+  }
+
+  /// Un frame del resorte: recorre la fracción 1 − e^(−dt/τ) de lo que falta.
+  /// Usa el dt real del frame, así se mueve igual a 60 Hz que a 120 Hz o si
+  /// se saltea algún frame.
+  void _onTickCamara(Duration transcurrido) {
+    final foco = _camaraFoco;
+    final zoom = _camaraZoom;
+    final focoObj = _camaraFocoObjetivo;
+    final zoomObj = _camaraZoomObjetivo;
+    if (foco == null || zoom == null || focoObj == null || zoomObj == null) {
+      _detenerCamara();
+      return;
+    }
+    final previo = _ultimoTickCamara;
+    _ultimoTickCamara = transcurrido;
+    final dt = previo == null
+        ? 1 / 60
+        : ((transcurrido - previo).inMicroseconds / 1e6)
+            .clamp(0.0, 0.1)
+            .toDouble();
+    final k = 1 - exp(-dt / _tauCamaraSeg);
+
+    final nuevoFoco = Offset.lerp(foco, focoObj, k)!;
+    final nuevoZoom = zoom + (zoomObj - zoom) * k;
+
+    // ¿Llegó? (menos de medio píxel en pantalla y zoom prácticamente igual)
+    final faltaPx = (focoObj - nuevoFoco).distance * nuevoZoom;
+    final faltaZoom = (zoomObj - nuevoZoom).abs();
+    if (faltaPx < 0.5 && faltaZoom < 0.002) {
+      _aplicarVista(focoObj, zoomObj);
+      _detenerCamara();
+      return;
+    }
+    _camaraFoco = nuevoFoco;
+    _camaraZoom = nuevoZoom;
+    _aplicarVista(nuevoFoco, nuevoZoom);
+  }
+
+  void _detenerCamara() {
+    if (_tickerCamara.isActive) _tickerCamara.stop();
+    _ultimoTickCamara = null;
+    _camaraFoco = null;
+    _camaraZoom = null;
+    _camaraFocoObjetivo = null;
+    _camaraZoomObjetivo = null;
+  }
+
+  /// Punto del plano que hoy está en el centro de la vista, y el zoom.
+  ({Offset foco, double zoom})? _vistaActual() {
+    final viewport = _viewportMapa;
+    if (viewport == null) return null;
+    final m = _transformMapa.value;
+    final zoom = m.getMaxScaleOnAxis();
+    if (zoom <= 0) return null;
+    final t = m.getTranslation();
+    return (
+      foco: Offset(
+        (viewport.width / 2 - t.x) / zoom,
+        (viewport.height / 2 - t.y) / zoom,
+      ),
+      zoom: zoom,
+    );
+  }
+
+  /// Pone [punto] (coordenadas del plano a zoom 1) en el centro de la vista
+  /// con [zoom], respetando los límites de la vista (ver _limitarEje): cerca
+  /// de un borde el punto queda corrido del centro en vez de mostrar negro.
+  void _aplicarVista(Offset punto, double zoom) {
+    final viewport = _viewportMapa;
+    final plano = _tamPlano;
+    if (viewport == null || plano == null) return;
+    final tx = _limitarEje(
+        viewport.width / 2 - zoom * punto.dx, viewport.width, plano.width * zoom);
+    final ty = _limitarEje(viewport.height / 2 - zoom * punto.dy,
+        viewport.height, plano.height * zoom);
+    // Matriz armada a mano (escala + traslación): evita Matrix4.translate y
+    // Matrix4.scale, que figuran como obsoletos en las versiones nuevas.
+    _transformMapa.value = Matrix4.identity()
+      ..setEntry(0, 0, zoom)
+      ..setEntry(1, 1, zoom)
+      ..setEntry(0, 3, tx)
+      ..setEntry(1, 3, ty);
+  }
+
+  /// Botón redondo sobre el mapa para volver a centrarlo en el usuario y
+  /// reactivar el seguimiento. Se resalta (relleno de color) cuando el mapa
+  /// NO está siguiendo al usuario, que es cuando hace falta.
+  Widget _buildBotonCentrar() {
+    final siguiendo = _seguirUsuario;
+    return Semantics(
+      button: true,
+      label: 'Centrar el mapa en tu ubicación',
+      child: Material(
+        color: siguiendo ? TemaApp.fondoCard : TemaApp.acento,
+        shape: CircleBorder(
+          side: BorderSide(
+            color: TemaApp.acento.withValues(alpha: 0.6),
+            width: 1.5,
+          ),
+        ),
+        elevation: 4,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () {
+            setState(() => _seguirUsuario = true);
+            if (_posicionFinal != null) {
+              _centrarEnUsuario();
+            } else {
+              // Todavía sin ubicación: se muestra el plano entero y, apenas
+              // haya posición, el seguimiento lo centra solo.
+              _verMapaCompleto(animado: true);
+            }
+          },
+          child: SizedBox(
+            width: TemaApp.targetTactil,
+            height: TemaApp.targetTactil,
+            child: Icon(
+              siguiendo
+                  ? Icons.my_location_rounded
+                  : Icons.location_searching_rounded,
+              color: siguiendo ? TemaApp.acento : TemaApp.fondo,
+              size: 28,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildBarraMicrofono() {
     final bool escuchando = _escuchando;
     return Semantics(
@@ -3645,6 +3976,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
           // Se usa RawGestureDetector para poder fijar la duración del
           // mantener: la de GestureDetector (0.5 s) es demasiado corta y un
           // toque apoyado sin querer podría cargar otro piso.
+          //
+          // CONVIVENCIA CON EL MAPA DESPLAZABLE: ninguno de los dos gestos
+          // choca con arrastrar o hacer zoom. Si el dedo se mueve más de unos
+          // pocos píxeles antes de que pase el segundo, Flutter descarta el
+          // toque y el mantener, y el movimiento queda para el mapa.
+          // Se descartó el doble toque para cambiar de piso por dos motivos:
+          // obliga a que cada toque simple espere ~0,3 s (por si viene un
+          // segundo toque) y con TalkBack el doble toque lo usa el lector.
+          // El mantener, con TalkBack, es "doble toque sostenido".
           child: RawGestureDetector(
             // translucent deja pasar los eventos a los hijos (mapa, botones,
             // barra de micrófono), que capturan sus propios toques y gestos.
@@ -3772,22 +4112,92 @@ class _PantallaNavegacionState extends State<PantallaNavegacion> {
                   border: Border.all(color: const Color(0xFF21262D), width: 1),
                 ),
                 clipBehavior: Clip.antiAlias,
-                // Sin InteractiveViewer en navegación: la persona no manipula el
-                // mapa, así el mapa no compite por los gestos y el toque en
-                // cualquier parte de la pantalla siempre inicia la selección.
-                child: MapaWidget(
-                  rutaImagen: widget.rutaImagen,
-                  beacons: _beaconsEnElMapa,
-                  zonas: _zonas,
-                  lugares: _lugares,
-                  posicionUsuario: _posicionFinal,
-                  modoEdicion: false,
-                  mostrarGrilla: true,
-                  grilla: _grilla,
-                  ruta: _rutaActual,
-                  headingUsuario: _orientacion.heading != null
-                      ? ((_orientacion.heading! - _rotacionMapaEfectiva) % 360 + 360) % 360
-                      : null,
+                // Mapa desplazable: escala fija + zoom/arrastre (ver
+                // _pixelesPorMetro). Arrastrar no compite con el toque de
+                // toda la pantalla: si el dedo se mueve, no cuenta como toque.
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final viewport =
+                        Size(constraints.maxWidth, constraints.maxHeight);
+                    final plano =
+                        _calcularTamPlano(MediaQuery.sizeOf(context));
+                    // Si el recuadro cambió de tamaño (aparece o se va la
+                    // tarjeta de giro, el aviso de "buscando ubicación"...),
+                    // se revisan los límites con el tamaño nuevo.
+                    final cambioTamano =
+                        _viewportMapa != viewport || _tamPlano != plano;
+                    _viewportMapa = viewport;
+                    _tamPlano = plano;
+                    if (cambioTamano && _vistaMapaInicializada) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) _corregirVista();
+                      });
+                    }
+
+                    // Vista inicial: centrada en el usuario si ya se lo
+                    // ubicó; si no, el plano entero.
+                    if (!_vistaMapaInicializada) {
+                      _vistaMapaInicializada = true;
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (!mounted) return;
+                        if (_posicionFinal != null) {
+                          _centrarEnUsuario(animado: false);
+                        } else {
+                          _verMapaCompleto();
+                        }
+                      });
+                    }
+
+                    return Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        InteractiveViewer(
+                          transformationController: _transformMapa,
+                          constrained: false,
+                          minScale: _zoomMinimo(viewport, plano),
+                          maxScale: _zoomMaximo,
+                          // Sin límite propio: los bordes los pone
+                          // _corregirVista (ver "LÍMITES DE LA VISTA").
+                          boundaryMargin:
+                              const EdgeInsets.all(double.infinity),
+                          onInteractionStart: (_) => _dejarDeSeguir(),
+                          // RepaintBoundary: mientras la cámara se mueve sólo
+                          // cambia la matriz de la vista; el plano, la grilla
+                          // y los marcadores ya pintados se reusan tal cual
+                          // en cada frame en vez de volver a dibujarse.
+                          child: RepaintBoundary(
+                            child: SizedBox(
+                              width: plano.width,
+                              height: plano.height,
+                              child: MapaWidget(
+                                rutaImagen: widget.rutaImagen,
+                                beacons: _beaconsEnElMapa,
+                                zonas: _zonas,
+                                lugares: _lugares,
+                                posicionUsuario: _posicionFinal,
+                                modoEdicion: false,
+                                mostrarGrilla: true,
+                                grilla: _grilla,
+                                ruta: _rutaActual,
+                                headingUsuario: _orientacion.heading != null
+                                    ? ((_orientacion.heading! -
+                                                    _rotacionMapaEfectiva) %
+                                                360 +
+                                            360) %
+                                        360
+                                    : null,
+                              ),
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          right: 12,
+                          bottom: 12,
+                          child: _buildBotonCentrar(),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
