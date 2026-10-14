@@ -52,6 +52,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   List<ScanResult> _dispositivosCercanos = [];
   ScanResult? _seleccionado;
   bool _escaneando = false;
+
+  /// Filtro por nombre de la lista de dispositivos BLE (modo beacons). Vacío =
+  /// sin filtro. Sirve para ver solo los beacons propios entre todo el tráfico
+  /// Bluetooth del lugar (celulares, auriculares, relojes, etc.).
+  String _filtroNombre = '';
   bool _publicando = false;
   String? _remoteIdPublicado;
   Offset? _posicionUsuario;
@@ -679,6 +684,68 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (!scanOk && mounted) {
       setState(() => _escaneando = false);
     }
+  }
+
+  // -- Filtro de dispositivos por nombre --------------------------------------
+
+  /// `true` si el nombre anunciado de [r] contiene el filtro (sin distinguir
+  /// mayúsculas). Se compara contra `advName`, que es el mismo nombre que se
+  /// muestra en la lista.
+  bool _coincideFiltro(ScanResult r) {
+    if (_filtroNombre.isEmpty) return true;
+    return r.device.advName.toLowerCase().contains(_filtroNombre.toLowerCase());
+  }
+
+  void _aplicarFiltroNombre(String filtro) {
+    if (!mounted) return;
+    setState(() {
+      _filtroNombre = filtro;
+      // Si el dispositivo elegido quedó oculto se descarta la selección: si no,
+      // un toque en el mapa ubicaría un beacon que ya no se ve en la lista.
+      if (_seleccionado != null && !_coincideFiltro(_seleccionado!)) {
+        _seleccionado = null;
+      }
+    });
+  }
+
+  /// Pide el texto del filtro en un diálogo. No se usa un campo fijo bajo el
+  /// mapa porque el body es un Column con el mapa de 380 px: al abrirse el
+  /// teclado ese campo quedaría tapado y el Column desbordaría.
+  Future<void> _pedirFiltroNombre() async {
+    final controller = TextEditingController(text: _filtroNombre);
+    final filtro = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Filtrar dispositivos por nombre'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            hintText: 'Ej: BlindRoute (deja vacio para ver todos)',
+            border: OutlineInputBorder(),
+          ),
+          autofocus: true,
+          textInputAction: TextInputAction.search,
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+        actions: [
+          if (_filtroNombre.isNotEmpty)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, ''),
+              child: const Text('Quitar filtro'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Filtrar'),
+          ),
+        ],
+      ),
+    );
+    if (filtro == null) return;
+    _aplicarFiltroNombre(filtro);
   }
 
   void _actualizarSenales(List<ScanResult> resultados) {
@@ -1966,6 +2033,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   @override
   Widget build(BuildContext context) {
+    final dispositivosVisibles =
+        _dispositivosCercanos.where(_coincideFiltro).toList();
+    final filtroActivo = _filtroNombre.isNotEmpty;
+
     return Theme(
       data: TemaApp.tema,
       child: Scaffold(
@@ -2442,11 +2513,59 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                       ),
                     ),
                   ),
+                  // Filtro por nombre. Mismo alto acotado que la fila del
+                  // asistente de trazo (que no aparece en este modo), para no
+                  // sumar altura al Column en pantallas chicas.
+                  SizedBox(
+                    height: 36,
+                    child: InkWell(
+                      onTap: _pedirFiltroNombre,
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 16, right: 4),
+                        child: Row(
+                          children: [
+                            Icon(
+                              filtroActivo ? Icons.filter_alt : Icons.search,
+                              size: 18,
+                              color: filtroActivo ? Colors.teal : TemaApp.textoSecundario,
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                filtroActivo
+                                    ? 'Nombre contiene "$_filtroNombre" · '
+                                        '${dispositivosVisibles.length} de ${_dispositivosCercanos.length}'
+                                    : 'Filtrar por nombre',
+                                style: const TextStyle(fontSize: 12),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (filtroActivo)
+                              IconButton(
+                                icon: const Icon(Icons.close, size: 18),
+                                tooltip: 'Quitar filtro',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () => _aplicarFiltroNombre(''),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                   Expanded(
-                    child: ListView.builder(
-                      itemCount: _dispositivosCercanos.length,
+                    child: filtroActivo &&
+                            dispositivosVisibles.isEmpty &&
+                            _dispositivosCercanos.isNotEmpty
+                        ? Center(
+                            child: Text(
+                              'Ningún dispositivo coincide con "$_filtroNombre"',
+                              style: const TextStyle(color: TemaApp.textoSecundario),
+                            ),
+                          )
+                        : ListView.builder(
+                      itemCount: dispositivosVisibles.length,
                       itemBuilder: (context, i) {
-                        final d = _dispositivosCercanos[i];
+                        final d = dispositivosVisibles[i];
                         final mac = d.device.remoteId.str;
                         final yaUbicado = _beaconsEnElMapa.containsKey(mac);
                         final seleccionado = _seleccionado == d;
