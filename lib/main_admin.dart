@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'database.dart';
 import 'pantalla_login_admin.dart';
 import 'supabase_config.dart';
 
@@ -14,6 +15,14 @@ Future<void> main() async {
       url: SupabaseConfig.url,
       publishableKey: SupabaseConfig.anonKey,
     );
+  }
+
+  // Catálogo de rubros editable de este teléfono. Si la base falla se sigue
+  // con los rubros de fábrica, que es con lo que arranca Rubros.
+  try {
+    await DatabaseHelper.instance.cargarRubros();
+  } catch (e) {
+    debugPrint('[Rubros] No se pudo cargar el catálogo: $e');
   }
 
   runApp(const AppAdmin());

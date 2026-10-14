@@ -5,6 +5,7 @@ import 'zona_model.dart';
 import 'poi_model.dart';
 import 'calibracion_model.dart';
 import 'piso_util.dart';
+import 'rubros.dart';
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'dart:io';
@@ -27,7 +28,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 16, // v14: lugares.palabras_clave · v15: .rubro · v16: .ascensor
+      version: 17, // v14: lugares.palabras_clave · v15: .rubro · v16: .ascensor · v17: rubros
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -100,6 +101,7 @@ class DatabaseHelper {
         direccion_entrada REAL,
         palabras_clave TEXT,
         rubro TEXT,
+        rubro_palabras TEXT,
         ascensor INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
       )
@@ -107,6 +109,39 @@ class DatabaseHelper {
 
     // --- Calibraciones por celda (modo calibración) ---
     await db.execute(_sqlCrearCalibraciones);
+
+    // --- Catálogo de rubros (editable por el admin) ---
+    await db.execute(_sqlCrearRubros);
+    await _sembrarRubros(db);
+  }
+
+  /// DDL del catálogo de rubros. `palabras` va como texto separado por comas,
+  /// igual que `lugares_interes.palabras_clave`. `orden` es el orden en que se
+  /// muestran: los de fábrica primero y los nuevos al final.
+  static const String _sqlCrearRubros = '''
+    CREATE TABLE IF NOT EXISTS rubros (
+      id TEXT PRIMARY KEY,
+      nombre TEXT NOT NULL,
+      palabras TEXT NOT NULL,
+      orden INTEGER NOT NULL DEFAULT 0
+    )
+  ''';
+
+  /// Carga los rubros de fábrica. Si alguno ya existe no lo pisa.
+  static Future<void> _sembrarRubros(DatabaseExecutor db) async {
+    for (var i = 0; i < Rubros.deFabrica.length; i++) {
+      final r = Rubros.deFabrica[i];
+      await db.insert(
+        'rubros',
+        {
+          'id': r.id,
+          'nombre': r.nombre,
+          'palabras': LugarInteres.palabrasATexto(r.palabras) ?? '',
+          'orden': i,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
   }
 
   /// DDL de la tabla de calibraciones. Compartido entre _createDB (instalaciones
@@ -300,6 +335,18 @@ class DatabaseHelper {
       if (!cols.any((c) => (c['name'] as String?) == 'ascensor')) {
         await db.execute(
             'ALTER TABLE lugares_interes ADD COLUMN ascensor INTEGER NOT NULL DEFAULT 0');
+      }
+    }
+    if (oldVersion < 17) {
+      // v17: catálogo de rubros editable (arranca con los de fábrica) y, en
+      // cada lugar, la copia de las palabras de su rubro que trae el mapa
+      // descargado (null = usar el catálogo local).
+      await db.execute(_sqlCrearRubros);
+      await _sembrarRubros(db);
+      final cols = await db.rawQuery('PRAGMA table_info(lugares_interes)');
+      if (!cols.any((c) => (c['name'] as String?) == 'rubro_palabras')) {
+        await db.execute(
+            'ALTER TABLE lugares_interes ADD COLUMN rubro_palabras TEXT');
       }
     }
   }
@@ -659,6 +706,10 @@ class DatabaseHelper {
               LugarInteres.palabrasDesdeJson(l['palabras_clave'])),
           // Opcional: un mapa publicado antes de v15 no lo trae.
           'rubro': l['rubro'] is String ? l['rubro'] : null,
+          // Opcional: un mapa publicado antes de v17 no las trae, y entonces
+          // el lugar usa las del rubro de fábrica con ese id.
+          'rubro_palabras': LugarInteres.palabrasATexto(
+              LugarInteres.palabrasDesdeJson(l['rubro_palabras'])),
           // Opcional: un mapa publicado antes de v16 no lo trae.
           'ascensor': (l['ascensor'] == true) ? 1 : 0,
         });
@@ -869,6 +920,66 @@ class DatabaseHelper {
   Future<void> eliminarLugarInteres(int id) async {
     final db = await instance.database;
     await db.delete('lugares_interes', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- Rubros ---
+
+  /// Lee el catálogo de rubros y lo deja en uso en [Rubros]. La app admin lo
+  /// llama al iniciar; los métodos que modifican el catálogo lo vuelven a
+  /// llamar para que el cambio se vea enseguida.
+  Future<void> cargarRubros() async {
+    final db = await instance.database;
+    final filas = await db.query('rubros', orderBy: 'orden, nombre');
+    Rubros.usarCatalogo([
+      for (final f in filas)
+        Rubro(
+          f['id'] as String,
+          f['nombre'] as String,
+          LugarInteres.palabrasDesdeTexto(f['palabras'] as String?),
+        ),
+    ]);
+  }
+
+  /// Crea el rubro o, si ya hay uno con su id, le cambia nombre y palabras.
+  /// El id nunca cambia: es lo que guardan los lugares.
+  Future<void> guardarRubro(Rubro rubro) async {
+    final db = await instance.database;
+    final datos = {
+      'nombre': rubro.nombre,
+      'palabras': LugarInteres.palabrasATexto(rubro.palabras) ?? '',
+    };
+    final cambiados = await db
+        .update('rubros', datos, where: 'id = ?', whereArgs: [rubro.id]);
+    if (cambiados == 0) {
+      final ultimo = Sqflite.firstIntValue(
+              await db.rawQuery('SELECT MAX(orden) FROM rubros')) ??
+          -1;
+      await db.insert('rubros', {'id': rubro.id, ...datos, 'orden': ultimo + 1});
+    }
+    await cargarRubros();
+  }
+
+  /// Cuántos lugares de este teléfono (de todos los edificios) usan el rubro.
+  Future<int> contarLugaresConRubro(String id) async {
+    final db = await instance.database;
+    return Sqflite.firstIntValue(await db.rawQuery(
+            'SELECT COUNT(*) FROM lugares_interes WHERE rubro = ?', [id])) ??
+        0;
+  }
+
+  /// Borra el rubro del catálogo y deja sin rubro a los lugares que lo usaban.
+  Future<void> eliminarRubro(String id) async {
+    final db = await instance.database;
+    await db.transaction((txn) async {
+      await txn.delete('rubros', where: 'id = ?', whereArgs: [id]);
+      await txn.update(
+        'lugares_interes',
+        {'rubro': null, 'rubro_palabras': null},
+        where: 'rubro = ?',
+        whereArgs: [id],
+      );
+    });
+    await cargarRubros();
   }
 
   // --- CALIBRACIONES (modo calibración) ---
