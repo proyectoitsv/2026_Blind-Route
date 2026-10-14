@@ -25,24 +25,55 @@ class Rubro {
 /// que el usuario lo puede pedir ("restaurante, comer, almorzar…"), el admin
 /// elige el RUBRO del lugar y las palabras vienen con el rubro. Ventajas:
 ///
-///  • Se carga con un toque y queda igual en todos los mapas.
-///  • Las palabras se mantienen en un solo lugar (este archivo): agregar
-///    "morfar" a Comida lo arregla para todos los lugares de comida de todos
-///    los edificios, sin tocar ni republicar ningún mapa.
+///  • Se carga con un toque y queda igual en todos los lugares del rubro.
+///  • Las palabras se mantienen en un solo lugar: agregar "morfar" a Comida
+///    lo arregla para todos los lugares de comida del teléfono.
 ///  • Cubre lo que un admin no prevé: verbos ("comer", "almorzar"),
 ///    necesidades ("hambre", "sed"), formas de decir ("tomar algo").
 ///
 /// Las palabras clave libres de cada lugar siguen existiendo, pero para lo
 /// que es propio de ESE lugar: apodos ("el mac"), una marca, un producto.
 ///
-/// PARA AGREGAR UN RUBRO: sumar un `Rubro(...)` a [todos]. Para agregar una
-/// palabra a uno existente: sumarla a su lista. Nada más.
+/// CATÁLOGO EDITABLE (v17): cada admin tiene su catálogo de rubros en la
+/// tabla `rubros` de SQLite, que arranca con los de [deFabrica], y desde la
+/// app puede crear, editar y borrar rubros (pantalla_rubros.dart). Como los
+/// rubros ya no son iguales en todos los teléfonos, el mapa publicado lleva,
+/// en cada lugar, una copia de las palabras de su rubro
+/// (`LugarInteres.palabrasRubro`): la app usuario busca con esas palabras y
+/// no con su propio catálogo. Un cambio de rubro llega a los usuarios
+/// recién al republicar el mapa.
+///
+/// Los mapas publicados antes de v17 no traen esa copia: sus lugares usan
+/// las palabras del rubro de fábrica con el mismo id.
 class Rubros {
   /// Id del rubro de los baños. La navegación lo usa para su flujo propio
-  /// (pregunta hombres / mujeres).
+  /// (pregunta hombres / mujeres), así que este rubro no se puede borrar.
   static const String bano = 'bano';
 
-  static const List<Rubro> todos = [
+  /// Prefijo de los ids de los rubros creados por el admin. Evita que choquen
+  /// con un rubro de fábrica, presente o futuro.
+  static const String prefijoPropio = 'propio_';
+
+  /// Catálogo en uso. Arranca con los de fábrica (es lo que usa la app
+  /// usuario) y la app admin lo reemplaza por el de su base al iniciar (ver
+  /// `DatabaseHelper.cargarRubros`).
+  static List<Rubro> _catalogo = deFabrica;
+
+  /// Rubros del catálogo en uso, en el orden en que se muestran.
+  static List<Rubro> get todos => _catalogo;
+
+  /// Reemplaza el catálogo en uso. Lo llama la base después de leer o
+  /// modificar la tabla `rubros`.
+  static void usarCatalogo(List<Rubro> rubros) {
+    _catalogo = List.unmodifiable(rubros);
+  }
+
+  /// `false` para los rubros que la navegación necesita (hoy, sólo Baño).
+  static bool sePuedeBorrar(String id) => id != bano;
+
+  /// Rubros con los que se siembra el catálogo de una base nueva, y a los
+  /// que se recurre para los mapas publicados antes de v17.
+  static const List<Rubro> deFabrica = [
     Rubro('comida', 'Comida / restaurante', [
       'restaurante', 'resto', 'restoran', 'comida', 'comer', 'almorzar',
       'almuerzo', 'cenar', 'cena', 'hambre', 'comedor', 'cantina', 'buffet',
@@ -117,8 +148,8 @@ class Rubros {
     ]),
   ];
 
-  /// Rubro con ese id, o null si no existe (id null, o un mapa hecho con una
-  /// versión más nueva de la app que trae un rubro que esta no conoce).
+  /// Rubro del catálogo con ese id, o null si no existe (id null, un rubro
+  /// que el admin borró, o uno que no está en el catálogo de este teléfono).
   static Rubro? porId(String? id) {
     if (id == null) return null;
     for (final r in todos) {
