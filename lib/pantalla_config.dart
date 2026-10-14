@@ -87,6 +87,27 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   StreamSubscription<CompassEvent>? _compassConfigSub;
   double? _headingEnVivo; // heading crudo del sensor, sin compensar
 
+  /// Error estimado del sensor según el sistema, en grados (en Android: 15 =
+  /// alta, 30 = media, 45 = baja). Null = desconocida o "no confiable": el
+  /// plugin no distingue esos dos casos.
+  ///
+  /// Importa porque un offset tomado con el magnetómetro sin calibrar absorbe
+  /// su error: cuando el sistema lo recalibra solo, el rumbo se corre y el
+  /// offset guardado queda mal.
+  double? _precisionBrujula;
+
+  /// Lecturas de la toma en curso de "Usar la dirección actual". Null = no
+  /// hay toma en curso.
+  List<double>? _tomaRumbo;
+
+  /// Duración de la toma de "Usar la dirección actual".
+  static const Duration _duracionTomaRumbo = Duration(seconds: 2);
+
+  /// Consistencia mínima (longitud de la media circular) de las lecturas de
+  /// la toma. 0.97 equivale a una dispersión de ~14°: más que eso es que el
+  /// teléfono se movió.
+  static const double _consistenciaMinTomaRumbo = 0.97;
+
   // ── Calibración de posición: toma continua de N muestras ─────────────────
   // Mientras el operador esté parado en la celda seleccionada, el sistema
   // acumula muestras BLE por beacon durante _duracionTomaSeg segundos y luego
@@ -1389,7 +1410,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     _compassConfigSub = FlutterCompass.events!.listen((CompassEvent event) {
       if (!mounted) return;
       if (event.heading != null) {
-        setState(() => _headingEnVivo = event.heading);
+        _tomaRumbo?.add(event.heading!);
+        setState(() {
+          _headingEnVivo = event.heading;
+          _precisionBrujula = event.accuracy;
+        });
       }
     });
   }
@@ -1397,7 +1422,77 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _detenerCompass() {
     _compassConfigSub?.cancel();
     _compassConfigSub = null;
-    if (mounted) setState(() => _headingEnVivo = null);
+    if (mounted) {
+      setState(() {
+        _headingEnVivo = null;
+        _precisionBrujula = null;
+        _tomaRumbo = null; // cancela una toma a medias
+      });
+    }
+  }
+
+  /// Cambia el offset de la brújula y lo guarda enseguida, como el resto de
+  /// la configuración del piso. Devuelve si se pudo guardar.
+  ///
+  /// BUG CORREGIDO: antes el offset sólo se guardaba con un botón aparte. Si
+  /// se salía sin tocarlo, el cambio se perdía sin aviso y al volver a entrar
+  /// estaba el viejo; y "Publicar" subía el valor de pantalla, no el guardado,
+  /// así que la nube y el teléfono podían quedar distintos.
+  Future<bool> _fijarRotacion(double grados) async {
+    final v = ((grados.roundToDouble() % 360) + 360) % 360;
+    if (mounted) setState(() => _rotacionMapa = v);
+    try {
+      await DatabaseHelper.instance.actualizarRotacionMapa(widget.pisoId, v);
+      return true;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error guardando el offset: $e')),
+        );
+      }
+      return false;
+    }
+  }
+
+  /// Toma el rumbo durante [_duracionTomaRumbo], con el teléfono apuntando a
+  /// lo que en el plano es "arriba", y lo guarda como offset. Se promedia
+  /// (media circular) porque la lectura cruda tiembla varios grados; si las
+  /// lecturas están muy dispersas es que el teléfono se movió y se descarta.
+  Future<void> _tomarDireccionActual() async {
+    if (_tomaRumbo != null || _headingEnVivo == null) return;
+    final toma = <double>[];
+    setState(() => _tomaRumbo = toma);
+    await Future.delayed(_duracionTomaRumbo);
+    // Cancelada (se salió del modo brújula) o pantalla cerrada.
+    if (!mounted || !identical(_tomaRumbo, toma)) return;
+    setState(() => _tomaRumbo = null);
+
+    void avisar(String texto) => ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(texto)));
+
+    if (toma.length < 3) {
+      avisar('No llegaron lecturas de la brújula. Probá de nuevo.');
+      return;
+    }
+    double s = 0, c = 0;
+    for (final h in toma) {
+      s += sin(h * pi / 180);
+      c += cos(h * pi / 180);
+    }
+    s /= toma.length;
+    c /= toma.length;
+    if (sqrt(s * s + c * c) < _consistenciaMinTomaRumbo) {
+      avisar('El teléfono se movió durante la toma. Quedate quieto y probá '
+          'de nuevo.');
+      return;
+    }
+    final precisa = (_precisionBrujula ?? 999) <= 15;
+    if (!await _fijarRotacion(atan2(s, c) * 180 / pi) || !mounted) return;
+    avisar(precisa
+        ? 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°'
+        : 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°, pero la '
+            'brújula no estaba precisa. Conviene calibrarla (un 8 en el '
+            'aire) y repetir la toma.');
   }
 
   // -- Calibración de posición: toma multi-muestra ---------------------------
@@ -2029,7 +2124,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         final c = _celdaCalSeleccionada!;
         return 'Celda (${c.ix},${c.iy}) seleccionada. Registrá la calibración desde el panel inferior.';
       case _ModoEdicion.brujula:
-        return 'Apuntá el teléfono hacia el borde SUPERIOR del mapa y ajustá el offset hasta que la flecha coincida. Tocá Guardar cuando esté correcto.';
+        return 'Apuntá el borde superior del teléfono hacia lo que en el plano es "arriba" y tocá "Usar la dirección actual". El offset se guarda solo.';
     }
   }
 
@@ -2928,11 +3023,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   /// Panel para calibrar la rotación del mapa respecto al norte real.
   ///
-  /// El operador apunta el teléfono hacia el borde SUPERIOR del mapa y ajusta
-  /// el slider hasta que la flecha de la brújula quede paralela al eje Y de la
-  /// imagen. El valor guardado (rotacion_mapa, en grados) es el offset que
-  /// PantallaNavegacion resta al heading de FlutterCompass para alinear la
-  /// brújula con el plano.
+  /// El operador apunta el teléfono hacia lo que en el plano es "arriba" y
+  /// toca "Usar la dirección actual": se promedia el heading unos segundos y
+  /// ese es el offset. El slider y los presets quedan para ajustar a mano.
+  /// Todo se guarda solo. El valor guardado (rotacion_mapa, en grados) es el
+  /// offset que PantallaNavegacion resta al heading de FlutterCompass para
+  /// alinear la brújula con el plano.
   Widget _buildPanelBrujula() {
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
@@ -2957,9 +3053,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                 ]),
                 SizedBox(height: 6),
                 Text(
-                  '1. Apuntá el borde SUPERIOR del teléfono hacia el borde SUPERIOR del mapa físico.\n'
-                  '2. Ajustá el offset con el slider hasta que la flecha quede paralela al eje Y del plano.\n'
-                  '3. Tocá "Guardar offset".',
+                  '1. Si la precisión no es alta, mové el teléfono haciendo un 8 en el aire.\n'
+                  '2. Sostené el teléfono como para navegar y apuntá su borde superior hacia lo que en el plano es "arriba".\n'
+                  '3. Tocá "Usar la dirección actual" y quedate quieto 2 segundos.\n'
+                  'El offset se guarda solo. Con el slider lo podés ajustar fino.',
                   style: TextStyle(color: TemaApp.textoBlanco, fontSize: 14, height: 1.5),
                 ),
               ],
@@ -3013,21 +3110,39 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                   style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 13),
                   textAlign: TextAlign.center,
                 ),
-                const SizedBox(height: 4),
-                const Text(
-                  'Apuntá el borde superior del teléfono al borde superior del mapa.\n'
-                  'Ajustá el slider hasta que la flecha quede apuntando exactamente hacia ARRIBA.',
-                  style: TextStyle(color: TemaApp.textoSecundario, fontSize: 12, height: 1.4),
-                  textAlign: TextAlign.center,
-                ),
               ],
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
+          _indicadorPrecisionBrujula(),
+          const SizedBox(height: 16),
 
-          // Slider de offset
+          // Toma promediada del rumbo: la forma principal de calibrar.
+          SizedBox(
+            width: double.infinity,
+            height: TemaApp.targetTactil,
+            child: ElevatedButton.icon(
+              onPressed: _headingEnVivo == null || _tomaRumbo != null
+                  ? null
+                  : _tomarDireccionActual,
+              icon: _tomaRumbo != null
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2.4, color: TemaApp.fondo),
+                    )
+                  : const Icon(Icons.my_location_rounded),
+              label: Text(_tomaRumbo != null
+                  ? 'Midiendo… quedate quieto'
+                  : 'Usar la dirección actual'),
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // Slider de offset: ajuste fino. Se guarda al soltarlo.
           Text(
-            'Offset: ${_rotacionMapa.toStringAsFixed(0)}°',
+            'Ajuste fino: ${_rotacionMapa.toStringAsFixed(0)}°',
             style: const TextStyle(color: TemaApp.textoBlanco, fontSize: 16, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 4),
@@ -3053,6 +3168,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               onChanged: (v) {
                 if (mounted) setState(() => _rotacionMapa = v.roundToDouble());
               },
+              onChangeEnd: _fijarRotacion,
             ),
           ),
 
@@ -3068,9 +3184,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                 (label: 'Oeste (270°)', valor: 270.0),
               ])
                 OutlinedButton(
-                  onPressed: () {
-                    if (mounted) setState(() => _rotacionMapa = preset.valor);
-                  },
+                  onPressed: () => _fijarRotacion(preset.valor),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: TemaApp.acento,
                     side: BorderSide(color: TemaApp.acento.withValues(alpha: 0.5)),
@@ -3082,31 +3196,47 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                 ),
             ],
           ),
-          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
 
-          // Botón guardar
-          SizedBox(
-            width: double.infinity,
-            height: TemaApp.targetTactil,
-            child: ElevatedButton.icon(
-              onPressed: () async {
-                try {
-                  await DatabaseHelper.instance.actualizarRotacionMapa(widget.pisoId, _rotacionMapa);
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Offset de brújula guardado: ${_rotacionMapa.toStringAsFixed(0)}°')),
-                    );
-                  }
-                } catch (e) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Error guardando offset: $e')),
-                    );
-                  }
-                }
-              },
-              icon: const Icon(Icons.save_rounded),
-              label: const Text('Guardar offset de brújula'),
+  /// Precisión del sensor de la brújula, con la indicación de calibrarlo
+  /// cuando no es alta (ver [_precisionBrujula]).
+  Widget _indicadorPrecisionBrujula() {
+    if (_headingEnVivo == null) return const SizedBox.shrink();
+    final p = _precisionBrujula;
+    final alta = p != null && p <= 15;
+    final texto = alta
+        ? 'Precisión de la brújula: alta.'
+        : p == null
+            ? 'Precisión de la brújula: desconocida o baja. Mové el teléfono '
+                'haciendo un 8 en el aire antes de calibrar.'
+            : p <= 30
+                ? 'Precisión de la brújula: media. Mové el teléfono haciendo '
+                    'un 8 en el aire hasta que sea alta.'
+                : 'Precisión de la brújula: baja. Mové el teléfono haciendo '
+                    'un 8 en el aire hasta que sea alta.';
+    final color = alta ? TemaApp.instruccionAccent : TemaApp.advertencia;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: alta ? TemaApp.instruccion : TemaApp.fondoAdvertencia,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            alta ? Icons.check_circle_outline : Icons.warning_amber_rounded,
+            color: color,
+            size: 20,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              texto,
+              style: TextStyle(color: color, fontSize: 13, height: 1.4),
             ),
           ),
         ],
