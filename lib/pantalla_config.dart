@@ -8,6 +8,7 @@ import 'beacon_model.dart';
 import 'zona_model.dart';
 import 'poi_model.dart';
 import 'rubros.dart';
+import 'pantalla_rubros.dart';
 import 'database.dart';
 import 'procesador_senal.dart';
 import 'posicionador.dart';
@@ -1064,7 +1065,6 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         pisoId: widget.pisoId,
         nombre: datos.nombre,
         posicion: normalizado,
-        descripcion: datos.descripcion,
         tipo: datos.tipo,
         sube: datos.sube,
         baja: datos.baja,
@@ -1106,7 +1106,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       pisoId: actual.pisoId,
       nombre: datos.nombre,
       posicion: actual.posicion,
-      descripcion: datos.descripcion,
+      // La descripción ya no se carga desde la app; se conserva la que tenga
+      // un lugar viejo para no borrarla sin aviso.
+      descripcion: actual.descripcion,
       tipo: datos.tipo,
       sube: datos.sube,
       baja: datos.baja,
@@ -2603,12 +2605,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                       itemCount: _lugares.length,
                       itemBuilder: (context, i) {
                         final l = _lugares[i];
-                        // Rubro, descripción y palabras propias, lo que haya.
+                        // Rubro y palabras propias, lo que haya.
                         final rubro = Rubros.porId(l.rubro);
                         final detalle = [
                           if (rubro != null) 'Rubro: ${rubro.nombre}',
-                          if (l.descripcion != null && l.descripcion!.isNotEmpty)
-                            l.descripcion!,
                           if (l.palabrasClave.isNotEmpty)
                             'Otras palabras: ${l.palabrasClave.join(', ')}',
                         ].join('\n');
@@ -3126,7 +3126,6 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 /// Resultado del diálogo de alta.
 class _DatosNuevoLugar {
   final String nombre;
-  final String? descripcion;
   final TipoLugar tipo;
   final bool sube;
   final bool baja;
@@ -3137,7 +3136,6 @@ class _DatosNuevoLugar {
 
   const _DatosNuevoLugar({
     required this.nombre,
-    this.descripcion,
     this.tipo = TipoLugar.comun,
     this.sube = false,
     this.baja = false,
@@ -3163,7 +3161,6 @@ class _DialogoNuevoLugar extends StatefulWidget {
 
 class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
   final _nombreCtrl = TextEditingController();
-  final _descCtrl = TextEditingController();
   final _clavesCtrl = TextEditingController();
 
   TipoLugar _tipo = TipoLugar.comun;
@@ -3187,7 +3184,6 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
     final l = widget.inicial;
     if (l == null) return;
     _nombreCtrl.text = l.nombre;
-    _descCtrl.text = l.descripcion ?? '';
     _clavesCtrl.text = LugarInteres.palabrasATexto(l.palabrasClave) ?? '';
     // Si el mapa trae un rubro que esta versión no conoce, se muestra como
     // "sin rubro" (el desplegable exige que el valor exista en la lista).
@@ -3209,7 +3205,6 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
   @override
   void dispose() {
     _nombreCtrl.dispose();
-    _descCtrl.dispose();
     _clavesCtrl.dispose();
     super.dispose();
   }
@@ -3230,6 +3225,17 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
         '${r.palabras.length > muestra ? '…' : ''}';
   }
 
+  /// Abre el catálogo de rubros. Al volver, el desplegable se rearma con lo
+  /// que haya quedado y, si se borró el rubro elegido, queda "Sin rubro".
+  Future<void> _administrarRubros() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const PantallaRubros()),
+    );
+    if (!mounted) return;
+    setState(() => _rubro = Rubros.porId(_rubro)?.id);
+  }
+
   /// Qué falta para poder guardar (null = se puede guardar).
   String? get _faltante {
     if (!_esEscalera) {
@@ -3242,13 +3248,11 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
 
   void _guardar() {
     if (_faltante != null) return;
-    final desc = _descCtrl.text.trim();
     if (!_esEscalera) {
       Navigator.pop(
         context,
         _DatosNuevoLugar(
           nombre: _nombreCtrl.text.trim(),
-          descripcion: desc.isEmpty ? null : desc,
           palabrasClave: LugarInteres.palabrasDesdeTexto(_clavesCtrl.text),
           rubro: _rubro,
         ),
@@ -3262,7 +3266,6 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
         nombre: nombre.isEmpty
             ? (_esAscensor ? 'Ascensor' : 'Escalera')
             : nombre,
-        descripcion: desc.isEmpty ? null : desc,
         tipo: TipoLugar.escalera,
         esAscensor: _esAscensor,
         sube: _sentido == _SentidoEscalera.sube ||
@@ -3342,14 +3345,6 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
                 border: const OutlineInputBorder(),
               ),
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _descCtrl,
-              decoration: const InputDecoration(
-                hintText: 'Descripción opcional',
-                border: OutlineInputBorder(),
-              ),
-            ),
             if (!_esEscalera) ...[
               const SizedBox(height: 12),
               // Rubro: trae cargadas las palabras con las que la gente pide
@@ -3373,12 +3368,19 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
                     items: [
                       const DropdownMenuItem<String>(
                         value: '',
-                        child: Text('Sin rubro'),
+                        child: _OpcionRubro(
+                          icono: Icons.label_off_outlined,
+                          nombre: 'Sin rubro',
+                          apagada: true,
+                        ),
                       ),
                       for (final r in Rubros.todos)
                         DropdownMenuItem<String>(
                           value: r.id,
-                          child: Text(r.nombre),
+                          child: _OpcionRubro(
+                            icono: iconoRubro(r.id),
+                            nombre: r.nombre,
+                          ),
                         ),
                     ],
                     onChanged: (v) => setState(
@@ -3386,7 +3388,20 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
                   ),
                 ),
               ),
-              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: _administrarRubros,
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(0, 44),
+                    textStyle: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  icon: const Icon(Icons.tune, size: 20),
+                  label: const Text('Editar rubros'),
+                ),
+              ),
+              const SizedBox(height: 4),
               TextField(
                 controller: _clavesCtrl,
                 minLines: 1,
@@ -3514,6 +3529,44 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
         ElevatedButton(
           onPressed: _faltante == null ? _guardar : null,
           child: const Text('Guardar'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Opción del desplegable de rubros: ícono del rubro y su nombre.
+class _OpcionRubro extends StatelessWidget {
+  final IconData icono;
+  final String nombre;
+
+  /// Para "Sin rubro": ícono y texto en gris.
+  final bool apagada;
+
+  const _OpcionRubro({
+    required this.icono,
+    required this.nombre,
+    this.apagada = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(
+          icono,
+          size: 20,
+          color: apagada ? TemaApp.textoSecundario : TemaApp.acento,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            nombre,
+            overflow: TextOverflow.ellipsis,
+            style: apagada
+                ? const TextStyle(color: TemaApp.textoSecundario)
+                : null,
+          ),
         ),
       ],
     );

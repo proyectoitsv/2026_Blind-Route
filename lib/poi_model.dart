@@ -1,6 +1,8 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 
+import 'rubros.dart';
+
 /// Tipo de lugar de interés.
 ///  - [comun]: un destino normal (baño, aula, terminal...).
 ///  - [escalera]: conecta con otro piso. Además de su posición guarda si sube,
@@ -59,6 +61,13 @@ class LugarInteres {
   /// [palabrasClave] queda para lo propio de ESTE lugar (apodos, marcas).
   final String? rubro;
 
+  /// Palabras del [rubro] tal como venían en el mapa descargado (v17+). Son
+  /// las que valen para buscar este lugar: el catálogo de rubros es de cada
+  /// admin, así que el de este teléfono puede no tener ese rubro o tenerlo
+  /// con otras palabras. Null = usar el catálogo local (lugares cargados en
+  /// este teléfono, o mapas publicados antes de v17). Ver [palabrasDelRubro].
+  final List<String>? palabrasRubro;
+
   const LugarInteres({
     this.id,
     required this.pisoId,
@@ -71,8 +80,17 @@ class LugarInteres {
     this.direccionEntrada,
     this.palabrasClave = const [],
     this.rubro,
+    this.palabrasRubro,
     this.esAscensor = false,
   });
+
+  /// Palabras con las que se encuentra este lugar por su rubro: las que trajo
+  /// el mapa descargado o, si no trajo, las del rubro en el catálogo local.
+  /// Vacía si no tiene rubro o si el rubro ya no existe.
+  List<String> get palabrasDelRubro {
+    if (rubro == null) return const [];
+    return palabrasRubro ?? Rubros.porId(rubro)?.palabras ?? const [];
+  }
 
   /// true para todo lo que conecta pisos: escaleras Y ascensores.
   bool get esEscalera => tipo == TipoLugar.escalera;
@@ -116,6 +134,7 @@ class LugarInteres {
       direccionEntrada: direccionEntrada,
       palabrasClave: palabrasClave,
       rubro: rubro,
+      palabrasRubro: palabrasRubro,
       esAscensor: esAscensor,
     );
   }
@@ -188,6 +207,8 @@ class LugarInteres {
         'direccion_entrada': direccionEntrada,
         'palabras_clave': palabrasATexto(palabrasClave),
         'rubro': rubro,
+        'rubro_palabras':
+            palabrasRubro == null ? null : palabrasATexto(palabrasRubro!),
         'ascensor': esAscensor ? 1 : 0,
       };
 
@@ -207,6 +228,9 @@ class LugarInteres {
       direccionEntrada: (row['direccion_entrada'] as num?)?.toDouble(),
       palabrasClave: palabrasDesdeTexto(row['palabras_clave'] as String?),
       rubro: row['rubro'] as String?,
+      palabrasRubro: row['rubro_palabras'] == null
+          ? null
+          : palabrasDesdeTexto(row['rubro_palabras'] as String?),
       esAscensor: (row['ascensor'] as int? ?? 0) == 1,
     );
   }
@@ -217,19 +241,28 @@ class LugarInteres {
   // la tabla de Supabase no necesita cambios. Un mapa viejo (sin estos
   // campos) se descarga con todos sus lugares como comunes.
 
-  Map<String, dynamic> toJsonNube() => {
-        'nombre': nombre,
-        'x': posicion.dx,
-        'y': posicion.dy,
-        'descripcion': descripcion,
-        'tipo': tipo.name,
-        'sube': sube,
-        'baja': baja,
-        'direccion_entrada': direccionEntrada,
-        'palabras_clave': palabrasClave,
-        'rubro': rubro,
-        'ascensor': esAscensor,
-      };
+  Map<String, dynamic> toJsonNube() {
+    // El rubro viaja con sus palabras (v17): el catálogo de rubros es de cada
+    // admin y la app usuario no tiene forma de conocer uno propio. Un rubro
+    // sin palabras es uno que se borró del catálogo: se publica sin rubro, si
+    // no la app usuario podría resolver el id contra los de fábrica.
+    final palabrasDeRubro = palabrasDelRubro;
+    final conRubro = palabrasDeRubro.isNotEmpty;
+    return {
+      'nombre': nombre,
+      'x': posicion.dx,
+      'y': posicion.dy,
+      'descripcion': descripcion,
+      'tipo': tipo.name,
+      'sube': sube,
+      'baja': baja,
+      'direccion_entrada': direccionEntrada,
+      'palabras_clave': palabrasClave,
+      'rubro': conRubro ? rubro : null,
+      'rubro_palabras': conRubro ? palabrasDeRubro : null,
+      'ascensor': esAscensor,
+    };
+  }
 
   static TipoLugar tipoDesdeTexto(String? texto) =>
       texto == TipoLugar.escalera.name ? TipoLugar.escalera : TipoLugar.comun;

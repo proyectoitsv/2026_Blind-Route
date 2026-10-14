@@ -1,5 +1,4 @@
 import 'poi_model.dart';
-import 'rubros.dart';
 
 /// ═══════════════════════════════════════════════════════════════════════════
 /// BÚSQUEDA DE LUGARES POR VOZ: NOMBRE, RUBRO Y PALABRAS CLAVE
@@ -17,7 +16,7 @@ import 'rubros.dart';
 ///  • Dijo alguna PALABRA del nombre ("restaurante" para "Restaurante Burger
 ///    King") → una por palabra acertada.
 ///  • Dijo una palabra del RUBRO del lugar ("comer" para cualquier lugar
-///    del rubro Comida; las palabras de cada rubro están en rubros.dart) →
+///    del rubro Comida; ver rubros.dart y LugarInteres.palabrasDelRubro) →
 ///    una por cada palabra.
 ///  • Dijo una PALABRA CLAVE propia de ese lugar, cargada por el admin ("el
 ///    mac" para "McDonald's") → una por cada palabra de la clave.
@@ -117,12 +116,11 @@ class BuscadorLugares {
 
     // Palabras del rubro y palabras clave propias del lugar. Se puntúan
     // igual.
-    final rubro = Rubros.porId(lugar.rubro);
     final claves = <List<String>>[
-      // Se normalizan acá, así en rubros.dart se pueden escribir con ñ y
-      // tildes ("baño", "niños", "librería") sin que dejen de encontrarse.
-      if (rubro != null)
-        for (final p in rubro.palabras) _palabras(normalizar(p)),
+      // Se normalizan acá, así los rubros se pueden escribir con ñ y tildes
+      // ("baño", "niños", "librería") sin que dejen de encontrarse. Son las
+      // que trajo el mapa o, si no trajo, las del catálogo local.
+      for (final p in lugar.palabrasDelRubro) _palabras(normalizar(p)),
       for (final c in lugar.palabrasClave) _palabras(normalizar(c)),
       // Escaleras y ascensores no tienen rubro: se encuentran por lo que
       // son, se llamen como se llamen ("Núcleo B").
