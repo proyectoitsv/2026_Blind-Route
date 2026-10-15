@@ -24,6 +24,8 @@ import 'voz_service.dart';
 import 'grilla_nav.dart';
 import 'filtro_un_euro.dart';
 import 'detector_movimiento.dart';
+import 'detector_giros.dart';
+import 'velocidad_usuario.dart';
 import 'tema.dart';
 import 'piso_util.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -617,17 +619,18 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // Los cuatro primeros valores son los que conviene tocar si en la práctica
   // los avisos salen temprano o tarde.
 
-  /// Velocidad (m/s) que se supone cuando el acelerómetro dice que camina.
-  /// Una persona ciega con bastón anda entre 0,7 y 1,0.
-  static const double _velocidadCaminataMs = 0.9;
+  /// Velocidad de caminata de quien usa el teléfono: arranca en 0,9 m/s y se
+  /// aprende midiendo cuánto tarda de esquina a esquina (ver "ANCLA DE
+  /// ESQUINA" más abajo y [VelocidadUsuario]).
+  final VelocidadUsuario _velocidadUsuario = VelocidadUsuario();
 
   /// Atraso (s) de la posición medida respecto de la real, caminando.
   /// Si los giros siguen llegando tarde, SUBIR este valor.
-  static const double _retardoPosicionSeg = 1.3;
+  static const double _retardoPosicionSeg = 0.5;
 
   /// Con cuánto tiempo (s) de anticipación a la esquina se dice el giro.
   /// Tiene que cubrir lo que tarda en decirse (~1,4 s) y en reaccionar.
-  static const double _anticipoGiroSeg = 2.2;
+  static const double _anticipoGiroSeg = 0.5;
 
   /// Con cuánto tiempo (s) de anticipación se dice el aviso previo.
   static const double _anticipoAvisoSeg = 6.0;
@@ -660,14 +663,80 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Esquina cuyo giro ya se le dijo al usuario, y cuándo.
   ({Offset esquina, DateTime desde})? _giroComprometido;
 
-  /// Velocidad estimada del usuario: la de caminata, escalada por lo que
-  /// dice el acelerómetro (0 quieto … 1 caminando).
+  /// Velocidad estimada del usuario: la de caminata aprendida, escalada por
+  /// lo que dice el acelerómetro (0 quieto … 1 caminando).
   double get _velocidadEstimadaMs =>
-      _velocidadCaminataMs * _factorMovimiento.clamp(0.0, 1.0);
+      _velocidadUsuario.velocidadMs * _factorMovimiento.clamp(0.0, 1.0);
 
   /// Cuánto más adelante está el usuario respecto de la posición medida.
-  double get _avancePorRetardoMetros =>
-      _velocidadEstimadaMs * _retardoPosicionSeg;
+  /// Con la posición anclada a una esquina no hay atraso que compensar: ahí
+  /// la posición no viene del BLE.
+  double get _avancePorRetardoMetros => _anclaEsquina != null
+      ? 0.0
+      : _velocidadEstimadaMs * _retardoPosicionSeg;
+
+  // ── ANCLA DE ESQUINA ──────────────────────────────────────────────────────
+  //
+  // Cuando el giroscopio detecta que el usuario DOBLÓ, y eso pasa siguiendo
+  // una ruta, cerca de una esquina que dobla para ese mismo lado, se sabe
+  // dónde está con una precisión que el BLE no da: en esa esquina. Entonces:
+  //
+  //   1. La posición se lleva a la esquina y se reinician los filtros ahí.
+  //   2. Durante [_anclaEsquinaSeg] la posición NO sale del BLE (que llega
+  //      atrasado y todavía diría "antes de la esquina"): avanza desde la
+  //      esquina por el tramo nuevo, a la velocidad aprendida, mientras el
+  //      acelerómetro diga que camina.
+  //   3. Después vuelve el BLE, pero los filtros arrancan desde esa posición,
+  //      así que la retoma es gradual.
+  //
+  // Además, el tiempo entre dos esquinas seguidas (descontando lo parado) y
+  // su distancia en el plano dan la velocidad de la persona, que se aprende.
+
+  /// Interruptor de todo el mecanismo: en false los giros no anclan la
+  /// posición ni enseñan la velocidad (la navegación queda como antes). Para
+  /// comparar en el campo.
+  static const bool _anclaEsquinaActiva = true;
+
+  /// Cuánto dura (s) la posición anclada antes de volver al BLE.
+  static const double _anclaEsquinaSeg = 3.0;
+
+  /// Distancia máxima (m) entre la posición medida y la esquina para tomar un
+  /// giro como "dobló en esa esquina". Vale tanto para la próxima esquina de
+  /// la ruta como para la esquina en la que ya se le dijo que doble. Es
+  /// distancia según el BLE: más chico evita anclar en la esquina a alguien
+  /// que dobló antes, pero también deja pasar más giros buenos sin anclar
+  /// cuando el BLE está corrido (en ese caso la navegación sigue como antes).
+  static const double _radioGiroEnEsquinaMetros = 1.5;
+
+  /// Para tomar un giro como "dobló en la esquina" tiene que haber venido
+  /// CAMINANDO: al menos [_caminandoAntesDelGiroSeg] de los
+  /// [_ventanaAntesDelGiroSeg] segundos anteriores al giro. Es lo que separa
+  /// doblar en una esquina de girar parado para orientarse (al arrancar, o
+  /// cuando la app dice "girá a la derecha" para que quede de frente).
+  static const double _caminandoAntesDelGiroSeg = 1.5;
+  static const double _ventanaAntesDelGiroSeg = 4.0;
+
+  /// Y tiene que haber venido mirando hacia la esquina: el rumbo de la
+  /// brújula ANTES del giro, a lo sumo a esto (°) de la dirección del tramo
+  /// que llega a ella. Amplio porque adentro la brújula se desvía. Sólo se
+  /// exige con la brújula confiable.
+  static const double _toleranciaRumboTramoGrados = 50;
+
+  /// Rumbos crudos de la brújula de los últimos segundos, para saber hacia
+  /// dónde miraba el usuario ANTES de un giro.
+  final List<({DateTime t, double grados})> _historialRumbo = [];
+
+  late final DetectorGiros _detectorGiros =
+      DetectorGiros(onGiro: _alDetectarGiro);
+
+  /// Posición anclada vigente (null = la posición sale del BLE).
+  _AnclaEsquina? _anclaEsquina;
+
+  /// Tramo que se está midiendo para aprender la velocidad: arrancó al
+  /// terminar de doblar en [desde] y sólo cuenta si el próximo giro es en
+  /// [hasta], la esquina siguiente de la ruta.
+  ({Offset desde, Offset hasta, DateTime inicio, double quietoInicial})?
+      _tramoVelocidad;
 
   /// Cuánto se espera a que el A* devuelva la ruta para decir el destino y la
   /// primera indicación en UNA sola frase ("Baño. Girá a la izquierda."). El
@@ -711,6 +780,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     // eso: "Buscando ubicación" marcado como Interrupted: true.
     _voz.limpiar(dueno: this);
     _movimiento.detener();
+    _detectorGiros.detener();
     _puertaRumbo.resetear();
     _histeresisCelda.resetear();
     if (widget.procesadorCompartido == null && !_saltandoDePiso) {
@@ -846,6 +916,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         debugPrint('[Posicionamiento] Sin acelerómetro: el filtro One Euro '
             'trabaja con factor de movimiento fijo.');
       }
+      // Giroscopio: detecta cuándo dobla el usuario (ver "ANCLA DE ESQUINA").
+      // Sin él la navegación sigue igual, sólo que sin anclar en las esquinas
+      // ni aprender la velocidad.
+      await _velocidadUsuario.cargar();
+      await _detectorGiros.iniciar();
+      debugPrint('[Velocidad] Velocidad de caminata: '
+          '${_velocidadUsuario.velocidadMs.toStringAsFixed(2)} m/s '
+          '(${_velocidadUsuario.mediciones} tramos medidos).');
       await _iniciarBrujula();
  
       // Anuncio de bienvenida. NO se espera a que termine: `hablar()` bloquea
@@ -967,6 +1045,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           // Solo actualizar el modelo — sin setState aquí.
           if (!mounted) return;
           _orientacion.actualizarHeadingBrujula(event.heading!);
+          _registrarRumbo(event.heading!);
         },
         onError: (e) {
           timeoutBrujula.cancel();
@@ -1493,6 +1572,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
             'mov=${_factorMovimiento.toStringAsFixed(2)} '
             'adq=${fAdq.toStringAsFixed(2)} '
             'velAng=${_orientacion.velocidadAngularGrados.toStringAsFixed(0)}°/s '
+            'vel=${_velocidadUsuario.velocidadMs.toStringAsFixed(2)} m/s '
+            'ancla=${_anclaEsquina != null} '
             'puerta(apertura=${_puertaRumbo.apertura.toStringAsFixed(2)}, '
             'evid=${_puertaRumbo.evidenciaLateralMs.toStringAsFixed(2)} m/s)');
       }
@@ -1578,6 +1659,27 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           if (discrepancia < _zonaMuertaQuietoMetros) {
             nuevaPosicionFiltrada = _posicionFiltrada!;
           }
+        }
+      }
+
+      // ── ANCLA DE ESQUINA ─────────────────────────────────────────────────
+      // Recién dobló en una esquina: la posición avanza desde ahí por el
+      // tramo nuevo en vez de salir del BLE (ver "ANCLA DE ESQUINA" arriba).
+      // Lo calculado por el BLE en este ciclo se descarta, y los filtros se
+      // dejan parados en la posición anclada para que, al volver el BLE,
+      // arranquen desde ella.
+      final ancla = _anclaEsquina;
+      if (ancla != null) {
+        final seg =
+            ahoraMuestra.difference(ancla.desde).inMilliseconds / 1000.0;
+        if (seg >= _anclaEsquinaSeg) {
+          _anclaEsquina = null;
+          debugPrint('[Giro] Fin del anclaje: la posición vuelve al BLE.');
+        } else {
+          ancla.avanzarHasta(ahoraMuestra, _velocidadEstimadaMs);
+          nuevaPosicionFiltrada = ancla.posicion(_grilla);
+          _filtroPosicion.fijar(nuevaPosicionFiltrada);
+          _puertaRumbo.resetear();
         }
       }
       _posicionFiltrada = nuevaPosicionFiltrada;
@@ -1806,6 +1908,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         ubicacion.desvioMetros >= _desvioReplanInmediatoMetros) {
       debugPrint('[Ruta] Fuera de ruta '
           '(${ubicacion.desvioMetros.toStringAsFixed(1)} m). Recalculando.');
+      // Si se desvió, el tiempo hasta la próxima esquina ya no mide su
+      // velocidad sobre el tramo: ese tramo no se usa para aprenderla.
+      _tramoVelocidad = null;
       _ultimoIntentoRuta = ahora;
       _calcularRuta();
     }
@@ -2660,6 +2765,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     _celdaUltimoCalculo = null;
     _maniobrasAnunciadas.clear();
     _giroComprometido = null;
+    _tramoVelocidad = null;
 
     // Destino nuevo: el filtro de voz arranca de cero y la primera indicación
     // queda marcada como pendiente (ver _primeraInstruccionPendiente).
@@ -3087,6 +3193,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       _pedidoDesde = null;
       _maniobrasAnunciadas.clear();
       _giroComprometido = null;
+      _tramoVelocidad = null;
       _fueraDeRutaDesde = null;
       _celdaUltimoCalculo = null;
       _primeraInstruccionPendiente = false;
@@ -3242,6 +3349,210 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
     final d = _destinoSeleccionado!;
     return d.esEscalera ? 'está ${d.medioConArticulo}' : 'llegás a ${d.nombre}';
+  }
+
+  // ── Giros detectados (ver "ANCLA DE ESQUINA") ─────────────────────────────
+
+  /// El giroscopio detectó que el usuario dobló. Si está siguiendo una ruta y
+  /// el giro corresponde a una esquina de ella, la posición se ancla ahí.
+  void _alDetectarGiro(GiroDetectado giro) {
+    if (!mounted || !_anclaEsquinaActiva) return;
+    final ruta = _rutaActual;
+    final pos = _posicionFinal;
+    // Sin ruta un giro no dice nada de dónde está: puede doblar en cualquier
+    // lado.
+    if (_destinoSeleccionado == null ||
+        _llegoADestino ||
+        _llegoAEscalera ||
+        ruta == null ||
+        ruta.length < 2 ||
+        pos == null) {
+      return;
+    }
+    final esquina = _esquinaDelGiro(giro, ruta, pos);
+    if (esquina == null) {
+      debugPrint('[Giro] $giro: ignorado, no hay una esquina de la ruta que '
+          'doble para ese lado cerca de la posición.');
+      return;
+    }
+
+    // ¿Venía caminando? Si no, giró parado: se estaba orientando.
+    final antes = giro.inicio.subtract(Duration(
+        milliseconds: (_ventanaAntesDelGiroSeg * 1000).round()));
+    final caminando = _movimiento.segundosMoviendoEntre(antes, giro.inicio);
+    if (_movimiento.disponible && caminando < _caminandoAntesDelGiroSeg) {
+      debugPrint('[Giro] $giro: ignorado, no venía caminando '
+          '(${caminando.toStringAsFixed(1)} s de '
+          '${_ventanaAntesDelGiroSeg.toStringAsFixed(0)} s).');
+      return;
+    }
+
+    // ¿Venía mirando hacia la esquina?
+    final desvio = _desvioRumboAntesDelGiro(giro, esquina, ruta);
+    if (desvio != null && desvio > _toleranciaRumboTramoGrados) {
+      debugPrint('[Giro] $giro: ignorado, antes del giro miraba a '
+          '${desvio.toStringAsFixed(0)}° del tramo que llega a la esquina.');
+      return;
+    }
+
+    debugPrint('[Giro] $giro: aceptado (venía caminando '
+        '${caminando.toStringAsFixed(1)} s, a '
+        '${_distanciaMetros(pos, esquina).toStringAsFixed(1)} m de la esquina '
+        'según el BLE, rumbo previo '
+        '${desvio == null ? "sin verificar" : "a ${desvio.toStringAsFixed(0)}° del tramo"}).');
+    _anclarEnEsquina(esquina, giro, ruta);
+  }
+
+  /// Guarda el rumbo crudo de la brújula (últimos segundos).
+  void _registrarRumbo(double grados) {
+    final ahora = DateTime.now();
+    _historialRumbo.add((t: ahora, grados: grados));
+    while (_historialRumbo.isNotEmpty &&
+        ahora.difference(_historialRumbo.first.t).inSeconds > 8) {
+      _historialRumbo.removeAt(0);
+    }
+  }
+
+  /// Cuántos grados había entre el rumbo del usuario justo ANTES de [giro] y
+  /// la dirección del tramo de [ruta] que llega a [esquina]. Null si no se
+  /// puede saber con confianza (brújula poco confiable o inestable antes del
+  /// giro, o tramo desconocido): en ese caso no se usa para decidir.
+  double? _desvioRumboAntesDelGiro(
+      GiroDetectado giro, Offset esquina, List<Offset> ruta) {
+    if (!_compassDisponible || !_rumboActivo) return null;
+    final clave = SeguidorRuta.claveCelda(esquina, _grilla);
+    final k = ruta
+        .indexWhere((p) => SeguidorRuta.claveCelda(p, _grilla) == clave);
+    if (k < 1) return null;
+
+    // Rumbo antes del giro: media circular del último segundo previo.
+    final desde = giro.inicio.subtract(const Duration(milliseconds: 1200));
+    final hasta = giro.inicio.subtract(const Duration(milliseconds: 100));
+    double s = 0, c = 0;
+    int n = 0;
+    for (final m in _historialRumbo) {
+      if (m.t.isBefore(desde) || m.t.isAfter(hasta)) continue;
+      s += sin(m.grados * pi / 180);
+      c += cos(m.grados * pi / 180);
+      n++;
+    }
+    if (n < 3) return null;
+    // Si el rumbo bailaba (ya estaba girando o la brújula saltaba), no sirve.
+    if (sqrt(s * s + c * c) / n < 0.9) return null;
+    final rumbo = atan2(s, c) * 180 / pi;
+    final rumboPlano = rumbo - _rotacionMapaEfectiva;
+
+    // Dirección del tramo que llega a la esquina, en el marco del plano
+    // (0 = arriba, 90 = derecha), igual que el rumbo compensado.
+    final dxM = (ruta[k].dx - ruta[k - 1].dx) * _grilla.metrosX;
+    final dyM = (ruta[k].dy - ruta[k - 1].dy) * _grilla.metrosY;
+    final tramo = atan2(dxM, -dyM) * 180 / pi;
+
+    var d = ((rumboPlano - tramo) % 360 + 360) % 360;
+    if (d > 180) d = 360 - d;
+    return d;
+  }
+
+  /// Esquina de la ruta en la que se interpreta que dobló, o null si el giro
+  /// no corresponde a ninguna (dobló para el otro lado, o lejos de ella).
+  Offset? _esquinaDelGiro(GiroDetectado giro, List<Offset> ruta, Offset pos) {
+    // 1) La esquina en la que se le dijo que doble, si es para ese lado.
+    final comprometido = _giroComprometido;
+    if (comprometido != null &&
+        DateTime.now().difference(comprometido.desde) <= _maxCompromisoGiro) {
+      SentidoGiro? anunciado;
+      for (final m in _maniobrasAnunciadas) {
+        if (m.nivel == 2 && m.esquina == comprometido.esquina) {
+          anunciado = m.giro;
+        }
+      }
+      if (anunciado == giro.sentido &&
+          _distanciaMetros(pos, comprometido.esquina) <=
+              _radioGiroEnEsquinaMetros) {
+        return comprometido.esquina;
+      }
+    }
+    // 2) La próxima esquina de la ruta, si está cerca y dobla para ese lado.
+    final m = SeguidorRuta.proximaManiobra(
+      ruta,
+      pos,
+      _grilla,
+      posicionFina: _posicionFiltrada,
+    );
+    if (m != null &&
+        m.giro == giro.sentido &&
+        m.metros <= _radioGiroEnEsquinaMetros) {
+      return m.esquina;
+    }
+    return null;
+  }
+
+  /// Lleva la posición a [esquina] y la deja anclada ahí (ver "ANCLA DE
+  /// ESQUINA"). Si el giro cierra un tramo que se venía midiendo, aprende la
+  /// velocidad, y empieza a medir el tramo que sale de esta esquina.
+  void _anclarEnEsquina(
+      Offset esquina, GiroDetectado giro, List<Offset> ruta) {
+    // Tramo que sale de la esquina: hacia ahí avanza la posición anclada.
+    final clave = SeguidorRuta.claveCelda(esquina, _grilla);
+    final k = ruta
+        .indexWhere((p) => SeguidorRuta.claveCelda(p, _grilla) == clave);
+    final fin = (k >= 0 && k < ruta.length - 1)
+        ? SeguidorRuta.indiceProximaEsquina(ruta, k)
+        : null;
+    final hasta = fin != null ? ruta[fin] : null;
+
+    _anclaEsquina = _AnclaEsquina.hacia(esquina, hasta, _grilla);
+    _posicionFiltrada = esquina;
+    _posicionFinal = esquina;
+    _filtroPosicion.fijar(esquina);
+    _puertaRumbo.resetear();
+    _histeresisCelda.fijar(
+        _grilla.indiceX(esquina.dx), _grilla.indiceY(esquina.dy));
+    // Ya dobló: no hace falta seguir suponiéndolo parado en la esquina.
+    _giroComprometido = null;
+    debugPrint('[Giro] $giro: anclado en la esquina '
+        '(${_grilla.indiceX(esquina.dx)},${_grilla.indiceY(esquina.dy)}).');
+
+    _medirTramo(esquina, giro);
+    // El tramo nuevo sólo sirve para medir si termina en otra esquina: en el
+    // final de la ruta no se dobla, así que no habría giro que lo cierre.
+    _tramoVelocidad = (fin != null && fin < ruta.length - 1)
+        ? (
+            desde: esquina,
+            hasta: ruta[fin],
+            inicio: giro.fin,
+            quietoInicial: _movimiento.segundosQuieto,
+          )
+        : null;
+
+    if (mounted) {
+      setState(() {});
+      if (_seguirUsuario) _centrarEnUsuario();
+    }
+  }
+
+  /// Si el giro en [esquina] cierra el tramo que se venía midiendo, registra
+  /// su velocidad: distancia en el plano entre las dos esquinas, sobre el
+  /// tiempo entre terminar de doblar en la primera y empezar a doblar en la
+  /// segunda, menos lo que estuvo parado.
+  void _medirTramo(Offset esquina, GiroDetectado giro) {
+    final tramo = _tramoVelocidad;
+    if (tramo == null) return;
+    if (SeguidorRuta.claveCelda(tramo.hasta, _grilla) !=
+        SeguidorRuta.claveCelda(esquina, _grilla)) {
+      debugPrint('[Velocidad] Tramo descartado: dobló en otra esquina que la '
+          'esperada.');
+      return;
+    }
+    final metros = _distanciaMetros(tramo.desde, esquina);
+    final parado = _movimiento.segundosQuieto - tramo.quietoInicial;
+    final segundos =
+        giro.inicio.difference(tramo.inicio).inMilliseconds / 1000.0 - parado;
+    final r = _velocidadUsuario.registrarTramo(metros, segundos);
+    debugPrint('[Velocidad] Tramo de ${metros.toStringAsFixed(1)} m en '
+        '${segundos.toStringAsFixed(1)} s (${parado.toStringAsFixed(1)} s '
+        'parado) = ${r.velocidadMs.toStringAsFixed(2)} m/s: '
+        '${r.usado ? r.motivo : "descartado, ${r.motivo}"}.');
   }
 
   /// Anuncia, ANTES de llegar, lo próximo que hay que hacer sobre la ruta
@@ -4551,6 +4862,65 @@ class _HisteresisCelda {
     _ciclosEnCeldaNueva = 0;
     _celdaCandidataActual = null;
   }
+
+  /// Da por confirmada la celda (ix, iy) sin esperar ciclos. Se usa cuando se
+  /// sabe dónde está el usuario (al anclarlo en una esquina).
+  void fijar(int ix, int iy) {
+    _celdaConfirmada = (ix: ix, iy: iy);
+    _ciclosEnCeldaNueva = 0;
+    _celdaCandidataActual = null;
+  }
+}
+
+/// Posición anclada a una esquina después de que el usuario dobló ahí (ver
+/// "ANCLA DE ESQUINA"). Avanza desde la esquina por el tramo que sale de ella.
+class _AnclaEsquina {
+  final Offset esquina;
+  final DateTime desde;
+
+  /// Versor del tramo que sale de la esquina, en metros. (0, 0) si no se
+  /// conoce el tramo: entonces la posición se queda en la esquina.
+  final double dirX;
+  final double dirY;
+
+  /// Largo de ese tramo (m): lo estimado no pasa de la esquina siguiente.
+  final double largoTramo;
+
+  double _avance = 0;
+
+  /// Hasta cuándo se contó el avance.
+  DateTime _ultimoAvance;
+
+  _AnclaEsquina._(
+      this.esquina, this.desde, this.dirX, this.dirY, this.largoTramo)
+      : _ultimoAvance = desde;
+
+  /// Ancla en [esquina], avanzando hacia [hasta] (el final del tramo que
+  /// sale de ella). Sin [hasta], la posición queda fija en la esquina.
+  factory _AnclaEsquina.hacia(Offset esquina, Offset? hasta, GrillaNav g) {
+    final ahora = DateTime.now();
+    if (hasta == null) return _AnclaEsquina._(esquina, ahora, 0, 0, 0);
+    final dx = (hasta.dx - esquina.dx) * g.metrosX;
+    final dy = (hasta.dy - esquina.dy) * g.metrosY;
+    final largo = sqrt(dx * dx + dy * dy);
+    if (largo < 1e-6) return _AnclaEsquina._(esquina, ahora, 0, 0, 0);
+    return _AnclaEsquina._(esquina, ahora, dx / largo, dy / largo, largo);
+  }
+
+  /// Suma lo que avanzó a [velocidadMs] desde la última vez hasta [ahora].
+  /// El tiempo se cuenta desde el anclaje y no desde la muestra BLE anterior,
+  /// que puede ser de antes de doblar.
+  void avanzarHasta(DateTime ahora, double velocidadMs) {
+    final seg = ahora.difference(_ultimoAvance).inMilliseconds / 1000.0;
+    _ultimoAvance = ahora;
+    if (seg <= 0 || seg > 1.5) return;
+    _avance = min(largoTramo, _avance + velocidadMs * seg);
+  }
+
+  Offset posicion(GrillaNav g) => Offset(
+        esquina.dx + dirX * _avance / g.metrosX,
+        esquina.dy + dirY * _avance / g.metrosY,
+      );
 }
 
 /// Baño pedido por el usuario.

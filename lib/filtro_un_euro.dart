@@ -181,4 +181,15 @@ class FiltroUnEuroPosicion {
     _velocidad = 0;
     _cutoffActual = 0;
   }
+
+  /// Deja el filtro parado en [p], como si su última salida hubiera sido esa.
+  /// A diferencia de [resetear], la próxima muestra se filtra desde [p] en
+  /// vez de tomarse tal cual: sirve cuando se sabe dónde está el usuario
+  /// mejor que lo que dice la señal (por ejemplo, al doblar en una esquina).
+  void fijar(Offset p) {
+    resetear();
+    _x.fijar(p.dx);
+    _y.fijar(p.dy);
+    _registrarHistorial(p);
+  }
 }
