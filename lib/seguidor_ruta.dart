@@ -179,6 +179,9 @@ class SeguidorRuta {
   /// Índice de la próxima esquina del camino a partir de [idx]: la última
   /// celda del tramo recto que sale de [idx]. Si [idx] es la última celda,
   /// devuelve [idx].
+  static int indiceProximaEsquina(List<Offset> ruta, int idx) =>
+      _proximaEsquina(ruta, idx);
+
   static int _proximaEsquina(List<Offset> ruta, int idx) {
     if (idx >= ruta.length - 1) return ruta.length - 1;
     Offset signo(Offset v) => Offset(v.dx.sign, v.dy.sign);
