@@ -24,6 +24,9 @@ import 'voz_service.dart';
 import 'grilla_nav.dart';
 import 'filtro_un_euro.dart';
 import 'detector_movimiento.dart';
+import 'ajustes_navegacion.dart';
+import 'panel_ajustes_navegacion.dart';
+import 'restriccion_zonas.dart';
 import 'tema.dart';
 import 'piso_util.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -206,7 +209,28 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Factor de movimiento del ciclo actual (0 = quieto, 1 = caminando).
   double _factorMovimiento = 0.0;
 
+  /// Salida del filtrado (multilateración, puerta, One Euro, tope de paso).
+  /// Es el estado del filtro y NO sabe del plano: puede caer adentro de una
+  /// zona prohibida. La del usuario es [_posicionPermitida].
   Offset? _posicionFiltrada;
+
+  /// [_posicionFiltrada] llevada fuera de las zonas prohibidas (ver
+  /// [RestriccionZonas]). Es la posición fina del usuario: de ella sale la
+  /// celda que se muestra ([_posicionFinal]).
+  ///
+  /// La restricción NO vuelve al filtro: si la posición restringida
+  /// alimentara el próximo ciclo, el tope de paso la haría avanzar de a
+  /// poco hacia la medición, cada paso caería en la zona y volvería al
+  /// mismo borde. Con una primera ubicación del lado equivocado de una
+  /// pared, quedaría trabada ahí para siempre.
+  Offset? _posicionPermitida;
+
+  late final RestriccionZonas _restriccionZonas = RestriccionZonas(
+    grilla: _grilla,
+    prohibida: _resolvedor.esZonaProhibida,
+    conectadas: _resolvedor.conectadas,
+    enZona: _resolvedor.puntoEnZona,
+  );
 
   // Tope de velocidad de la posicion, en m/s REALES. Defensa anti-spike: un
   // beacon con una lectura anomala no puede arrastrar la posicion de golpe. Se
@@ -218,8 +242,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // normalizada, en un plano rectangular (metrosX != metrosY) el tope terminaba
   // siendo distinto segun la direccion, sin relacion con el rumbo. Ahora es un
   // limite de velocidad fisico y se multiplica por el dt real del ciclo.
+  // El de caminando es regulable ([AjustesNavegacion.velocidadMaxima]): es el
+  // que limita cuánto puede "alcanzar de golpe" el punto después de un atraso.
   static const double _velMaxQuietoMs = 1.2;
-  static const double _velMaxMoviendoMs = 3.0;
 
   /// Fraccion del tope longitudinal que se le permite al eje PERPENDICULAR al
   /// rumbo cuando el usuario camina. Es la ultima linea de defensa contra la
@@ -574,6 +599,24 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// menos lo deja caer por un hueco momentaneo de un par de lotes.
   static const double _decaimientoDbPorSeg = 8.0;
   DateTime? _ultimoDecaimiento;
+
+  /// Silencio (s) de un beacon a partir del cual empieza a decaer. Varias
+  /// veces su intervalo de emisión (~160 ms): un par de paquetes perdidos no
+  /// lo tocan.
+  static const double _graciaSinLecturaSeg = 1.0;
+
+  /// Hora de la última lectura NUEVA procesada de cada beacon (ver "SÓLO
+  /// LECTURAS NUEVAS" en _actualizarSenales).
+  final Map<String, DateTime> _ultimaLecturaBeacon = {};
+
+  // ── DIAGNÓSTICO DE LA SEÑAL ───────────────────────────────────────────────
+  // Lecturas nuevas por beacon en el período en curso. Cada
+  // [_periodoDiagnostico] se publican como lecturas por segundo (log
+  // "[Señal]" y panel de ajustes): es el dato que define cuánto atraso y
+  // cuánto ruido deja cada ventana de señal.
+  final Map<String, int> _conteoLecturas = {};
+  DateTime? _inicioConteoLecturas;
+  static const Duration _periodoDiagnostico = Duration(seconds: 5);
   static const Duration _intervaloPosicionamiento = Duration(milliseconds: 180);
 
   // Cooldown de reintento de ruta: cuando el pathfinder devuelve null (origen o
@@ -605,37 +648,58 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // unos 4 metros: el giro se decía con la esquina ya pasada, o sólo si el
   // usuario se quedaba parado en ella.
   //
-  // Ahora los giros se anuncian por DISTANCIA A LA ESQUINA, antes de llegar,
-  // en dos pasos:
+  // Ahora los giros se anuncian ANTES de llegar a la esquina, en dos pasos:
   //   1. "En 5 metros, girá a la izquierda"  (para que lo espere)
-  //   2. "Girá a la izquierda"               (con el tiempo justo para que
-  //      termine de escucharlo cuando está llegando a la esquina)
-  // El momento de cada aviso sale de la distancia, la velocidad a la que
-  // viene y el atraso del posicionamiento; no pasan por el filtro anti-rebote
-  // (se disparan una sola vez por esquina, no hay rebote que filtrar).
+  //   2. "Girá a la izquierda"               (para que lo escuche al llegar
+  //      a la esquina)
+  // No pasan por el filtro anti-rebote (se disparan una sola vez por
+  // esquina, no hay rebote que filtrar).
   //
-  // Los cuatro primeros valores son los que conviene tocar si en la práctica
-  // los avisos salen temprano o tarde.
+  // CUÁNDO SE DICE CADA UNO. Salen de dos tiempos, regulables desde el panel
+  // de ajustes ([AjustesNavegacion]):
+  //   • el ATRASO de la posición: la posición medida muestra dónde estaba el
+  //     usuario hace ese tiempo (ventana de RSSI + filtro One Euro);
+  //   • el ANTICIPO: cuánto antes de que el usuario llegue a la esquina hay
+  //     que empezar a decir el giro.
+  // El punto del mapa llega a la esquina "atraso" segundos después que el
+  // usuario, así que el giro se dice cuando al punto le faltan
+  // atraso + anticipo segundos para llegar a ella.
+  //
+  // Para saber cuántos segundos le faltan al punto se mide en vivo el ritmo
+  // con el que se ACERCA a la esquina por el tramo ([_velocidadAcercamientoMs]).
+  // No se supone ni se aprende una velocidad de caminata: si la persona
+  // camina más rápido, el punto se acerca más rápido y el giro sale antes en
+  // metros, pero en el mismo momento respecto de la esquina. Con el usuario
+  // quieto no hay ritmo que medir y el giro se dice por distancia
+  // ([AjustesNavegacion.distanciaGiroQuieto]).
 
-  /// Velocidad (m/s) que se supone cuando el acelerómetro dice que camina.
-  /// Una persona ciega con bastón anda entre 0,7 y 1,0.
-  static const double _velocidadCaminataMs = 0.9;
+  final AjustesNavegacion _ajustes = AjustesNavegacion.instancia;
 
-  /// Atraso (s) de la posición medida respecto de la real, caminando.
-  /// Si los giros siguen llegando tarde, SUBIR este valor.
-  static const double _retardoPosicionSeg = 1.3;
-
-  /// Con cuánto tiempo (s) de anticipación a la esquina se dice el giro.
-  /// Tiene que cubrir lo que tarda en decirse (~1,4 s) y en reaccionar.
-  static const double _anticipoGiroSeg = 2.2;
-
-  /// Con cuánto tiempo (s) de anticipación se dice el aviso previo.
-  static const double _anticipoAvisoSeg = 6.0;
-
-  /// Lo mismo, pero en metros, para cuando el usuario está quieto (ahí no
-  /// hay velocidad con la que calcular tiempos).
-  static const double _distGiroQuietoMetros = 1.0;
+  /// Distancia del aviso previo con el usuario quieto (m).
   static const double _distAvisoQuietoMetros = 3.0;
+
+  /// Ventana (s) sobre la que se mide el ritmo de acercamiento. Más corta
+  /// sigue mejor los arranques y frenadas, pero se cuela más ruido BLE.
+  static const double _ventanaAcercamientoSeg = 1.5;
+
+  /// Con menos historia que esto (s) no se mide: el ritmo sería ruido.
+  static const double _historiaMinimaAcercamientoSeg = 0.6;
+
+  /// Ritmo de acercamiento (m/s) por debajo del cual se toma al usuario como
+  /// quieto: menos que esto es ruido del BLE, no alguien caminando.
+  static const double _acercamientoMinMs = 0.2;
+
+  /// Tope del ritmo de acercamiento (m/s). Nadie camina más rápido adentro;
+  /// lo que pase de esto es un salto de la señal.
+  static const double _acercamientoMaxMs = 2.0;
+
+  /// Posiciones filtradas de los últimos [_ventanaAcercamientoSeg] segundos.
+  final List<({DateTime t, Offset p})> _historialPosicion = [];
+
+  /// Ritmo (m/s) con el que el punto del mapa se acerca a la próxima
+  /// esquina, por el tramo. 0 con el usuario quieto. Se actualiza en cada
+  /// ciclo de posición.
+  double _velocidadAcercamientoMs = 0.0;
 
   /// El aviso previo sólo se da si queda al menos esto (m) hasta el punto
   /// donde se va a decir el giro; si no, serían dos frases pegadas.
@@ -660,14 +724,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Esquina cuyo giro ya se le dijo al usuario, y cuándo.
   ({Offset esquina, DateTime desde})? _giroComprometido;
 
-  /// Velocidad estimada del usuario: la de caminata, escalada por lo que
-  /// dice el acelerómetro (0 quieto … 1 caminando).
-  double get _velocidadEstimadaMs =>
-      _velocidadCaminataMs * _factorMovimiento.clamp(0.0, 1.0);
-
-  /// Cuánto más adelante está el usuario respecto de la posición medida.
-  double get _avancePorRetardoMetros =>
-      _velocidadEstimadaMs * _retardoPosicionSeg;
+  /// Cuánto más adelante está el usuario respecto de la posición medida: lo
+  /// que avanza el punto durante el atraso.
+  double get _avancePorAtrasoMetros =>
+      _velocidadAcercamientoMs * _ajustes.atrasoPosicion.valor;
 
   /// Cuánto se espera a que el A* devuelva la ruta para decir el destino y la
   /// primera indicación en UNA sola frase ("Baño. Girá a la izquierda."). El
@@ -838,6 +898,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         ],
       );
       _resolvedorListo = true;
+      // Ajustes regulables de los giros y de la posición (ver
+      // [AjustesNavegacion]). Antes del scan: las ventanas de señal ya rigen
+      // desde la primera lectura BLE, antes del primer ciclo de posición.
+      await _ajustes.cargar();
+      _aplicarAjustesPosicion();
       // Acelerómetro: si el dispositivo no lo expone, el detector devuelve un
       // factor intermedio fijo y el filtro sigue funcionando (con un
       // comportamiento parecido al EMA anterior).
@@ -1054,6 +1119,17 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     _scanReinicioTimer = Timer.periodic(_intervaloWatchdog, (_) async {
       if (!mounted) return;
 
+      // Renovación preventiva antes del límite de 30 minutos de Android: un
+      // scan degradado sigue entregando algo (lo que escanea otra app), así
+      // que el control de silencio de abajo no lo detecta. Ver
+      // BluetoothHelper.renovarScanCada.
+      if (BluetoothHelper.esDueno(this) && BluetoothHelper.scanParaRenovar) {
+        debugPrint('[BLE] Renovando el scan (lleva '
+            '${BluetoothHelper.antiguedadScan?.inMinutes} min corriendo).');
+        await BluetoothHelper.reiniciarScanForzado();
+        return;
+      }
+
       final referencia =
           BluetoothHelper.ultimoResultado ?? _inicioEscaneo ?? DateTime.now();
       final silencio = DateTime.now().difference(referencia);
@@ -1107,9 +1183,47 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (!mounted) return;
     _contadorLecturas++;
  
-    // Decaimiento suave: si un beacon no aparece en este ciclo, su RSSI baja
+    // ── SÓLO LECTURAS NUEVAS ───────────────────────────────────────────────
+    // flutter_blue_plus entrega en cada callback la lista ACUMULADA de
+    // dispositivos (todo lo oído en los últimos removeIfGone = 4 s), y cada
+    // uno viene con su ÚLTIMA lectura aunque no haya vuelto a emitir. Antes
+    // se procesaba la lista entera en cada callback, con dos efectos:
+    //   • la última lectura de cada beacon entraba a su ventana de mediana
+    //     una y otra vez: las "13 lecturas" de la ventana eran casi todas
+    //     copias de una o dos, y cuántas copias entraban dependía de cuántos
+    //     dispositivos BLE hubiera alrededor (cada uno dispara callbacks). La
+    //     ventana no medía lo que decía y el mismo ajuste andaba distinto en
+    //     cada lugar;
+    //   • un beacon "aparecía en el ciclo" mientras siguiera en la lista, así
+    //     que el decaimiento de abajo recién arrancaba a los 4 s.
+    // Ahora una lectura cuenta sólo si es posterior a la última procesada de
+    // ese beacon ([_ultimaLecturaBeacon]).
+    final ahoraSenales = DateTime.now();
+    for (var res in resultados) {
+      try {
+        final mac = res.device.remoteId.str;
+        final beacon = _beaconsEnElMapa[mac];
+        if (beacon == null) continue; // dispositivo ajeno al piso
+        final ultima = _ultimaLecturaBeacon[mac];
+        if (ultima != null && !res.timeStamp.isAfter(ultima)) continue;
+        _ultimaLecturaBeacon[mac] = res.timeStamp;
+        _conteoLecturas[mac] = (_conteoLecturas[mac] ?? 0) + 1;
+        final rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
+        if (rssiSuave != null) beacon.rssiFiltrado = rssiSuave;
+      } catch (e) {
+        // Ignorar
+      }
+    }
+    _publicarDiagnosticoSenal(ahoraSenales);
+
+    // Decaimiento suave: si un beacon deja de oírse, su RSSI baja
     // gradualmente en lugar de caer a -100 de golpe. removeIfGone (4s) se
     // encarga de limpiar los que realmente desaparecen.
+    //
+    // Arranca recién después de [_graciaSinLecturaSeg] sin lecturas nuevas
+    // de ese beacon: emite cada ~160 ms y entre dos lecturas suyas llegan
+    // callbacks de los demás dispositivos; decaerlo en cada uno lo
+    // arrastraría hacia abajo todo el tiempo.
     //
     // FIX: antes el decaimiento era de 2 dBm por CALLBACK. El ritmo de
     // callbacks de flutter_blue_plus con continuousUpdates es variable (5-50
@@ -1120,34 +1234,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     // por debajo de _umbralRSSI. Al descartarse, el set visible bajaba a 2
     // beacons y el posicionamiento perdia geometria justo cuando mas la
     // necesitaba. Ahora el decaimiento es en dBm por SEGUNDO real.
-    final ahoraSenales = DateTime.now();
     final dtDecaimiento = _ultimoDecaimiento == null
         ? 0.0
         : ahoraSenales.difference(_ultimoDecaimiento!).inMicroseconds / 1e6;
     _ultimoDecaimiento = ahoraSenales;
-    final macsEnEsteCiclo = resultados.map((r) => r.device.remoteId.str).toSet();
     if (dtDecaimiento > 0 && dtDecaimiento < 5.0) {
       final caida = _decaimientoDbPorSeg * dtDecaimiento;
+      final graciaUs = (_graciaSinLecturaSeg * 1e6).round();
       for (var beacon in _beaconsEnElMapa.values) {
-        if (!macsEnEsteCiclo.contains(beacon.mac)) {
+        final ultima = _ultimaLecturaBeacon[beacon.mac];
+        if (ultima == null ||
+            ahoraSenales.difference(ultima).inMicroseconds > graciaUs) {
           beacon.rssiFiltrado =
               (beacon.rssiFiltrado - caida).clamp(-100.0, 0.0);
         }
       }
     }
- 
-    for (var res in resultados) {
-      try {
-        String mac = res.device.remoteId.str;
-        double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
-        if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
-          _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave;
-        }
-      } catch (e) {
-        // Ignorar
-      }
-    }
- 
+
     // Solo mientras todavía NO hay posición: una vez que el pipeline publica
     // "Ubicacion estable...", este setState (a ~3-5 Hz según el ritmo de
     // callbacks BLE) peleaba con aquel texto, alternando los dos mensajes y
@@ -1174,10 +1277,57 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     _calcularPosicionRobusta();
   }
  
+  /// Publica cada [_periodoDiagnostico] cuántas lecturas nuevas por segundo
+  /// llegan de los beacons del piso, y cuánto lleva corriendo el scan.
+  void _publicarDiagnosticoSenal(DateTime ahora) {
+    final inicio = _inicioConteoLecturas ??= ahora;
+    final seg = ahora.difference(inicio).inMilliseconds / 1000.0;
+    if (seg < _periodoDiagnostico.inSeconds) return;
+
+    final tasas = [for (final n in _conteoLecturas.values) n / seg]..sort();
+    final promedio = tasas.isEmpty
+        ? 0.0
+        : tasas.reduce((a, b) => a + b) / tasas.length;
+    final edadScan = BluetoothHelper.antiguedadScan;
+    final texto = [
+      tasas.isEmpty
+          ? 'Sin lecturas de los beacons del piso'
+          : '${tasas.length} beacons · ${promedio.toStringAsFixed(1)} '
+              'lecturas/s por beacon (de ${tasas.first.toStringAsFixed(1)} '
+              'a ${tasas.last.toStringAsFixed(1)})',
+      if (edadScan != null) 'escaneo de hace ${edadScan.inMinutes} min',
+    ].join(' · ');
+
+    _ajustes
+      ..lecturasPorSegundo = tasas.isEmpty ? 0.0 : promedio
+      ..diagnosticoSenal = texto
+      ..diagnosticoSenalHora = ahora;
+    debugPrint('[Señal] $texto');
+    _conteoLecturas.clear();
+    _inicioConteoLecturas = ahora;
+  }
+
+  /// Pasa los ajustes regulables del seguimiento de la posición (ver
+  /// [AjustesNavegacion]) a los componentes que los usan. Se llama en cada
+  /// ciclo: el panel los puede cambiar en cualquier momento y son sólo
+  /// asignaciones.
+  void _aplicarAjustesPosicion() {
+    _movimiento.umbralMoviendo = _ajustes.umbralCaminata.valor;
+    _procesador.configurarVentanas(
+      quietoSeg: _ajustes.ventanaSenalQuieto.valor,
+      caminandoSeg: _ajustes.ventanaSenalCaminando.valor,
+    );
+    _filtroPosicion
+      ..cutoffQuieto = _ajustes.filtroQuieto.valor
+      ..cutoffMoviendo = _ajustes.filtroCaminando.valor
+      ..beta = _ajustes.empujeVelocidad.valor;
+  }
+
   void _calcularPosicionRobusta() {
     if (!mounted) return;
- 
+
     try {
+      _aplicarAjustesPosicion();
       var candidatos = _beaconsEnElMapa.values
           .where((b) => b.rssiFiltrado > _umbralRSSI)
           .toList();
@@ -1334,8 +1484,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // Durante la adquisición el rumbo NO restringe: el error de un primer
       // fix puede estar en cualquier dirección, y la puerta direccional lo
       // dejaría pasar al 3 % si cae de costado y al 15 % si cae hacia atrás.
+      // Además, se puede apagar desde el panel de ajustes para probar sin la
+      // restricción ([AjustesNavegacion.frenarLateralConBrujula]).
       Offset? rumboPlano;
       if (!adquiriendo &&
+          _ajustes.frenarLateralConBrujula &&
           _compassDisponible &&
           _movimiento.disponible &&
           _rumboActivo) {
@@ -1493,6 +1646,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
             'mov=${_factorMovimiento.toStringAsFixed(2)} '
             'adq=${fAdq.toStringAsFixed(2)} '
             'velAng=${_orientacion.velocidadAngularGrados.toStringAsFixed(0)}°/s '
+            // Del ciclo anterior: ritmo de acercamiento a la esquina y si la
+            // posición tuvo que sacarse de una zona prohibida.
+            'acerc=${_velocidadAcercamientoMs.toStringAsFixed(2)} m/s '
+            'enZona=${_posicionPermitida != _posicionFiltrada} '
             'puerta(apertura=${_puertaRumbo.apertura.toStringAsFixed(2)}, '
             'evid=${_puertaRumbo.evidenciaLateralMs.toStringAsFixed(2)} m/s)');
       }
@@ -1522,8 +1679,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // de costado como hacia adelante.
         final dtPaso =
             (dt.isFinite && dt > 0) ? dt.clamp(0.05, 1.0) : 0.18;
+        final velMaxMoviendo =
+            max(_velMaxQuietoMs, _ajustes.velocidadMaxima.valor);
         final velMax = _velMaxQuietoMs +
-            (_velMaxMoviendoMs - _velMaxQuietoMs) * fPos;
+            (velMaxMoviendo - _velMaxQuietoMs) * fPos;
         final topeAlong = velMax * dtPaso;
 
         double dxM = (filtrada.dx - _posicionFiltrada!.dx) * _grilla.metrosX;
@@ -1581,6 +1740,21 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         }
       }
       _posicionFiltrada = nuevaPosicionFiltrada;
+      _registrarPosicion(ahoraMuestra, nuevaPosicionFiltrada);
+
+      // ── FUERA DE LAS ZONAS PROHIBIDAS ────────────────────────────────────
+      // Si el filtrado cae adentro de una zona no transitable, la posición
+      // del usuario pasa a la celda transitable que mejor coincide (ver
+      // [RestriccionZonas]). Va DESPUÉS de todo el filtrado y no vuelve a él
+      // (ver [_posicionPermitida]).
+      var posicionPermitida = nuevaPosicionFiltrada;
+      if (_ajustes.restringirZonas && _resolvedorListo) {
+        posicionPermitida = _restriccionZonas.restringir(
+          nuevaPosicionFiltrada,
+          previa: _posicionPermitida,
+        );
+      }
+      _posicionPermitida = posicionPermitida;
 
       // BUG ARQUITECTONICO (causaba TANTO el congelamiento como los saltos de
       // 10 m -- son el mismo defecto visto en dos momentos distintos):
@@ -1606,7 +1780,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // no puede distinguir ruido de movimiento real porque en BLE ambos
       // tienen la misma amplitud; el acelerometro si puede, y por eso el
       // criterio de cuanto suavizar salio del propio pipeline BLE.
-      final nuevaPosicionFinal = nuevaPosicionFiltrada;
+      final nuevaPosicionFinal = posicionPermitida;
 
       {
         final bool primeraUbicacion = _posicionFinal == null;
@@ -1670,7 +1844,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // Actualizar la instruccion de voz aca (no en build()) para que hablar()
         // no sea un efecto colateral del repintado del widget.
         // Los giros anticipados van primero: si en este ciclo toca anunciar
-        // uno, la indicación común de abajo ya lo encuentra dicho.
+        // uno, la indicación común de abajo ya lo encuentra dicho. Los dos
+        // usan el ritmo de acercamiento a la esquina de este ciclo.
+        _actualizarVelocidadAcercamiento(adquiriendo: adquiriendo);
         _anunciarManiobras();
         _actualizarInstruccionVoz();
 
@@ -2739,8 +2915,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         metrosX: _grilla.metrosX,
         metrosY: _grilla.metrosY,
       );
+      final finDeRuta = _finDeRutaSiObjetivoEnZona(entrada);
       final cerca = _distanciaMetros(pos, entrada) <= _radioLlegadaMetros ||
-          _distanciaMetros(pos, esc.posicion) <= _radioLlegadaMetros;
+          _distanciaMetros(pos, esc.posicion) <= _radioLlegadaMetros ||
+          (finDeRuta != null &&
+              _distanciaMetros(pos, finDeRuta) <= _radioLlegadaMetros);
       _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
       if (_ciclosEnLlegada >= _ciclosParaLlegada) {
         _ciclosEnLlegada = 0;
@@ -2756,8 +2935,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final objetivoLlegada = d.esEscalera
         ? d.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
         : d.posicion;
+    final finDeRuta = _finDeRutaSiObjetivoEnZona(objetivoLlegada);
     final cerca = _distanciaMetros(pos, objetivoLlegada) <= _radioLlegadaMetros ||
-        _distanciaMetros(pos, d.posicion) <= _radioLlegadaMetros;
+        _distanciaMetros(pos, d.posicion) <= _radioLlegadaMetros ||
+        (finDeRuta != null &&
+            _distanciaMetros(pos, finDeRuta) <= _radioLlegadaMetros);
     _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
     if (_ciclosEnLlegada >= _ciclosParaLlegada) {
       _ciclosEnLlegada = 0;
@@ -2768,6 +2950,32 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       HapticFeedback.heavyImpact();
       _voz.hablar('Llegaste a ${d.nombre}.');
     }
+  }
+
+  /// Final de la ruta, si [objetivo] cae en una zona prohibida; si no, null.
+  ///
+  /// Un lugar dibujado adentro de una zona (un aula marcada como no
+  /// transitable, por ejemplo) no se puede pisar: la posición ya no entra en
+  /// las zonas prohibidas (ver [RestriccionZonas]) y, si el lugar está a más
+  /// de [_radioLlegadaMetros] del borde, la llegada no se anunciaría nunca.
+  /// Ahí cuenta como llegada estar en el final de la ruta, que es la celda
+  /// transitable más cercana al lugar que encontró el pathfinder.
+  ///
+  /// Se mira la CELDA del lugar (bloqueada si su centro cae en la zona) y no
+  /// el punto, porque es lo mismo que mira el pathfinder para decidir dónde
+  /// termina la ruta. Si el lugar está adentro de la zona pero el centro de
+  /// su celda no, la celda es transitable y la ruta termina en ella; la
+  /// posición del usuario ahí es ese centro, a menos de media diagonal de
+  /// celda (0,71 m con celdas de 1 m) del lugar, dentro del radio de llegada.
+  Offset? _finDeRutaSiObjetivoEnZona(Offset objetivo) {
+    if (!_ajustes.restringirZonas) return null;
+    final ruta = _rutaActual;
+    if (ruta == null || ruta.isEmpty) return null;
+    final enZona = _resolvedor.esZonaProhibida(
+      _grilla.indiceX(objetivo.dx),
+      _grilla.indiceY(objetivo.dy),
+    );
+    return enZona ? ruta.last : null;
   }
 
   /// Anuncio al llegar frente a la escalera: hacia dónde girar para quedar
@@ -3216,7 +3424,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         ruta,
         pos,
         _grilla,
-        avanceMetros: _avancePorRetardoMetros,
+        avanceMetros: _avancePorAtrasoMetros,
         comprometida: comprometido?.esquina,
       );
     }
@@ -3244,6 +3452,63 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     return d.esEscalera ? 'está ${d.medioConArticulo}' : 'llegás a ${d.nombre}';
   }
 
+  /// Guarda la posición filtrada del ciclo (últimos
+  /// [_ventanaAcercamientoSeg] segundos) para medir el ritmo de acercamiento.
+  void _registrarPosicion(DateTime t, Offset p) {
+    _historialPosicion.add((t: t, p: p));
+    final limiteMs = (_ventanaAcercamientoSeg * 1000).round();
+    while (_historialPosicion.length > 1 &&
+        t.difference(_historialPosicion.first.t).inMilliseconds > limiteMs) {
+      _historialPosicion.removeAt(0);
+    }
+  }
+
+  void _actualizarVelocidadAcercamiento({required bool adquiriendo}) {
+    _velocidadAcercamientoMs = _medirVelocidadAcercamiento(adquiriendo);
+  }
+
+  /// Ritmo (m/s) con el que el punto del mapa se acerca a la próxima
+  /// esquina: cuánto avanzó en los últimos [_ventanaAcercamientoSeg]
+  /// segundos a lo largo del tramo que lleva a ella. Lo que se mueve de
+  /// costado no cuenta. Ver "GIROS ANTICIPADOS".
+  ///
+  /// Se mide sobre la posición filtrada, que es continua, y no sobre la
+  /// restringida a zonas transitables, que salta de lado cuando la medición
+  /// atraviesa una zona.
+  double _medirVelocidadAcercamiento(bool adquiriendo) {
+    // Mientras la posición se acomoda (adquisición) se mueve sin que el
+    // usuario camine. Y quieto, el punto sigue un rato yendo hacia donde
+    // quedó el usuario (viene atrasado): eso tampoco es avanzar.
+    if (adquiriendo) return 0.0;
+    if (_movimiento.disponible &&
+        _movimiento.estado == EstadoMovimiento.quieto) {
+      return 0.0;
+    }
+    final ruta = _rutaActual;
+    final pos = _posicionFinal;
+    if (ruta == null || ruta.length < 2 || pos == null) return 0.0;
+    if (_historialPosicion.length < 2) return 0.0;
+    final a = _historialPosicion.first;
+    final b = _historialPosicion.last;
+    final seg = b.t.difference(a.t).inMilliseconds / 1000.0;
+    if (seg < _historiaMinimaAcercamientoSeg) return 0.0;
+
+    // Dirección del tramo en el que está el usuario, hacia su esquina.
+    final tramo = SeguidorRuta.guia(ruta, pos, _grilla);
+    final ux = (tramo.hacia.dx - tramo.desde.dx) * _grilla.metrosX;
+    final uy = (tramo.hacia.dy - tramo.desde.dy) * _grilla.metrosY;
+    final largo = sqrt(ux * ux + uy * uy);
+    if (largo < 1e-6) return 0.0;
+
+    final avance = ((b.p.dx - a.p.dx) * _grilla.metrosX * ux +
+            (b.p.dy - a.p.dy) * _grilla.metrosY * uy) /
+        largo;
+    final v = avance / seg;
+    // Por debajo del mínimo es ruido del BLE, no alguien caminando.
+    if (v < _acercamientoMinMs) return 0.0;
+    return min(v, _acercamientoMaxMs);
+  }
+
   /// Anuncia, ANTES de llegar, lo próximo que hay que hacer sobre la ruta
   /// (ver "GIROS ANTICIPADOS" arriba). Se llama en cada ciclo de posición.
   void _anunciarManiobras() {
@@ -3262,7 +3527,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       ruta,
       pos,
       _grilla,
-      posicionFina: _posicionFiltrada,
+      posicionFina: _posicionPermitida,
     );
     if (maniobra == null) return;
 
@@ -3285,12 +3550,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
 
     final ahora = DateTime.now();
-    final v = _velocidadEstimadaMs;
+    final v = _velocidadAcercamientoMs;
     // Distancia REAL estimada a la esquina: la medida, menos lo que el
-    // usuario ya avanzó mientras la posición se actualizaba.
-    final falta = max(0.0, maniobra.metros - _avancePorRetardoMetros);
-    final umbralGiro = max(v * _anticipoGiroSeg, _distGiroQuietoMetros);
-    final umbralAviso = max(v * _anticipoAvisoSeg, _distAvisoQuietoMetros);
+    // usuario ya avanzó y la posición todavía no muestra (el atraso).
+    final falta = max(0.0, maniobra.metros - _avancePorAtrasoMetros);
+    // Caminando, cada aviso sale cuando al usuario le falta su anticipo en
+    // segundos para llegar a la esquina, al ritmo al que viene. Quieto no hay
+    // ritmo: se usa la distancia. Las dos cosas no se mezclan (antes la
+    // distancia era un piso también caminando, y con anticipos cortos tapaba
+    // al tiempo).
+    final caminando = v > 0;
+    final umbralGiro = caminando
+        ? v * _ajustes.anticipoGiro.valor
+        : _ajustes.distanciaGiroQuieto.valor;
+    final umbralAviso = caminando
+        ? v * _ajustes.anticipoAviso.valor
+        : _distAvisoQuietoMetros;
 
     // ── 2) El giro ──────────────────────────────────────────────────────────
     if (!maniobra.esFinal && falta <= umbralGiro) {
@@ -4167,6 +4442,21 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
             ],
           ),
           actions: [
+            // Para probar en el campo: cuándo se dicen los giros y si la
+            // posición puede caer en zonas prohibidas (ver AjustesNavegacion).
+            Semantics(
+              label: 'Ajustes de navegación',
+              button: true,
+              child: SizedBox(
+                width: TemaApp.targetTactil,
+                height: TemaApp.targetTactil,
+                child: IconButton(
+                  icon: const Icon(Icons.tune_rounded, color: TemaApp.textoSecundario),
+                  tooltip: 'Ajustes de navegación',
+                  onPressed: () => mostrarPanelAjustesNavegacion(context),
+                ),
+              ),
+            ),
             if (_destinoSeleccionado != null)
               Semantics(
                 label: 'Cancelar navegación',

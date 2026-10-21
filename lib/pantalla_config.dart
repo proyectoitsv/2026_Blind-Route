@@ -168,20 +168,24 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   // Acumulador: mac → lista de lecturas RSSI durante la toma
   final Map<String, List<double>> _acumCal = {};
 
-  // Medición interactiva de escala.
+  /// Lecturas mínimas de un beacon en una toma para usarlo. Emitiendo cada
+  /// 160 ms, en una toma de 10 s se esperan ~60; con menos de 5 (una cada 2
+  /// segundos) el beacon apenas se oye. También evita la media recortada con
+  /// menos de 3 muestras, que no tiene qué recortar.
+  static const int _minMuestrasCalibracion = 5;
+
+  // Medición interactiva de escala: P1 → P2 es el LARGO y P2 → P3 el ANCHO.
+  // Se marca igual que una zona prohibida (ver "Escala" más abajo).
   final List<Offset> _puntosEscala = []; // P1, P2 (largo), P3 (ancho)
-  Offset? _elasticoDesde;                 // origen de la línea elástica en curso
-  Offset? _elasticoHasta;                 // extremo actual durante el arrastre
-  int _pasoEscala = 0;                    // 0 = largo, 1 = ancho, 2 = listo
   double? _largoMetros;                   // metros del largo (P1→P2)
   double? _anchoMetros;                   // metros del ancho (P2→P3)
 
-  // Edición de puntos ya marcados: índice del punto que se está arrastrando
-  // para reacomodarlo (null = no se está moviendo ningún punto, la interacción
-  // dibuja un segmento nuevo). Radio de "agarre" de un punto en coords
-  // normalizadas: un toque dentro de este radio mueve el punto en vez de
-  // empezar un trazo nuevo.
+  // Punto de escala que se está arrastrando (null = ninguno) y si se creó en
+  // el gesto actual (para descartarlo si el gesto se cancela por un zoom de
+  // dos dedos). Radio de "agarre" en coords normalizadas: un toque dentro de
+  // este radio mueve el punto en vez de agregar uno nuevo.
   int? _puntoArrastrado;
+  bool _puntoEscalaReciente = false;
   static const double _radioAgarrePunto = 0.045;
 
   // Edición de vértices de zonas prohibidas: índice del vértice que se está
@@ -770,18 +774,41 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     _aplicarFiltroNombre(filtro);
   }
 
+  /// Hora de la última lectura NUEVA procesada de cada beacon del piso.
+  ///
+  /// flutter_blue_plus entrega en cada callback la lista ACUMULADA de
+  /// dispositivos, y cada uno trae su ÚLTIMA lectura aunque no haya vuelto a
+  /// emitir. Antes se tomaba la lista entera en cada callback, así que la
+  /// misma lectura entraba muchas veces: a la ventana del punto de posición y
+  /// a la toma de calibración. En la toma eso inflaba la cantidad de muestras
+  /// y hacía pesar más a las lecturas que tardaban en renovarse (y cuántas
+  /// copias entraban dependía de cuántos dispositivos BLE hubiera alrededor).
+  /// Ahora una lectura cuenta sólo si es posterior a la última de ese beacon,
+  /// igual que en la navegación: calibración y navegación miden lo mismo.
+  final Map<String, DateTime> _ultimaLecturaBeacon = {};
+
   void _actualizarSenales(List<ScanResult> resultados) {
     if (!mounted) return;
+    var nuevas = 0;
     for (var res in resultados) {
       try {
-        String mac = res.device.remoteId.str;
-        double? rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
-        if (rssiSuave != null && _beaconsEnElMapa.containsKey(mac)) {
-          setState(() => _beaconsEnElMapa[mac]!.rssiFiltrado = rssiSuave);
+        final mac = res.device.remoteId.str;
+        final beacon = _beaconsEnElMapa[mac];
+        // Sólo interesan los beacons del piso: los demás dispositivos se ven
+        // en la lista con su lectura cruda.
+        if (beacon == null) continue;
+        final ultima = _ultimaLecturaBeacon[mac];
+        if (ultima != null && !res.timeStamp.isAfter(ultima)) continue;
+        _ultimaLecturaBeacon[mac] = res.timeStamp;
+        nuevas++;
+
+        final rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
+        if (rssiSuave != null) {
+          setState(() => beacon.rssiFiltrado = rssiSuave);
         }
 
         // Acumulación de muestras para calibración multi-muestra.
-        if (_tomandoMuestras && _beaconsEnElMapa.containsKey(mac)) {
+        if (_tomandoMuestras) {
           _acumCal.putIfAbsent(mac, () => []).add(res.rssi.toDouble());
         }
       } catch (e) {
@@ -790,8 +817,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
 
     // La toma termina por TIEMPO transcurrido, no por cantidad de callbacks
-    // (ver la nota en _inicioToma). _muestrasAcumuladas se sigue llevando, pero
-    // ahora solo como dato informativo de cuantos lotes entraron.
+    // (ver la nota en _inicioToma). _muestrasAcumuladas cuenta las lecturas
+    // nuevas que entraron, sumando todos los beacons: es informativo.
     if (_tomandoMuestras) {
       // Acumular el rumbo mientras dura la toma (media circular).
       final h = _headingEnVivo;
@@ -801,7 +828,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         _sumCosRumbo += cos(r);
         _muestrasRumbo++;
       }
-      setState(() => _muestrasAcumuladas++);
+      if (nuevas > 0) setState(() => _muestrasAcumuladas += nuevas);
       final inicio = _inicioToma;
       if (inicio != null &&
           DateTime.now().difference(inicio) >= _duracionTomaActual) {
@@ -1560,7 +1587,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     for (final entry in _acumCal.entries) {
       final mac = entry.key;
       final muestras = entry.value;
-      if (muestras.isEmpty) continue;
+      // Ahora son lecturas reales (sin las copias que antes inflaban la
+      // cuenta): un beacon oído menos de [_minMuestrasCalibracion] veces en
+      // toda la toma está en el límite del alcance y su promedio es ruido.
+      // Antes cualquier beacon que figurara en la lista sumaba decenas de
+      // copias, y pasaba aunque se hubiera oído una sola vez.
+      if (muestras.length < _minMuestrasCalibracion) continue;
 
       // Mediana truncada al 20% en cada extremo (igual que ProcesadorSenal).
       final ord = List<double>.from(muestras)..sort();
@@ -1722,18 +1754,56 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
-  // -- Escala (medición interactiva con línea elástica) ----------------------
+  // -- Escala (puntos desplazables, como las zonas) --------------------------
+  //
+  // Antes el largo y el ancho se marcaban ARRASTRANDO una línea elástica y
+  // los metros se pedían apenas se soltaba el dedo: no había forma de afinar
+  // un extremo antes de cargar la medida. Ahora es el mismo sistema que el de
+  // las zonas prohibidas:
+  //   1. Tocar → primer punto, enganchado al dedo para afinarlo sin soltar.
+  //   2. Tocar → segundo punto (imantado al primero). "Medida del largo".
+  //   3. Tocar → tercer punto (imantado al segundo, perpendicular al largo).
+  //      "Medida del ancho" calcula y guarda la escala.
+  // Cualquier punto ya marcado se arrastra para corregirlo; con la medición
+  // completa, soltarlo recalcula y guarda la escala. Un segundo dedo hace
+  // zoom (y descarta el punto si se acababa de crear en ese gesto).
+
+  /// Se puede agregar un punto: los dos del largo, y el del ancho una vez que
+  /// el largo tiene su medida.
+  bool get _admitePuntoEscala =>
+      _puntosEscala.length < 2 ||
+      (_puntosEscala.length == 2 && _largoMetros != null);
+
+  bool get _faltaMedidaLargo =>
+      _puntosEscala.length >= 2 && _largoMetros == null;
+
+  bool get _faltaMedidaAncho =>
+      _puntosEscala.length >= 3 && _anchoMetros == null;
+
+  bool get _medicionEscalaCompleta =>
+      _puntosEscala.length >= 3 && _largoMetros != null && _anchoMetros != null;
 
   void _reiniciarMedicion() {
     if (!mounted) return;
     setState(() {
       _puntosEscala.clear();
-      _elasticoDesde = null;
-      _elasticoHasta = null;
-      _pasoEscala = 0;
       _largoMetros = null;
       _anchoMetros = null;
       _puntoArrastrado = null;
+      _puntoEscalaReciente = false;
+      _limpiarGuias();
+    });
+  }
+
+  /// Quita el último punto marcado, y con él la medida que dependía de él.
+  void _quitarUltimoPuntoEscala() {
+    if (!mounted || _puntosEscala.isEmpty) return;
+    setState(() {
+      _puntosEscala.removeLast();
+      if (_puntosEscala.length < 3) _anchoMetros = null;
+      if (_puntosEscala.length < 2) _largoMetros = null;
+      _puntoArrastrado = null;
+      _puntoEscalaReciente = false;
       _limpiarGuias();
     });
   }
@@ -1753,135 +1823,90 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     return mejorIdx;
   }
 
+  /// Lleva el punto [idx] a [n], imantado contra sus vecinos.
+  void _moverPuntoEscala(int idx, Offset n) {
+    if (idx < 0 || idx >= _puntosEscala.length) return;
+    final a = _anclasEscala(idx);
+    final p = _aplicarAsistente(n, ancla: a.ancla, anclaSecundaria: a.sec);
+    setState(() => _puntosEscala[idx] = p);
+  }
+
   void _onArrastreInicio(Offset n) {
     if (!mounted) return;
 
-    // Prioridad 1: si el toque cae sobre un punto ya marcado, se arrastra ese
-    // punto para reacomodarlo (en vez de empezar un trazo nuevo).
+    // 1) ¿El dedo cayó sobre un punto ya marcado? → se arrastra ese.
     final idx = _puntoCercano(n);
     if (idx != null) {
-      final a = _anclasEscala(idx);
-      final p = _aplicarAsistente(n, ancla: a.ancla, anclaSecundaria: a.sec);
       setState(() {
         _puntoArrastrado = idx;
-        _puntosEscala[idx] = p;
-        _elasticoDesde = null;
-        _elasticoHasta = null;
+        _puntoEscalaReciente = false;
       });
+      _moverPuntoEscala(idx, n);
       return;
     }
 
-    // Prioridad 2: trazo nuevo según el paso.
+    // 2) Punto nuevo, si en este paso corresponde uno, enganchado al dedo.
+    //    Con el largo marcado pero sin medida, primero va la medida.
+    if (!_admitePuntoEscala) return;
+    final idxNuevo = _puntosEscala.length;
     setState(() {
-      if (_pasoEscala == 0) {
-        // Fijar punto inicial (violeta) y empezar la línea elástica del largo.
-        // El primer punto no tiene ancla: no hay nada con qué alinearlo.
-        _limpiarGuias();
-        _puntosEscala
-          ..clear()
-          ..add(n);
-        _elasticoDesde = n;
-        _elasticoHasta = n;
-      } else if (_pasoEscala == 1) {
-        // El ancho parte del segundo punto (P2), sin importar dónde se toque.
-        _elasticoDesde = _puntosEscala[1];
-        _elasticoHasta = _aplicarAsistente(n, ancla: _puntosEscala[1]);
-      }
-      // En paso 2 (medición completa) un toque en zona libre no hace nada:
-      // solo se pueden mover los puntos. Para medir de nuevo: "Reiniciar".
+      _puntosEscala.add(n);
+      _puntoArrastrado = idxNuevo;
+      _puntoEscalaReciente = true;
     });
+    // El imantado se evalúa con el punto ya en la lista, para que el
+    // asistente lo alinee con el anterior.
+    _moverPuntoEscala(idxNuevo, n);
   }
 
   void _onArrastreActualizar(Offset n) {
-    if (!mounted) return;
-    // Si estamos moviendo un punto, actualizamos su posición (imantada).
-    if (_puntoArrastrado != null) {
-      final a = _anclasEscala(_puntoArrastrado!);
-      final p = _aplicarAsistente(n, ancla: a.ancla, anclaSecundaria: a.sec);
-      setState(() => _puntosEscala[_puntoArrastrado!] = p);
-      return;
-    }
-    if (_elasticoDesde == null) return;
-    // El extremo libre de la línea elástica se imanta contra su origen: es lo
-    // que hace que el largo y el ancho del plano queden perfectamente rectos.
-    final p = _aplicarAsistente(n, ancla: _elasticoDesde);
-    setState(() => _elasticoHasta = p);
+    if (!mounted || _puntoArrastrado == null) return;
+    _moverPuntoEscala(_puntoArrastrado!, n);
   }
 
-  /// El usuario apoyó un segundo dedo para hacer zoom: descartamos la línea
-  /// elástica a medio dibujar sin perder lo ya confirmado (el largo en paso 1).
+  /// El usuario apoyó un segundo dedo para hacer zoom: si el punto se acababa
+  /// de crear en este gesto se descarta; si ya existía se deja donde quedó.
   void _onArrastreCancelar() {
     if (!mounted) return;
     setState(() {
       _limpiarGuias();
-      // Si se estaba moviendo un punto, se deja donde quedó (no se revierte).
-      if (_puntoArrastrado != null) {
-        _puntoArrastrado = null;
-        return;
+      if (_puntoEscalaReciente && _puntosEscala.isNotEmpty) {
+        _puntosEscala.removeLast();
       }
-      if (_pasoEscala == 0) {
-        // Todavía no se confirmó el largo: descartar el punto inicial también.
-        _puntosEscala.clear();
-      } else if (_pasoEscala == 1 && _puntosEscala.length >= 3) {
-        // Mantener P1, P2 y el largo; descartar la tentativa de ancho.
-        _puntosEscala.removeRange(2, _puntosEscala.length);
-      }
-      _elasticoDesde = null;
-      _elasticoHasta = null;
+      _puntoArrastrado = null;
+      _puntoEscalaReciente = false;
     });
   }
 
   Future<void> _onArrastreFin() async {
-    if (mounted) setState(_limpiarGuias);
-    // Caso A: se estaba reacomodando un punto ya existente.
-    if (_puntoArrastrado != null) {
-      if (mounted) setState(() => _puntoArrastrado = null);
-      // Si la medición ya estaba completa, recalcular y persistir la escala con
-      // las posiciones corregidas (los metros de referencia no cambian).
-      if (_pasoEscala == 2) {
-        await _recalcularYGuardarEscala(mostrarAviso: false);
-      }
-      return;
+    if (!mounted) return;
+    final movido = _puntoArrastrado != null;
+    setState(() {
+      _puntoArrastrado = null;
+      _puntoEscalaReciente = false;
+      _limpiarGuias();
+    });
+    // Con la medición completa, reacomodar un punto recalcula y guarda la
+    // escala (los metros de referencia no cambian).
+    if (movido && _medicionEscalaCompleta) {
+      await _recalcularYGuardarEscala(mostrarAviso: false);
     }
+  }
 
-    if (_elasticoDesde == null || _elasticoHasta == null) return;
-    final fin = _elasticoHasta!;
-
-    if (_pasoEscala == 0) {
-      // Cerrar el segmento de largo: P2.
-      setState(() {
-        if (_puntosEscala.length >= 2) _puntosEscala.removeRange(1, _puntosEscala.length);
-        _puntosEscala.add(fin);
-        _elasticoDesde = null;
-        _elasticoHasta = null;
-      });
+  /// Pide los metros del segmento que los está esperando: el largo (P1→P2) o
+  /// el ancho (P2→P3). Con el ancho la medición queda completa y la escala se
+  /// guarda. Si se cancela el diálogo, los puntos quedan donde están.
+  Future<void> _ponerMedidaEscala() async {
+    if (_faltaMedidaLargo) {
       final metros = await _pedirMetros('Largo de la línea',
           'Marcaste el LARGO. ¿Cuántos metros mide en la vida real?');
-      if (metros == null) {
-        _reiniciarMedicion();
-        return;
-      }
-      if (mounted) setState(() { _largoMetros = metros; _pasoEscala = 1; });
-    } else if (_pasoEscala == 1) {
-      // Cerrar el segmento de ancho: P3 (obligatorio).
-      setState(() {
-        if (_puntosEscala.length >= 3) _puntosEscala.removeRange(2, _puntosEscala.length);
-        _puntosEscala.add(fin);
-        _elasticoDesde = null;
-        _elasticoHasta = null;
-      });
+      if (metros == null || !mounted) return;
+      setState(() => _largoMetros = metros);
+    } else if (_faltaMedidaAncho) {
       final metros = await _pedirMetros('Ancho de la línea',
           'Marcaste el ANCHO. ¿Cuántos metros mide en la vida real?');
-      if (metros == null) {
-        // Volver a permitir re-marcar el ancho sin perder el largo.
-        if (mounted) {
-          setState(() {
-            if (_puntosEscala.length >= 3) _puntosEscala.removeRange(2, _puntosEscala.length);
-          });
-        }
-        return;
-      }
-      if (mounted) setState(() => _anchoMetros = metros);
+      if (metros == null || !mounted) return;
+      setState(() => _anchoMetros = metros);
       await _recalcularYGuardarEscala(mostrarAviso: true);
     }
   }
@@ -1926,9 +1951,6 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           _escalaY = escalaY;
           _grilla = GrillaNav(metrosX: escalaX, metrosY: escalaY, tamCeldaMetros: _tamCelda);
           // Medición completa: los puntos SIGUEN en pantalla para reacomodarlos.
-          _elasticoDesde = null;
-          _elasticoHasta = null;
-          _pasoEscala = 2;
         });
         if (mostrarAviso) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -2110,11 +2132,19 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       case _ModoEdicion.escala:
         final actual = 'Escala actual: ${_escalaX.toStringAsFixed(1)} m × ${_escalaY.toStringAsFixed(1)} m '
             '(grilla ${_grilla.celdasX}×${_grilla.celdasY}).';
-        if (_pasoEscala == 0) {
-          return '$actual Arrastrá desde un punto para marcar el LARGO e ingresá sus metros.';
+        switch (_puntosEscala.length) {
+          case 0:
+            return '$actual Tocá el mapa para marcar el primer punto del LARGO (podés arrastrar sin soltar para afinarlo).';
+          case 1:
+            return '$actual Tocá el segundo punto del LARGO. Arrastrá cualquier punto violeta para corregirlo.';
+          case 2:
+            if (_largoMetros == null) {
+              return '$actual Acomodá los dos puntos y tocá "Medida del largo" para ingresar sus metros.';
+            }
+            return '$actual Largo: ${_largoMetros!.toStringAsFixed(1)} m. Tocá el tercer punto para marcar el ANCHO desde el segundo.';
         }
-        if (_pasoEscala == 1) {
-          return '$actual Largo: ${_largoMetros?.toStringAsFixed(1)} m. Arrastrá desde una zona libre para marcar el ANCHO. Podés tocar y arrastrar los puntos violetas para corregirlos.';
+        if (_anchoMetros == null) {
+          return '$actual Largo: ${_largoMetros?.toStringAsFixed(1)} m. Acomodá el tercer punto y tocá "Medida del ancho" para ingresar sus metros.';
         }
         return '$actual Medición lista. Arrastrá cualquiera de los 3 puntos violetas para acomodarlos: la escala se recalcula sola. "Reiniciar" para medir de nuevo.';
       case _ModoEdicion.calibracion:
@@ -2252,12 +2282,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     _seleccionado = null;
                     // Reiniciar la medición de escala al cambiar de modo.
                     _puntosEscala.clear();
-                    _elasticoDesde = null;
-                    _elasticoHasta = null;
-                    _pasoEscala = 0;
                     _largoMetros = null;
                     _anchoMetros = null;
                     _puntoArrastrado = null;
+                    _puntoEscalaReciente = false;
                     _verticeArrastrado = null;
                     _verticeReciente = false;
                     _limpiarGuias();
@@ -2374,7 +2402,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     // arrastre (apoyar y corregir el vértice en un solo gesto).
                     // En modo borrar no se agrega nada: el toque sobre el
                     // plano vacío no hace nada.
-                    onTapMapa: _borrando || _modo == _ModoEdicion.zonas
+                    onTapMapa: _borrando ||
+                            _modo == _ModoEdicion.zonas ||
+                            _modo == _ModoEdicion.escala
                         ? null
                         : _onTapMapa,
                     // Tocar un elemento lo borra SÓLO en modo borrar, y sólo
@@ -2406,8 +2436,6 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     // referencia, así que al mover un punto (mutación in-place)
                     // esta copia fuerza el repintado en cada frame del arrastre.
                     puntosMedicion: _modo == _ModoEdicion.escala ? List.of(_puntosEscala) : const [],
-                    elasticoDesde: _modo == _ModoEdicion.escala ? _elasticoDesde : null,
-                    elasticoHasta: _modo == _ModoEdicion.escala ? _elasticoHasta : null,
                     // Gestos de un dedo: la medición de escala y la edición de
                     // vértices de zonas comparten el mismo canal.
                     // (En modo borrar no hay arrastres: los cuatro quedan
@@ -2546,14 +2574,36 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               child: Row(
                 children: [
+                  // Igual que en las zonas: deshacer sólo el último punto.
+                  IconButton(
+                    onPressed: _puntosEscala.isNotEmpty ? _quitarUltimoPuntoEscala : null,
+                    icon: const Icon(Icons.undo),
+                    tooltip: 'Quitar último punto',
+                    color: Colors.orange,
+                  ),
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: (_puntosEscala.isNotEmpty || _pasoEscala != 0)
-                          ? _reiniciarMedicion
-                          : null,
-                      icon: const Icon(Icons.undo),
-                      label: const Text('Reiniciar medición'),
+                      onPressed: _puntosEscala.isNotEmpty ? _reiniciarMedicion : null,
+                      icon: const Icon(Icons.restart_alt),
+                      label: const Text('Reiniciar'),
                       style: OutlinedButton.styleFrom(foregroundColor: Colors.orange),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _faltaMedidaLargo || _faltaMedidaAncho
+                          ? _ponerMedidaEscala
+                          : null,
+                      icon: const Icon(Icons.straighten),
+                      label: Text(
+                        _medicionEscalaCompleta
+                            ? 'Escala lista'
+                            : _largoMetros == null
+                                ? 'Medida del largo'
+                                : 'Medida del ancho',
+                      ),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal[700]),
                     ),
                   ),
                 ],
@@ -2927,9 +2977,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                   'el mismo lado: el patrón se compara después contra esa misma '
                                   'postura y ese mismo rumbo. '
                                   '(${_rumboMedioToma == null ? "sin brújula" : "rumbo ${_rumboMedioToma!.toStringAsFixed(0)}°"}'
-                                  ' · $_muestrasAcumuladas lotes)'
+                                  ' · $_muestrasAcumuladas lecturas)'
                               : '¡No te muevas de la celda! El sistema promedia las lecturas '
-                                  'automáticamente. ($_muestrasAcumuladas lotes)',
+                                  'automáticamente. ($_muestrasAcumuladas lecturas)',
                           style: const TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
                         ),
                       ] else ...[
