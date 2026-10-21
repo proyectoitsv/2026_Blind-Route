@@ -28,6 +28,40 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
   final Set<String> _macsSinMapa = {};
   DateTime? _ultimaConsultaNube;
 
+  // ── LA NUBE NO FRENA AL MAPA LOCAL ─────────────────────────────────────────
+  //
+  // Antes, el primer barrido sin beacons conocidos (lo normal al arrancar: el
+  // primer aviso suele ser de un celular, no de un beacon) lanzaba la consulta
+  // a la nube con _resolviendo = true, y mientras durara se descartaban TODOS
+  // los barridos, también los de los beacons con mapa en el teléfono. La
+  // consulta no tenía límite de tiempo: adentro de un edificio, con datos
+  // móviles malos, el mapa local podía quedar esperando decenas de segundos.
+  //
+  // Ahora la consulta corre aparte ([_consultarNube]) sin frenar el
+  // procesamiento, tiene tope ([_limiteConsultaNube]) y sólo se lanza después
+  // de [_esperaAntesDeNube] sin oír ningún beacon con mapa local: el mapa
+  // local tiene siempre la primera oportunidad.
+
+  /// true mientras hay una consulta a la nube en curso.
+  bool _consultandoNube = false;
+
+  /// Desde cuándo no se oye ningún beacon con mapa local (null = se oye).
+  DateTime? _sinMapaLocalDesde;
+
+  static const Duration _esperaAntesDeNube = Duration(seconds: 4);
+  static const Duration _limiteConsultaNube = Duration(seconds: 6);
+
+  /// Arranque del scan, para medir en el log cuánto tarda cada paso.
+  DateTime? _inicioBusqueda;
+  bool _logPrimerBeacon = false;
+
+  String _segundosDesdeInicio() {
+    final inicio = _inicioBusqueda;
+    if (inicio == null) return '?';
+    return (DateTime.now().difference(inicio).inMilliseconds / 1000)
+        .toStringAsFixed(1);
+  }
+
   Timer? _timeoutTimer;
   Timer? _mapaTimer;
 
@@ -52,6 +86,43 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
 
   /// Momento en que se vio por primera vez un beacon con mapa local.
   DateTime? _inicioVentanaPiso;
+
+  // ── LECTURAS DE BEACONS CON MAPA ───────────────────────────────────────────
+  //
+  // POR QUÉ SE ACUMULAN (era la causa de "Mapa no encontrado" con el mapa ya
+  // descargado y los beacons alrededor):
+  //
+  // flutter_blue_plus entrega en cada callback la lista ACUMULADA de
+  // dispositivos y saca a los que no oye hace más de removeIfGone (3 s). El
+  // scan estaba en modo "balanced", que escucha ~1 s de cada 4 s, así que en
+  // cada pausa los beacons se caían de la lista un momento. Ahora el scan es
+  // continuo (ver BluetoothHelper), pero lo mismo puede pasar con un hueco de
+  // señal, por ejemplo el cuerpo tapando el teléfono. Antes bastaba UN
+  // callback sin beacons conocidos para:
+  //   • reiniciar la ventana de elección de piso, que pide 3 s seguidos: con
+  //     un corte cada ~4 s, muchas veces no se completaba nunca;
+  //   • caer en la rama "no hay mapa local": consulta a la nube y arranque
+  //     del aviso periódico "Mapa no encontrado", que desde ahí sonaba cada
+  //     10 s aunque los beacons con mapa se siguieran viendo.
+  //
+  // Ahora cada beacon conocido guarda su última lectura NUEVA (por la hora
+  // del advertisement, no por seguir figurando en la lista) y cuenta como
+  // presente durante [_vigenciaLectura]. Un corte breve no borra nada.
+
+  /// Última lectura nueva de cada beacon con mapa local.
+  final Map<String, _Lectura> _lecturas = {};
+
+  /// Cuánto sigue contando una lectura. Más que el ciclo del scan (4 s) con
+  /// margen para perder un par de ciclos.
+  static const Duration _vigenciaLectura = Duration(seconds: 8);
+
+  /// true si se oyó algún beacon con mapa local hace menos de
+  /// [_vigenciaLectura].
+  bool get _hayBeaconsConMapa {
+    final ahora = DateTime.now();
+    return _lecturas.values
+        .any((l) => ahora.difference(l.visto) <= _vigenciaLectura);
+  }
 
   /// Tiempo mínimo de escucha antes de elegir piso. La diferencia de señal
   /// entre pisos es grande, así que alcanza con unos pocos barridos.
@@ -117,6 +188,9 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       }
       _pisoDeMac = pisoDeMac;
       _infoPiso = infoPiso;
+      // Lecturas de beacons que ya no están en el índice (mapa eliminado) o
+      // que ahora pertenecen a otro piso: no valen más.
+      _lecturas.removeWhere((mac, l) => pisoDeMac[mac] != l.pisoId);
       _procesador.definirBeaconsRelevantes(pisoDeMac.keys);
       debugPrint('[Índice] ${pisoDeMac.length} beacons en '
           '${infoPiso.length} piso(s) local(es).');
@@ -149,7 +223,8 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     if (mounted) {
       setState(() => _estado = 'Buscando beacons de BlindRoute...');
     }
- 
+
+    _inicioBusqueda = DateTime.now();
     final scanOk = await BluetoothHelper.iniciarScanSeguro(
       dueno: this,
       onResultados: (resultados) => _procesarResultados(resultados),
@@ -181,11 +256,11 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     // así al pasar a PantallaNavegacion (mismo ProcesadorSenal compartido) el
     // filtro ya tiene historial y la ubicación se estabiliza más rápido.
     //
-    // En el mismo recorrido se agrupan los beacons conocidos POR PISO con su
-    // RSSI filtrado. Todo sale del índice en memoria: cero consultas a la base
-    // por barrido.
+    // Los beacons conocidos se guardan en [_lecturas] (ver "LECTURAS DE
+    // BEACONS CON MAPA") y de ahí se agrupan POR PISO con su RSSI filtrado.
+    // Todo sale del índice en memoria: cero consultas a la base por barrido.
+    final ahora = DateTime.now();
     final macsDesconocidas = <String, int>{}; // mac → rssi crudo
-    final evidencia = <int, _EvidenciaPiso>{};
     for (var res in resultados) {
       final mac = res.device.remoteId.str;
       final pisoId = _pisoDeMac[mac];
@@ -193,21 +268,42 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
         macsDesconocidas[mac] = res.rssi;
         continue;
       }
+      // La lista es acumulada: un beacon sigue en ella, con su última
+      // lectura, aunque no haya vuelto a emitir. Esa lectura repetida no es
+      // información nueva (y metida en la mediana la sesgaría hacia ella).
+      final previa = _lecturas[mac];
+      if (previa != null &&
+          previa.pisoId == pisoId &&
+          !res.timeStamp.isAfter(previa.visto)) {
+        continue;
+      }
       // Mediana del procesador si ya tiene historial; si no, la lectura cruda.
       final rssi =
           _procesador.filtrarYPromediar(mac, res.rssi) ?? res.rssi.toDouble();
-      final info = _infoPiso[pisoId];
-      if (info == null) continue;
-      evidencia
-          .putIfAbsent(pisoId, () => _EvidenciaPiso(info))
-          .rssiPorMac[mac] = rssi;
+      _lecturas[mac] = _Lectura(pisoId, rssi, res.timeStamp);
     }
+    _lecturas.removeWhere(
+        (_, l) => ahora.difference(l.visto) > _vigenciaLectura);
+
+    final evidencia = <int, _EvidenciaPiso>{};
+    _lecturas.forEach((mac, l) {
+      final info = _infoPiso[l.pisoId];
+      if (info == null) return;
+      evidencia
+          .putIfAbsent(l.pisoId, () => _EvidenciaPiso(info))
+          .rssiPorMac[mac] = l.rssi;
+    });
 
     // 1) Elegir el piso con más señal, tras unos segundos de escucha.
     if (evidencia.isNotEmpty) {
-      final ahoraEv = DateTime.now();
-      _inicioVentanaPiso ??= ahoraEv;
-      final escuchado = ahoraEv.difference(_inicioVentanaPiso!);
+      _sinMapaLocalDesde = null;
+      if (!_logPrimerBeacon) {
+        _logPrimerBeacon = true;
+        debugPrint('[Modo automático] Primer beacon con mapa local a los '
+            '${_segundosDesdeInicio()} s.');
+      }
+      _inicioVentanaPiso ??= ahora;
+      final escuchado = ahora.difference(_inicioVentanaPiso!);
 
       final ranking = evidencia.values.toList()
         ..sort((a, b) => b.puntaje(_beaconsPorPiso)
@@ -236,15 +332,18 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
               '${e.nombrePiso} ${e.puntaje(_beaconsPorPiso).toStringAsFixed(1)} dBm '
               '(${e.rssiPorMac.length})')
           .join(' | ');
-      debugPrint('[Piso] Elegido ${mejor.nombrePiso}. Candidatos: $detalle');
+      debugPrint('[Piso] Elegido ${mejor.nombrePiso} a los '
+          '${_segundosDesdeInicio()} s. Candidatos: $detalle');
 
       _resolviendo = true;
       await _resolverLlegadaLocal(mejor.info);
       return;
     }
 
-    // Sin beacons con mapa local: se reinicia la ventana de elección.
+    // Hace [_vigenciaLectura] que no se oye ningún beacon con mapa local: se
+    // reinicia la ventana de elección.
     _inicioVentanaPiso = null;
+    _sinMapaLocalDesde ??= ahora;
 
     // 2) No hay mapa local. Buscar en la nube y autodescargar. Optimización:
     //    se consulta una sola vez por conjunto de MACs (se recuerdan las que no
@@ -252,6 +351,10 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     //    cada barrido si el lugar no tiene mapa o no hay conexión.
     // Se consultan sólo las MACs desconocidas MÁS FUERTES: las lejanas no
     // aportan y agrandan el pedido.
+    //
+    // Y recién después de [_esperaAntesDeNube] sin beacons con mapa local, y
+    // sin frenar el procesamiento (ver "LA NUBE NO FRENA AL MAPA LOCAL"). Si
+    // el teléfono no tiene ningún mapa no hay nada que esperar.
     final candidatas = macsDesconocidas.entries
         .where((e) => !_macsSinMapa.contains(e.key))
         .toList()
@@ -261,57 +364,85 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
         .map((e) => e.key)
         .toList();
 
-    final ahora = DateTime.now();
-    final hayMacsNuevas = macs.isNotEmpty;
+    final esperandoMapaLocal = _pisoDeMac.isNotEmpty &&
+        ahora.difference(_sinMapaLocalDesde!) < _esperaAntesDeNube;
     final pasoThrottle = _ultimaConsultaNube == null ||
         ahora.difference(_ultimaConsultaNube!) > const Duration(seconds: 10);
     if (macs.isNotEmpty &&
-        hayMacsNuevas &&
+        !esperandoMapaLocal &&
+        !_consultandoNube &&
         pasoThrottle &&
         SupabaseService.instance.configurado) {
-      _ultimaConsultaNube = ahora;
-      _resolviendo = true;
-      try {
-        final remoteId = await SupabaseService.instance.buscarMapaPorMacs(macs);
-        if (remoteId != null && !_navegando) {
-          if (mounted) {
-            setState(() => _estado = 'Descargando mapa de este lugar...');
-          }
-          _voz.hablar('Descargando el mapa de este lugar.');
-          await SupabaseService.instance.descargarMapa(remoteId);
-          // No se navega acá: el mapa ya es local, así que el próximo barrido
-          // entra por la rama de arriba y elige el piso por señal (el mapa
-          // descargado puede tener beacons de varios pisos).
-          await _cargarIndiceBeacons();
-          _inicioVentanaPiso = null;
-          _mostrarEstado('Mapa descargado. Detectando piso...');
-          return;
-        } else if (remoteId == null) {
-          // No hay mapa para estas MACs: no volver a consultarlas.
-          if (_macsSinMapa.length > _maxMacsSinMapa) _macsSinMapa.clear();
-          _macsSinMapa.addAll(macs);
-        }
-      } catch (e) {
-        // Error / sin datos: no se marcan como "sin mapa" para poder reintentar
-        // cuando vuelva la conexión (limitado por el throttle de 10 s).
-      } finally {
-        if (!_navegando) _resolviendo = false;
-      }
+      // Sin await: el procesamiento sigue mientras se espera la respuesta.
+      _consultarNube(macs);
     }
- 
+
     // 3) Feedback de dispositivos detectados sin mapa (comportamiento de siempre)
     if (mounted && !_navegando && !_resolviendo && macsDesconocidas.isNotEmpty) {
       _mostrarEstado(
         'Detectados ${macsDesconocidas.length} dispositivo(s)...',
         beacons: macsDesconocidas.length,
       );
-      // Iniciar timer de mapa solo una vez, cuando aparecen beacons sin mapa
+      // Iniciar timer de mapa solo una vez, cuando aparecen beacons sin mapa.
+      // Como queda corriendo, cada vez que suena revisa que de verdad no se
+      // esté oyendo ningún beacon con mapa: antes también avisaba mientras
+      // se estaba eligiendo el piso.
       _mapaTimer ??= Timer.periodic(const Duration(seconds: 10), (_) {
-        if (mounted && !_navegando && !_resolviendo) {
+        if (mounted &&
+            !_navegando &&
+            !_resolviendo &&
+            !_consultandoNube &&
+            !_hayBeaconsConMapa) {
           setState(() => _estado = 'Mapa no encontrado.');
           _voz.hablar('Mapa no encontrado.');
         }
       });
+    }
+  }
+
+  /// Pregunta a la nube si alguno de [macs] pertenece a un mapa publicado y,
+  /// si es así, lo descarga. Corre aparte del procesamiento de barridos (ver
+  /// "LA NUBE NO FRENA AL MAPA LOCAL"): si mientras tanto aparece el mapa
+  /// local y se empieza a resolver la llegada, la respuesta se ignora.
+  Future<void> _consultarNube(List<String> macs) async {
+    _consultandoNube = true;
+    _ultimaConsultaNube = DateTime.now();
+    debugPrint('[Modo automático] Consultando la nube por ${macs.length} '
+        'dispositivo(s) a los ${_segundosDesdeInicio()} s.');
+    try {
+      final remoteId = await SupabaseService.instance
+          .buscarMapaPorMacs(macs)
+          .timeout(_limiteConsultaNube);
+      if (!mounted || _navegando || _resolviendo) return;
+      if (remoteId == null) {
+        // No hay mapa para estas MACs: no volver a consultarlas.
+        if (_macsSinMapa.length > _maxMacsSinMapa) _macsSinMapa.clear();
+        _macsSinMapa.addAll(macs);
+        return;
+      }
+      _resolviendo = true;
+      try {
+        setState(() => _estado = 'Descargando mapa de este lugar...');
+        _voz.hablar('Descargando el mapa de este lugar.');
+        await SupabaseService.instance
+            .descargarMapa(remoteId)
+            .timeout(const Duration(seconds: 30));
+        // No se navega acá: el mapa ya es local, así que el próximo barrido
+        // entra por la rama de arriba y elige el piso por señal (el mapa
+        // descargado puede tener beacons de varios pisos).
+        await _cargarIndiceBeacons();
+        _inicioVentanaPiso = null;
+        _sinMapaLocalDesde = null;
+        _mostrarEstado('Mapa descargado. Detectando piso...');
+      } finally {
+        if (!_navegando) _resolviendo = false;
+      }
+    } catch (e) {
+      // Error / sin datos / timeout: no se marcan como "sin mapa" para poder
+      // reintentar cuando vuelva la conexión (limitado por el throttle).
+      debugPrint('[Modo automático] La consulta a la nube no respondió: $e');
+    } finally {
+      _consultandoNube = false;
     }
   }
 
@@ -502,6 +633,20 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
   }
 }
 
+
+/// Última lectura nueva de un beacon con mapa local (ver "LECTURAS DE
+/// BEACONS CON MAPA").
+class _Lectura {
+  final int pisoId;
+
+  /// RSSI filtrado (dBm).
+  final double rssi;
+
+  /// Hora del advertisement (la de recepción en el teléfono).
+  final DateTime visto;
+
+  const _Lectura(this.pisoId, this.rssi, this.visto);
+}
 
 /// Señal acumulada de un piso durante la ventana de elección.
 class _EvidenciaPiso {

@@ -66,24 +66,52 @@ class ProcesadorSenal {
   //
   // Mediana truncada sobre ventana deslizante. Más robusta que Kalman para
   // ruido bimodal/asimétrico del multipath BLE.
-  //
-  // _tamVentana: ventana de exactamente 3 s de señal. Con emisión a 160 ms/beacon
-  //   (≈6,25 Hz) → ceil(3000 / 160) = 19 muestras. Subir en entornos con
-  //   hormigón/metal si se quiere más suavizado (a costa de latencia).
   // _corteMediana: descarta 20% en cada extremo antes de promediar.
+  //
+  // ── LA VENTANA ES DE TIEMPO, NO DE LECTURAS ───────────────────────────────
+  // Antes eran N lecturas (19 parado, 7 caminando), pensadas para beacons que
+  // emiten cada 160 ms (19 × 0,16 s = 3 s). Pero el atraso que agrega una
+  // ventana es la mitad de su duración EN TIEMPO, y cuánto duran N lecturas
+  // depende de cada cuánto emite el beacon y de cuántos paquetes se pierden:
+  // con beacons que emiten una vez por segundo (el valor de fábrica de
+  // muchos), 7 lecturas son 7 s y el atraso sube a ~3,5 s. Ahora la ventana
+  // son los últimos N segundos, emita como emita el beacon: con beacons lentos
+  // entran menos lecturas (más ruido), pero el atraso no cambia.
+  //
+  // La ventana con el usuario quieto es larga (estabilidad) y caminando corta
+  // (su retardo es la MAYOR fuente de latencia del pipeline: con 3 s serían
+  // ~1,5 s de atraso, ~1,8 m a paso normal). Las dos son regulables
+  // ([configurarVentanas]): en la navegación las fija el panel de ajustes.
 
-  static const int _tamVentana = 19;
+  static const double ventanaQuietoPorDefectoSeg = 3.0;
+  static const double ventanaCaminandoPorDefectoSeg = 1.1;
+  double _ventanaQuietoSeg = ventanaQuietoPorDefectoSeg;
+  double _ventanaCaminandoSeg = ventanaCaminandoPorDefectoSeg;
   static const double _corteMediana = 0.20;
 
-  /// Ventana mínima cuando el usuario está caminando: 7 muestras ≈ 1,1 s.
-  /// La ventana larga de 3 s da mucha estabilidad con el usuario parado, pero
-  /// su retardo de grupo (~1,5 s) es la MAYOR fuente de latencia del pipeline:
-  /// a 1,2 m/s son ~1,8 m de atraso antes de que la posición siquiera entre al
-  /// filtro. Con el usuario en movimiento conviene resignar suavizado —el
-  /// filtro One Euro ya se encarga— a cambio de reducir ese retardo a ~0,55 s.
-  static const int _ventanaMin = 7;
+  /// Lecturas mínimas para devolver un valor. Se usan siempre al menos
+  /// estas, aunque alguna sea más vieja que la ventana: con una o dos no hay
+  /// mediana que valga.
+  static const int _minMuestras = 3;
 
-  final Map<String, List<double>> _ventanaRssi = {};
+  /// Tope de lecturas guardadas por beacon, por si llegan muy seguido (o
+  /// repetidas, como en la pantalla de configuración): acota el ordenamiento.
+  static const int _maxMuestras = 60;
+
+  /// Cambia la ventana (s) con el usuario quieto (que es también lo que
+  /// guarda el buffer) y la ventana caminando.
+  void configurarVentanas({
+    required double quietoSeg,
+    required double caminandoSeg,
+  }) {
+    final q = max(0.2, quietoSeg);
+    final c = caminandoSeg.clamp(0.1, q).toDouble();
+    _ventanaQuietoSeg = q;
+    _ventanaCaminandoSeg = c;
+    _ventanaEfectivaSeg = _ventanaEfectivaSeg.clamp(c, q).toDouble();
+  }
+
+  final Map<String, List<({DateTime t, double rssi})>> _ventanaRssi = {};
   final Map<String, double> _varianzaRssi = {};
 
   /// MACs que el pipeline considera relevantes (los beacons configurados del
@@ -111,22 +139,22 @@ class ProcesadorSenal {
     _varianzaRssi.removeWhere((mac, _) => !_macsRelevantes.contains(mac));
   }
 
-  /// Cantidad de muestras (las más recientes del buffer) que efectivamente se
-  /// promedian. La controla [ajustarPorMovimiento].
-  int _ventanaEfectiva = _tamVentana;
+  /// Duración (s) de la ventana que efectivamente se promedia (las lecturas
+  /// más recientes). La controla [ajustarPorMovimiento].
+  double _ventanaEfectivaSeg = ventanaQuietoPorDefectoSeg;
 
-  int get ventanaEfectiva => _ventanaEfectiva;
+  double get ventanaEfectivaSeg => _ventanaEfectivaSeg;
 
   /// Acorta la ventana de mediana a medida que el usuario se mueve.
   /// [factor]: 0 = quieto (ventana completa, máxima estabilidad),
   ///           1 = caminando (ventana mínima, mínima latencia).
-  /// El buffer sigue guardando [_tamVentana] muestras: solo cambia cuántas se
-  /// usan, así volver al estado "quieto" recupera el suavizado al instante,
+  /// El buffer sigue guardando la ventana de quieto: solo cambia cuánto se
+  /// usa, así volver al estado "quieto" recupera el suavizado al instante,
   /// sin tener que re-llenar nada.
   void ajustarPorMovimiento(double factor) {
     final f = factor.clamp(0.0, 1.0);
-    final v = (_tamVentana + (_ventanaMin - _tamVentana) * f).round();
-    _ventanaEfectiva = v.clamp(_ventanaMin, _tamVentana);
+    _ventanaEfectivaSeg =
+        _ventanaQuietoSeg + (_ventanaCaminandoSeg - _ventanaQuietoSeg) * f;
   }
 
   // ─── MODELO DE DISTANCIA ──────────────────────────────────────────────────
@@ -184,27 +212,37 @@ class ProcesadorSenal {
     }
     if (rssiActual > -20 || rssiActual < -110) return null;
 
-    _ventanaRssi.putIfAbsent(mac, () => []);
-    final v = _ventanaRssi[mac]!;
-    v.add(rssiActual.toDouble());
-    if (v.length > _tamVentana) v.removeAt(0);
-    // Mínimo de muestras antes de devolver un valor: 25% de la ventana
-    // (≈ ceil(19 * 0.25) = 5 muestras ≈ 0,8 s). Fórmula, no hardcodeado:
-    // escala automáticamente si se cambia _tamVentana.
-    final minMuestras = (_tamVentana * 0.25).ceil();
-    if (v.length < minMuestras) return null;
+    final ahora = DateTime.now();
+    final v = _ventanaRssi.putIfAbsent(mac, () => []);
+    v.add((t: ahora, rssi: rssiActual.toDouble()));
+    // El buffer guarda la ventana más larga (la de quieto), con al menos
+    // _minMuestras y a lo sumo _maxMuestras lecturas.
+    final limiteBuffer = ahora.subtract(
+        Duration(microseconds: (_ventanaQuietoSeg * 1e6).round()));
+    while (v.length > _minMuestras && v.first.t.isBefore(limiteBuffer)) {
+      v.removeAt(0);
+    }
+    while (v.length > _maxMuestras) {
+      v.removeAt(0);
+    }
+    if (v.length < _minMuestras) return null;
 
-    // Solo las N muestras más recientes (N = ventana efectiva según movimiento).
-    final desde = v.length > _ventanaEfectiva ? v.length - _ventanaEfectiva : 0;
-    final usadas = desde == 0 ? v : v.sublist(desde);
+    // Solo las lecturas de la ventana efectiva (según movimiento), y nunca
+    // menos de _minMuestras.
+    final limiteVentana = ahora.subtract(
+        Duration(microseconds: (_ventanaEfectivaSeg * 1e6).round()));
+    var desde = v.length;
+    while (desde > 0 && !v[desde - 1].t.isBefore(limiteVentana)) {
+      desde--;
+    }
+    desde = min(desde, v.length - _minMuestras);
+    final n = v.length - desde;
 
-    // Hot path: se ejecuta por cada beacon en cada callback BLE (~6 Hz × N
-    // beacons). Se evitan las asignaciones de sublist() y map()/reduce()
-    // recorriendo el rango interior con índices directos. El resultado numérico
-    // (media truncada + varianza sobre el interior) es idéntico al anterior.
-    final ordenados = List<double>.from(usadas)..sort();
-    final corte =
-        (usadas.length * _corteMediana).round().clamp(1, usadas.length ~/ 3);
+    // Hot path: se ejecuta por cada lectura nueva de cada beacon. Se recorre
+    // el rango interior con índices directos en vez de sublist()/reduce().
+    final ordenados = List<double>.generate(n, (i) => v[desde + i].rssi)
+      ..sort();
+    final corte = (n * _corteMediana).round().clamp(1, n ~/ 3);
     final hasta = ordenados.length - corte;
     final cuenta = hasta - corte;
 
@@ -589,7 +627,7 @@ class ProcesadorSenal {
   void limpiar() {
     _ventanaRssi.clear();
     _varianzaRssi.clear();
-    _ventanaEfectiva = _tamVentana;
+    _ventanaEfectivaSeg = _ventanaQuietoSeg;
   }
 }
 
