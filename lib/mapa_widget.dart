@@ -149,12 +149,8 @@ class _MapaPainter extends CustomPainter {
   final List<Offset>? ruta;        // centros normalizados de las celdas del camino
   final bool mostrarGrilla;
 
-  /// Puntos fijos de la medición de escala (violeta). 1 a 3 puntos.
+  /// Puntos de la medición de escala (violeta). 1 a 3 puntos.
   final List<Offset> puntosMedicion;
-
-  /// Línea elástica en curso durante el arrastre de la medición (violeta).
-  final Offset? elasticoDesde;
-  final Offset? elasticoHasta;
 
   /// Centro normalizado de la celda seleccionada en modo calibración (amarillo).
   final Offset? celdaResaltada;
@@ -181,8 +177,6 @@ class _MapaPainter extends CustomPainter {
     this.ruta,
     this.mostrarGrilla = false,
     this.puntosMedicion = const [],
-    this.elasticoDesde,
-    this.elasticoHasta,
     this.celdaResaltada,
     this.celdasCalibradas = const [],
     this.verticeArrastrado,
@@ -349,14 +343,14 @@ class _MapaPainter extends CustomPainter {
       }
     }
 
-    // --- Medición de escala (violeta): puntos fijos + línea elástica ---
-    if (puntosMedicion.isNotEmpty || (elasticoDesde != null && elasticoHasta != null)) {
+    // --- Medición de escala (violeta): puntos + líneas entre ellos ---
+    if (puntosMedicion.isNotEmpty) {
       final paintLinea = Paint()
         ..color = Colors.purple
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3.0
         ..strokeCap = StrokeCap.round;
-      // Líneas entre puntos fijos consecutivos.
+      // Líneas entre puntos consecutivos (largo y ancho).
       for (int i = 1; i < puntosMedicion.length; i++) {
         canvas.drawLine(
           _desnormalizar(puntosMedicion[i - 1], tamanoImagen),
@@ -364,15 +358,7 @@ class _MapaPainter extends CustomPainter {
           paintLinea,
         );
       }
-      // Línea elástica en curso.
-      if (elasticoDesde != null && elasticoHasta != null) {
-        canvas.drawLine(
-          _desnormalizar(elasticoDesde!, tamanoImagen),
-          _desnormalizar(elasticoHasta!, tamanoImagen),
-          paintLinea,
-        );
-      }
-      // Puntos fijos: mira violeta para fijar cada extremo con precisión.
+      // Puntos: mira violeta para fijar cada extremo con precisión.
       for (final p in puntosMedicion) {
         final c = _desnormalizar(p, tamanoImagen);
         _dibujarMira(canvas, c, radio: 11.0, color: Colors.purple);
@@ -475,8 +461,6 @@ class _MapaPainter extends CustomPainter {
       old.ruta != ruta ||
       old.mostrarGrilla != mostrarGrilla ||
       old.puntosMedicion != puntosMedicion ||
-      old.elasticoDesde != elasticoDesde ||
-      old.elasticoHasta != elasticoHasta ||
       old.celdaResaltada != celdaResaltada ||
       old.celdasCalibradas != celdasCalibradas ||
       old.verticeArrastrado != verticeArrastrado ||
@@ -585,16 +569,12 @@ class MapaWidget extends StatelessWidget {
   /// se pinta sin flecha de orientación.
   final double? headingUsuario;
 
-  /// Puntos fijos de la medición de escala (violeta).
+  /// Puntos de la medición de escala (violeta).
   final List<Offset> puntosMedicion;
 
-  /// Extremos de la línea elástica en curso (violeta) durante el arrastre.
-  final Offset? elasticoDesde;
-  final Offset? elasticoHasta;
-
   /// Callbacks de arrastre con **un solo dedo** sobre el plano. Los usan tanto
-  /// la herramienta de medición (modo escala, para la línea elástica) como el
-  /// editor de zonas (modo zonas, para colocar y reacomodar vértices).
+  /// la medición de escala como el editor de zonas, para colocar y reacomodar
+  /// puntos (y el arrastre de beacons y lugares).
   /// Si [onArrastreInicio] es no nulo, el arrastre se entrega a estos callbacks
   /// en lugar de hacer pan del mapa. [onArrastreFin] no recibe posición: usar
   /// la última reportada por [onArrastreActualizar].
@@ -603,8 +583,8 @@ class MapaWidget extends StatelessWidget {
   final void Function()? onArrastreFin;
 
   /// Se llama cuando el gesto en curso se cancela porque el usuario apoyó un
-  /// segundo dedo (gesto de zoom). Permite descartar la línea elástica a medias
-  /// o el vértice recién apoyado.
+  /// segundo dedo (gesto de zoom). Permite descartar el punto o vértice recién
+  /// apoyado.
   final void Function()? onArrastreCancelar;
 
   /// Índice del vértice de [verticesEnCurso] que se está arrastrando (se
@@ -657,8 +637,6 @@ class MapaWidget extends StatelessWidget {
     this.mostrarGrilla = false,
     this.headingUsuario,
     this.puntosMedicion = const [],
-    this.elasticoDesde,
-    this.elasticoHasta,
     this.onArrastreInicio,
     this.onArrastreActualizar,
     this.onArrastreFin,
@@ -772,8 +750,6 @@ class MapaWidget extends StatelessWidget {
                           ruta: ruta,
                           mostrarGrilla: mostrarGrilla,
                           puntosMedicion: puntosMedicion,
-                          elasticoDesde: elasticoDesde,
-                          elasticoHasta: elasticoHasta,
                           celdaResaltada: celdaResaltada,
                           celdasCalibradas: celdasCalibradas,
                           verticeArrastrado: verticeArrastrado,
@@ -999,8 +975,8 @@ class MapaWidget extends StatelessWidget {
               );
             }
 
-            // Medición de escala: un dedo dibuja la línea elástica; al apoyar un
-            // segundo dedo se cancela y el InteractiveViewer hace zoom. Usamos un
+            // Escala, zonas, beacons y lugares: un dedo coloca o arrastra; al
+            // apoyar un segundo dedo se cancela y el InteractiveViewer hace zoom. Usamos un
             // Listener (eventos crudos de puntero) porque no compite en la arena
             // de gestos con el zoom del InteractiveViewer.
             if (hayArrastre) {
@@ -1071,8 +1047,8 @@ class MapaWidget extends StatelessWidget {
 }
 
 /// Captura gestos de **un solo dedo** sobre el plano con eventos crudos de
-/// puntero (Listener): la medición de escala (línea elástica) y la edición de
-/// vértices de zonas prohibidas. Apoyar un **segundo dedo** cancela el gesto en
+/// puntero (Listener): los puntos de la medición de escala y los vértices de
+/// las zonas prohibidas. Apoyar un **segundo dedo** cancela el gesto en
 /// curso y deja que el InteractiveViewer haga zoom. A diferencia de un
 /// GestureDetector con onPan*, el Listener no compite en la arena de gestos,
 /// así que convive con el zoom del InteractiveViewer y con los taps internos

@@ -34,9 +34,13 @@ class DetectorMovimiento {
   static const double umbralQuieto = 0.25;
 
   /// Energía (m/s²) por encima de la cual se considera que camina. Caminando
-  /// con el teléfono en la mano la energía suavizada queda bastante por
-  /// encima de 1 m/s², así que subirlo no agrega latencia al caminar.
-  static const double umbralMoviendo = 0.80;
+  /// con el teléfono en la mano la energía suavizada suele quedar por encima
+  /// de 1 m/s²; con el teléfono quieto en la mano mientras se camina (con
+  /// bastón, por ejemplo) puede no llegar, y entonces todo el pipeline sigue
+  /// frenado como si estuviera parado. Por eso es regulable: en la
+  /// navegación lo fija el panel de ajustes ([AjustesNavegacion]).
+  static const double umbralMoviendoPorDefecto = 0.80;
+  double umbralMoviendo = umbralMoviendoPorDefecto;
 
   /// Constante de tiempo del suavizado de la energía (s). ~0,35 s promedia
   /// varias zancadas sin borrar el arranque del movimiento.

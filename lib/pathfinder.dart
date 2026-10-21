@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show compute, debugPrint;
 import 'package:flutter/material.dart';
 import 'zona_model.dart';
@@ -99,6 +100,19 @@ class _Nodo {
 ///     centro geométrico cae FUERA de `[0,1]`. Antes se devolvía tal cual: por
 ///     eso la ruta llegaba a dibujarse literalmente fuera de la imagen del
 ///     plano. Ahora se recorta igual que en `GrillaNav.centroX/centroY`.
+///
+/// ── ZONAS: CELDAS BLOQUEADAS Y PAREDES ────────────────────────────────────
+/// Las zonas no transitables afectan la grilla de dos maneras:
+///
+///  • **Celda bloqueada**: su CENTRO cae adentro de una zona
+///    ([esZonaProhibida]). Ni la ruta ni la posición del usuario pueden estar
+///    en ella.
+///  • **Pared**: dos celdas vecinas libres quedan desconectadas si el
+///    segmento entre sus centros pasa por adentro de una zona
+///    ([conectadas]). Es lo que frena a la ruta frente a una zona angosta
+///    que no tapa ningún centro (una pared de 20 cm).
+///
+/// Ver [_marcarObstaculos] para el porqué de este criterio.
 class ResolvedorCaminos {
   // Definición de la grilla (escala configurable por piso y por eje). De acá
   // salen la resolución (cantidad de celdas) y el paso (tamaño de celda
@@ -155,17 +169,63 @@ class ResolvedorCaminos {
   late List<double> _costoExtra; // campo de costos (borde + cercanía a zonas)
   int _margenCeldas = 1;
 
+  /// Conexiones cortadas por una pared, por celda (bits [_paredEste],
+  /// [_paredSur], [_paredSurEste] y [_paredSurOeste]; ver [_hayPared]).
+  /// Vacía hasta [inicializar].
+  Uint8List _paredes = Uint8List(0);
+
+  /// Celdas ocupadas SÓLO por las zonas no transitables dibujadas (sin
+  /// escaleras ni franja de borde). Vacía hasta [inicializar].
+  List<bool> _soloZonas = const [];
+
   List<ZonaNoTransitable> _zonas = [];
 
   int _idx(int x, int y) => x * _resY + y;
+
+  /// true si el CENTRO de la celda (x, y) cae en una zona no transitable
+  /// dibujada por el administrador. Es lo que usa [RestriccionZonas] para
+  /// que la posición del usuario no quede adentro de una.
+  bool esZonaProhibida(int x, int y) {
+    if (x < 0 || x >= _resX || y < 0 || y >= _resY) return false;
+    final i = _idx(x, y);
+    return i < _soloZonas.length && _soloZonas[i];
+  }
+
+  /// true si se puede pasar de la celda (x1, y1) a su vecina (x2, y2), en
+  /// cruz o en diagonal, sin atravesar una zona: el segmento entre los dos
+  /// centros no pasa por adentro de ningún polígono. No mira si las celdas
+  /// mismas están bloqueadas (eso es [esZonaProhibida]). False si las celdas
+  /// no son vecinas o alguna cae fuera de la grilla.
+  bool conectadas(int x1, int y1, int x2, int y2) {
+    final dx = x2 - x1, dy = y2 - y1;
+    if (dx.abs() > 1 || dy.abs() > 1) return false;
+    if (dx == 0 && dy == 0) return true;
+    if (x1 < 0 || x1 >= _resX || y1 < 0 || y1 >= _resY) return false;
+    if (x2 < 0 || x2 >= _resX || y2 < 0 || y2 >= _resY) return false;
+    return !_hayPared(_paredes, _resY, x1, y1, dx, dy);
+  }
+
+  /// true si el punto [p] (normalizado) cae adentro del polígono de alguna
+  /// zona. No es lo mismo que [esZonaProhibida] sobre su celda: una pared
+  /// angosta no bloquea ninguna celda (no tapa ningún centro), pero una
+  /// medición sí puede caer adentro de ella.
+  bool puntoEnZona(Offset p) {
+    for (final zona in _zonas) {
+      if (zona.vertices.length >= 3 && _puntoEnPoligono(p, zona.vertices)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   // ── Inicialización ──────────────────────────────────────────────────────────
 
   /// [obstaculosRect]: áreas extra no transitables (normalizadas), hoy las
   /// escaleras: la ruta no puede pasar POR ENCIMA de una escalera, tiene que
   /// rodearla y llegar por su entrada. Se bloquean las celdas cuyo CENTRO
-  /// cae dentro del área (sin rasterizar el contorno como en las zonas: con
-  /// un cuadrado de 1 m eso bloquearía hasta 4 celdas y taparía la entrada).
+  /// cae dentro del área, igual que con las zonas (rasterizar el contorno,
+  /// con un cuadrado de 1 m, bloquearía hasta 4 celdas y taparía la entrada).
+  /// A diferencia de las zonas, no cortan conexiones ([conectadas]).
   ///
   /// [puntosLibres]: puntos cuya celda NUNCA se bloquea por [obstaculosRect]
   /// (el punto frente a la entrada de cada escalera, que es el destino de la
@@ -185,8 +245,14 @@ class ResolvedorCaminos {
     _obsZona = List<bool>.filled(total, false);
     _esBorde = List<bool>.filled(total, false);
     _costoExtra = List<double>.filled(total, 0.0);
+    _paredes = Uint8List(total);
 
     _marcarObstaculos();
+    _marcarParedes();
+    // Se copia ANTES de sumar las escaleras: el usuario sí puede estar parado
+    // en una escalera (llega por ella en un salto de piso), sólo la ruta no
+    // puede pasar por encima.
+    _soloZonas = List<bool>.from(_obsZona);
     _marcarObstaculosRect();
     _aplicarAnchoPasillo();
     _marcarBordes();
@@ -201,19 +267,34 @@ class ResolvedorCaminos {
 
   // ── Centros de celda (recortados al plano) ─────────────────────────────────
   //
-  // Idéntico a GrillaNav._centro: la última celda de cada eje puede ser parcial
-  // y su centro se recorta a 1.0 para que NUNCA caiga fuera del plano.
+  // Se toman de GrillaNav, que es la misma que usan RestriccionZonas y el
+  // MapaWidget: el centro con el que se decide si una celda está bloqueada o
+  // conectada es exactamente el de la celda que se dibuja. La última celda
+  // de cada eje puede ser parcial y su centro se recorta para que NUNCA caiga
+  // fuera del plano.
 
-  static double _centroCelda(int i, double paso) {
-    final inicio = i * paso;
-    final fin = (inicio + paso) > 1.0 ? 1.0 : inicio + paso;
-    return (inicio + fin) / 2;
-  }
-
-  double _centroX(int i) => _centroCelda(i, _pasoX);
-  double _centroY(int j) => _centroCelda(j, _pasoY);
+  double _centroX(int i) => _grillaNav.centroX(i);
+  double _centroY(int j) => _grillaNav.centroY(j);
 
   // ── Marcado de zonas no transitables ───────────────────────────────────────
+  //
+  // ═══ BLOQUEO POR CENTRO ═══
+  // Una celda queda bloqueada sólo si su CENTRO cae adentro de una zona.
+  //
+  // Antes también se rasterizaba el contorno: toda celda tocada por una
+  // arista quedaba bloqueada. Con celdas de 1 m, la esquina de 20 cm de una
+  // zona bloqueaba la celda entera, y una zona dibujada justo sobre el borde
+  // entre dos celdas bloqueaba la fila de al lado completa. La posición
+  // saltaba a la celda vecina y la ruta se cortaba en pasillos que en la
+  // realidad tienen lugar de sobra.
+  //
+  // El contorno estaba para que una zona angosta (una pared de 20 cm, que no
+  // tapa ningún centro) no quedara "abierta" y el A* se colara a través de
+  // ella. Eso ahora lo resuelven las paredes ([_marcarParedes]): las celdas
+  // de los dos lados quedan libres, pero la conexión entre ellas se corta.
+  //
+  // Un criterio por porcentaje de celda cubierta no serviría: depende de
+  // cuánto mide la celda y no de por dónde puede pasar una persona.
 
   void _marcarObstaculos() {
     for (final zona in _zonas) {
@@ -233,8 +314,14 @@ class ResolvedorCaminos {
       final ixMax = min(_resX - 1, (maxX / _pasoX).ceil());
       final iyMax = min(_resY - 1, (maxY / _pasoY).ceil());
 
-      // 1) Relleno: celdas cuyo centro (recortado al plano) cae dentro del
-      //    polígono.
+      // Celdas cuyo centro (recortado al plano) cae dentro del polígono.
+      //
+      // Si un centro cae JUSTO sobre una arista, decide la regla del cruce de
+      // rayos de [_puntoEnPoligono]: en una zona rectangular cuenta como
+      // adentro sobre el borde izquierdo o el de arriba (x o y mínimos) y
+      // como afuera sobre el derecho o el de abajo. Es un empate que en un
+      // plano real casi nunca se da exacto, y se resuelve una sola vez al
+      // cargar el piso: no puede titilar.
       for (int x = ixMin; x <= ixMax; x++) {
         for (int y = iyMin; y <= iyMax; y++) {
           if (_puntoEnPoligono(Offset(_centroX(x), _centroY(y)), zona.vertices)) {
@@ -242,13 +329,72 @@ class ResolvedorCaminos {
           }
         }
       }
-
-      // 2) Contorno: se rasterizan las aristas del polígono muestreándolas a
-      //    paso fino. Sin esto una zona angosta (o el filo de una zona ancha)
-      //    puede quedar "abierta" porque ningún centro de celda cae adentro, y
-      //    el A* se cuela por ese hueco inexistente.
-      _rasterizarContorno(zona.vertices);
     }
+  }
+
+  /// Corta la conexión entre dos celdas vecinas (en cruz y en diagonal)
+  /// cuando el segmento entre sus centros pasa por adentro de una zona.
+  ///
+  /// Se calcula una sola vez por piso: el A* y [RestriccionZonas] sólo leen
+  /// los bits. Para cada zona se miran nada más las celdas alrededor de su
+  /// caja, así que el costo depende del tamaño de las zonas y no del plano.
+  void _marcarParedes() {
+    const direcciones = [
+      (_paredEste, 1, 0),
+      (_paredSur, 0, 1),
+      (_paredSurEste, 1, 1),
+      (_paredSurOeste, -1, 1),
+    ];
+
+    for (final zona in _zonas) {
+      final v = zona.vertices;
+      if (v.length < 3) continue;
+
+      double minX = double.infinity, minY = double.infinity;
+      double maxX = -double.infinity, maxY = -double.infinity;
+      for (final p in v) {
+        if (p.dx < minX) minX = p.dx;
+        if (p.dy < minY) minY = p.dy;
+        if (p.dx > maxX) maxX = p.dx;
+        if (p.dy > maxY) maxY = p.dy;
+      }
+
+      // Un segmento entre centros vecinos sólo puede tocar la caja de la
+      // zona si sale de una celda que la toca o de una pegada a ella.
+      final ixMin = max(0, (minX / _pasoX).floor() - 1);
+      final iyMin = max(0, (minY / _pasoY).floor() - 1);
+      final ixMax = min(_resX - 1, (maxX / _pasoX).floor() + 1);
+      final iyMax = min(_resY - 1, (maxY / _pasoY).floor() + 1);
+
+      for (int x = ixMin; x <= ixMax; x++) {
+        for (int y = iyMin; y <= iyMax; y++) {
+          final i = _idx(x, y);
+          final a = Offset(_centroX(x), _centroY(y));
+          for (final (bit, dx, dy) in direcciones) {
+            if ((_paredes[i] & bit) != 0) continue; // ya la cortó otra zona
+            final nx = x + dx, ny = y + dy;
+            if (nx < 0 || nx >= _resX || ny >= _resY) continue;
+            final b = Offset(_centroX(nx), _centroY(ny));
+            if (max(a.dx, b.dx) < minX || min(a.dx, b.dx) > maxX ||
+                max(a.dy, b.dy) < minY || min(a.dy, b.dy) > maxY) {
+              continue;
+            }
+            if (_segmentoAtraviesaPoligono(a, b, v)) _paredes[i] |= bit;
+          }
+        }
+      }
+    }
+  }
+
+  /// true si alguna de las 4 conexiones en cruz de la celda (x, y) está
+  /// cortada por una pared.
+  bool _tieneParedEnCruz(int x, int y) {
+    for (final (dx, dy) in const [(1, 0), (-1, 0), (0, 1), (0, -1)]) {
+      final nx = x + dx, ny = y + dy;
+      if (nx < 0 || nx >= _resX || ny < 0 || ny >= _resY) continue;
+      if (_hayPared(_paredes, _resY, x, y, dx, dy)) return true;
+    }
+    return false;
   }
 
   List<Rect> _obstaculosRect = const [];
@@ -285,26 +431,6 @@ class ResolvedorCaminos {
       if (!marcoAlguna) {
         final i = _idx(celdaX(r.center.dx), celdaY(r.center.dy));
         if (!libres.contains(i)) _obsZona[i] = true;
-      }
-    }
-  }
-
-  void _rasterizarContorno(List<Offset> vertices) {
-    final pasoMuestreo = min(_pasoX, _pasoY) / 3.0;
-    if (pasoMuestreo <= 0) return;
-
-    for (int i = 0; i < vertices.length; i++) {
-      final a = vertices[i];
-      final b = vertices[(i + 1) % vertices.length];
-      final largo = (b - a).distance;
-      final muestras = max(1, (largo / pasoMuestreo).ceil());
-      for (int s = 0; s <= muestras; s++) {
-        final t = s / muestras;
-        final px = a.dx + (b.dx - a.dx) * t;
-        final py = a.dy + (b.dy - a.dy) * t;
-        final cx = min(_resX - 1, max(0, (px / _pasoX).floor()));
-        final cy = min(_resY - 1, max(0, (py / _pasoY).floor()));
-        _obsZona[_idx(cx, cy)] = true;
       }
     }
   }
@@ -427,9 +553,26 @@ class ResolvedorCaminos {
       }
     }
 
+    // Celdas libres pegadas a una pared: una zona angosta no bloquea ninguna
+    // celda (no tapa ningún centro), así que sin esto la ruta no se despegaría
+    // de ella. Cuentan como distancia 1, igual que las pegadas a una celda
+    // bloqueada. (Antes las bloqueaba el contorno y el despegue salía solo.)
+    final pegadas = <int>[];
+    for (int x = 0; x < _resX; x++) {
+      for (int y = 0; y < _resY; y++) {
+        final i = _idx(x, y);
+        if (dist[i] > 1 && _tieneParedEnCruz(x, y)) {
+          dist[i] = 1;
+          pegadas.add(i);
+        }
+      }
+    }
+
     const vecinos = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-    for (int nivel = 1; nivel <= maxAnillos && frente.isNotEmpty; nivel++) {
-      final siguiente = <int>[];
+    for (int nivel = 1; nivel <= maxAnillos; nivel++) {
+      // Las pegadas a una pared ya tienen distancia 1: se expanden junto con
+      // las del primer anillo.
+      final siguiente = nivel == 1 ? pegadas : <int>[];
       for (final i in frente) {
         final x = i ~/ _resY, y = i % _resY;
         for (final d in vecinos) {
@@ -443,25 +586,9 @@ class ResolvedorCaminos {
         }
       }
       frente = siguiente;
+      if (frente.isEmpty) break;
     }
     return dist;
-  }
-
-  bool _puntoEnPoligono(Offset punto, List<Offset> vertices) {
-    bool dentro = false;
-    int j = vertices.length - 1;
-    for (int i = 0; i < vertices.length; i++) {
-      final vi = vertices[i];
-      final vj = vertices[j];
-      if (((vi.dy > punto.dy) != (vj.dy > punto.dy)) &&
-          (punto.dx <
-              (vj.dx - vi.dx) * (punto.dy - vi.dy) / (vj.dy - vi.dy) +
-                  vi.dx)) {
-        dentro = !dentro;
-      }
-      j = i;
-    }
-    return dentro;
   }
 
   // ── Pathfinding ─────────────────────────────────────────────────────────────
@@ -521,6 +648,7 @@ class ResolvedorCaminos {
       obstaculos: List<bool>.from(_obsZona),
       borde: List<bool>.from(_esBorde),
       costoExtra: List<double>.from(_costoExtra),
+      paredes: Uint8List.fromList(_paredes),
       bloquearBorde: bloquearBorde,
       radioExencion: _margenCeldas + _radioExencionExtra,
       inicio: inicio,
@@ -543,6 +671,114 @@ class ResolvedorCaminos {
   }
 }
 
+// ─── GEOMETRÍA DE ZONAS Y PAREDES ────────────────────────────────────────────
+//
+// Funciones de nivel superior: las usa tanto el ResolvedorCaminos como el A*
+// dentro del isolate. Todo se calcula en coordenadas normalizadas: escalar un
+// eje distinto que el otro (metrosX ≠ metrosY) no cambia si un segmento
+// cruza un polígono, así que no hace falta pasar a metros.
+
+/// Bits de [ResolvedorCaminos._paredes]. Cada conexión entre vecinas se
+/// guarda UNA vez, en la celda de la que sale hacia el este, el sur, el
+/// sureste o el suroeste; la conexión inversa se lee desde la vecina.
+const int _paredEste = 1;     // (x, y) ↔ (x + 1, y)
+const int _paredSur = 2;      // (x, y) ↔ (x, y + 1)
+const int _paredSurEste = 4;  // (x, y) ↔ (x + 1, y + 1)
+const int _paredSurOeste = 8; // (x, y) ↔ (x - 1, y + 1)
+
+/// true si una pared corta el paso de la celda (x, y) a su vecina
+/// (x + dx, y + dy), con dx y dy en {-1, 0, 1}. No valida que la vecina
+/// esté dentro de la grilla.
+bool _hayPared(Uint8List paredes, int resY, int x, int y, int dx, int dy) {
+  // Hacia el oeste, el norte, el noroeste o el noreste: se lee la misma
+  // conexión desde la otra punta.
+  final invertir = dy < 0 || (dy == 0 && dx < 0);
+  final ox = invertir ? x + dx : x;
+  final oy = invertir ? y + dy : y;
+  final ddx = invertir ? -dx : dx;
+  final ddy = invertir ? -dy : dy;
+  final bit = ddy == 0
+      ? _paredEste
+      : (ddx == 0 ? _paredSur : (ddx > 0 ? _paredSurEste : _paredSurOeste));
+  final i = ox * resY + oy;
+  return i >= 0 && i < paredes.length && (paredes[i] & bit) != 0;
+}
+
+/// Cruce de rayos: true si [punto] está adentro del polígono [vertices].
+///
+/// Sobre una arista el resultado es fijo (no aleatorio): el rayo va hacia +x
+/// y una arista vertical sólo cuenta si queda estrictamente a la derecha del
+/// punto, y una horizontal nunca cuenta. En un rectángulo eso deja adentro
+/// los bordes izquierdo y de arriba, y afuera el derecho y el de abajo: el
+/// mismo criterio semiabierto que usa la grilla para los índices de celda.
+bool _puntoEnPoligono(Offset punto, List<Offset> vertices) {
+  bool dentro = false;
+  int j = vertices.length - 1;
+  for (int i = 0; i < vertices.length; i++) {
+    final vi = vertices[i];
+    final vj = vertices[j];
+    if (((vi.dy > punto.dy) != (vj.dy > punto.dy)) &&
+        (punto.dx <
+            (vj.dx - vi.dx) * (punto.dy - vi.dy) / (vj.dy - vi.dy) +
+                vi.dx)) {
+      dentro = !dentro;
+    }
+    j = i;
+  }
+  return dentro;
+}
+
+/// true si el segmento [a]–[b] pasa por ADENTRO del polígono [v].
+///
+/// Tocarlo no alcanza: un segmento que roza un vértice o corre por afuera a
+/// lo largo de una arista no lo atraviesa. Se buscan todos los puntos donde
+/// el segmento toca alguna arista; entre dos de esos puntos seguidos el
+/// segmento queda entero adentro o entero afuera, así que alcanza con mirar
+/// el punto medio de cada tramo. Esto cubre también el caso que un simple
+/// "¿se cruza con alguna arista?" deja pasar: la diagonal que entra y sale
+/// justo por dos vértices de un cuadrado.
+bool _segmentoAtraviesaPoligono(Offset a, Offset b, List<Offset> v) {
+  const eps = 1e-12;
+  double cruz(Offset p, Offset q) => p.dx * q.dy - p.dy * q.dx;
+
+  final d = b - a;
+  final largo2 = d.dx * d.dx + d.dy * d.dy;
+  if (largo2 <= 0) return false;
+
+  final ts = <double>[0.0, 1.0];
+  for (int k = 0; k < v.length; k++) {
+    final p = v[k];
+    final e = v[(k + 1) % v.length] - p;
+    final ap = p - a;
+    final den = cruz(d, e);
+    if (den.abs() > eps) {
+      // a + t·d = p + u·e
+      final t = cruz(ap, e) / den;
+      final u = cruz(ap, d) / den;
+      if (t > -eps && t < 1 + eps && u > -eps && u < 1 + eps) {
+        ts.add(t.clamp(0.0, 1.0).toDouble());
+      }
+    } else if (cruz(ap, d).abs() <= eps) {
+      // Arista sobre la misma recta: se agregan sus extremos que caen dentro
+      // del segmento, para mirar aparte el tramo que corre pegado a ella.
+      for (final w in [p, p + e]) {
+        final t = ((w.dx - a.dx) * d.dx + (w.dy - a.dy) * d.dy) / largo2;
+        if (t > 0 && t < 1) ts.add(t);
+      }
+    }
+  }
+
+  ts.sort();
+  for (int k = 0; k + 1 < ts.length; k++) {
+    if (ts[k + 1] - ts[k] <= eps) continue;
+    final m = (ts[k] + ts[k + 1]) / 2;
+    if (_puntoEnPoligono(Offset(a.dx + d.dx * m, a.dy + d.dy * m), v)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // ─── ISOLATE: ARGUMENTOS Y FUNCIÓN DE NIVEL SUPERIOR ─────────────────────────
 
 class _PathArgs {
@@ -553,6 +789,7 @@ class _PathArgs {
   final List<bool> obstaculos;   // zonas no transitables
   final List<bool> borde;        // franja perimetral del plano
   final List<double> costoExtra; // campo de costos por celda
+  final Uint8List paredes;       // conexiones cortadas (ver _hayPared)
   final bool bloquearBorde;      // ¿la franja perimetral es intransitable?
   final int radioExencion;       // celdas de borde habilitadas junto a A y B
   final Offset inicio;
@@ -566,6 +803,7 @@ class _PathArgs {
     required this.obstaculos,
     required this.borde,
     required this.costoExtra,
+    required this.paredes,
     required this.bloquearBorde,
     required this.radioExencion,
     required this.inicio,
@@ -581,6 +819,11 @@ class _PathArgs {
 /// curvas y un campo de costos que empuja el camino hacia el interior del
 /// plano. Devuelve TODAS las celdas del camino (sin simplificar) para que el
 /// `MapaWidget` pueda pintar cada una.
+///
+/// Dos celdas libres vecinas sólo se conectan si no hay una pared entre ellas
+/// ([_hayPared]). Las paredes también están calculadas para las diagonales,
+/// pero el A* no se mueve en diagonal: el seguimiento de la ruta y la voz
+/// ([SeguidorRuta]) cuentan con tramos rectos y giros de 90°.
 List<Offset>? _aStarIsolate(_PathArgs args) {
   final resX = args.resX;
   final resY = args.resY;
@@ -589,6 +832,7 @@ List<Offset>? _aStarIsolate(_PathArgs args) {
   final obs = args.obstaculos;
   final borde = args.borde;
   final costoExtra = args.costoExtra;
+  final paredes = args.paredes;
 
   int clampX(int v) => v < 0 ? 0 : (v >= resX ? resX - 1 : v);
   int clampY(int v) => v < 0 ? 0 : (v >= resY ? resY - 1 : v);
@@ -708,6 +952,9 @@ List<Offset>? _aStarIsolate(_PathArgs args) {
       if (nx < 0 || nx >= resX || ny < 0 || ny >= resY) continue;
       final vecino = grilla[nx][ny];
       if (vecino.visitado || vecino.esObstaculo) continue;
+      // Las dos celdas pueden estar libres (sus centros caen afuera de toda
+      // zona) y aun así tener una pared en el medio.
+      if (_hayPared(paredes, resY, actual.x, actual.y, d[0], d[1])) continue;
 
       final penGiro = _penalizacionGiro(actual, d[0], d[1], costoGiro);
       final penCampo = costoExtra[nx * resY + ny];

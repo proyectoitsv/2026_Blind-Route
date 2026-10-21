@@ -114,6 +114,37 @@ class BluetoothHelper {
   /// adaptador puede dispararse al mismo tiempo).
   static bool _reinicioEnCurso = false;
 
+  // ── RENOVACIÓN DEL SCAN (límite de 30 minutos de Android) ─────────────────
+  //
+  // Android 7+ pasa a modo "oportunista" todo scan que lleva más de 30
+  // minutos corriendo: sigue figurando como activo, pero sólo entrega lo que
+  // de casualidad escanea otra app, o sea casi nada. En la app de usuario el
+  // scan físico no se detiene nunca (pasa del modo automático a la
+  // navegación y, al volver, el modo automático lo reutiliza), así que en
+  // una sesión de pruebas larga, pasada la media hora, el modo automático
+  // dejaba de encontrar mapas y la posición se arrastraba con pocas lecturas,
+  // sin ningún error a la vista. Por eso se anota la hora de cada arranque
+  // real y el scan se renueva (stop + start) antes de llegar al límite.
+
+  /// Hora del último `startScan()` exitoso. Null si no hay scan nuestro.
+  static DateTime? _inicioScanFisico;
+
+  /// Cada cuánto se renueva el scan: con margen sobre los 30 min.
+  static const Duration renovarScanCada = Duration(minutes: 25);
+
+  /// Cuánto lleva corriendo el scan físico actual. Diagnóstico.
+  static Duration? get antiguedadScan {
+    final inicio = _inicioScanFisico;
+    if (inicio == null || !FlutterBluePlus.isScanningNow) return null;
+    return DateTime.now().difference(inicio);
+  }
+
+  /// true si el scan corre desde hace [renovarScanCada] o más.
+  static bool get scanParaRenovar {
+    final edad = antiguedadScan;
+    return edad != null && edad >= renovarScanCada;
+  }
+
   // ─── PRECONDICIONES ───────────────────────────────────────────────────────
 
   static Future<bool> verificarPrecondiciones(BuildContext context) async {
@@ -189,7 +220,12 @@ class BluetoothHelper {
 
     await _suscribir();
 
-    final ok = await _asegurarScanFisico();
+    // Un scan que ya corre desde hace mucho se renueva en vez de reusarse
+    // (ver "RENOVACIÓN DEL SCAN"). Si no hay cupo de arranques, el reinicio
+    // no toca nada y se sigue con el que está.
+    final ok = scanParaRenovar
+        ? (await reiniciarScanForzado() || FlutterBluePlus.isScanningNow)
+        : await _asegurarScanFisico();
 
     // Activar reconexión automática ante cortes de BT
     escucharEstadoAdaptador();
@@ -228,12 +264,21 @@ class BluetoothHelper {
     }
 
     try {
+      // lowLatency y no balanced: en "balanced" Android escucha ~1 s de cada
+      // 4 s (ventana de 1024 ms cada 4096 ms). Durante esos 3 s de pausa no
+      // llega ninguna lectura nueva de ningún beacon: la posición se quedaba
+      // quieta y avanzaba de golpe con cada ráfaga, y en el modo automático
+      // los beacons se caían de la lista en cada pausa. Además, todo el
+      // filtrado (ventanas de señal "en lecturas", atraso estimado) supone
+      // ~6 lecturas por segundo por beacon, que sólo se cumple escuchando
+      // todo el tiempo. Gasta más batería mientras escanea.
       await FlutterBluePlus.startScan(
         continuousUpdates: true,
-        androidScanMode: AndroidScanMode.balanced,
+        androidScanMode: AndroidScanMode.lowLatency,
         removeIfGone: _removeIfGoneActual,
       ).timeout(const Duration(seconds: 5));
       _arranques.add(DateTime.now());
+      _inicioScanFisico = DateTime.now();
       // Se considera "vivo" desde el arranque: si en los próximos segundos no
       // llega nada, el watchdog de la pantalla lo va a detectar.
       _ultimoResultado ??= DateTime.now();
@@ -383,6 +428,7 @@ class BluetoothHelper {
       if (FlutterBluePlus.isScanningNow) {
         await FlutterBluePlus.stopScan();
       }
+      _inicioScanFisico = null;
     } catch (_) {
       // Ignorar errores al detener
     }
