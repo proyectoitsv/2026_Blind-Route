@@ -38,7 +38,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `flutter_tts`, `speech_to_text` (voz).
 - `supabase_flutter`, `wakelock_plus`, `permission_handler`, `image_picker`.
 - Lints: `flutter_lints` (`analysis_options.yaml`).
-- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
+- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) y `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
 
 ## Estructura de `lib/`
 
@@ -72,6 +72,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `detector_movimiento.dart`: quieto o caminando, a partir del acelerómetro. El umbral de caminata es regulable.
 - `orientacion_service.dart`: brújula suavizada con media circular.
 - `restriccion_zonas.dart`: si la medición cae en una celda bloqueada o adentro del polígono de una zona, la lleva al **centro** de la celda libre más cercana, prefiriendo el lado donde ya estaba el usuario.
+- `histeresis_celda.dart`: confirma una celda nueva recién tras varios ciclos seguidos en ella. A través de una pared angosta pide más ciclos, con una ventana corta para deshacer un cruce falso.
 
 **Navegación**
 - `grilla_nav.dart`: grilla de navegación. El lado de celda es configurable por piso, entre 0.5 y 1.0 m.
@@ -115,7 +116,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 
 - Rama de trabajo: `app_doble`. Rama base: `main`. HEAD sigue en `a5d4db0`.
 - **Todo lo de las sesiones del 2026-10-19 y del 2026-10-21 está SIN commitear** en `app_doble`. Ningún cambio de esas sesiones está probado en el teléfono. Detalle en el Registro.
-- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (21 casos).
+- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (33 casos).
 - Varios commits anteriores están marcados como "no probado" (`6d105e6`, `c34654a`, `b5c83df`, `29bc508`).
 - `feedback.md` está vacío. Es el archivo de feedback del proyecto.
 - `log.txt` (~8 MB, codificado en UTF-16) es un volcado de logcat en la raíz del repositorio. Es anterior a los cambios de la sesión: no tiene sus líneas de diagnóstico.
@@ -130,7 +131,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 **Pendientes conocidos:**
 - Las calibraciones guardadas antes pueden tener valores inflados por lecturas repetidas. Conviene repetir las que se hicieron con beacons que se oían poco.
 - Las preselecciones de fábrica tienen valores estimados. Si ninguna anda, el usuario va a crear la suya.
-- Revisar el ancho de la histéresis de celda (`_HisteresisCelda` en `pantalla_naveg.dart`), en un cambio aparte. Con el bloqueo por centro, una medición que sale apenas del otro lado de una pared angosta (no adentro de ella) ya cambia de celda: antes el contorno bloqueado daba una franja muerta de una celda por lado.
+- Histéresis de celda frente a paredes angostas: implementada (`histeresis_celda.dart`), falta probarla en el teléfono. Ver el Registro del 2026-10-21.
 - El A* no se mueve en diagonal. Las paredes ya están calculadas para las diagonales, pero habilitarlas obliga a revisar `seguidor_ruta.dart` (tramos rectos, giros de 90°, largo de la ruta).
 
 ## Registro de cambios entre chats
@@ -168,3 +169,24 @@ Al cerrar un chat por la regla del 30%, agregar acá una entrada con fecha, los 
 **Sin tocar:** el estimador (`procesador_senal`, `posicionador`, filtros), la histéresis de celda, `margenBordeMetros` y `grilla_nav.dart`.
 
 **Pendiente:** lo indicado en "Próximos pasos" y "Pendientes conocidos" del Estado actual.
+
+### 2026-10-21: histéresis de celda frente a paredes angostas
+
+**Documentación modificada:** este `claude.md`.
+
+**Nota:** el Estado actual dice que todo está sin commitear en `a5d4db0`, pero `a600e8f` y `6c5cb19` ya incluyen los cambios del 2026-10-19 y del 2026-10-21 (zonas por centro, `test/zonas_test.dart`), y el árbol estaba limpio.
+
+**Problema:** con el bloqueo por centro, una medición apenas del otro lado de una pared angosta (afuera del polígono) cambia de celda, y caminando `_HisteresisCelda` confirma en 1 ciclo (no filtra). Antes la franja bloqueada obligaba a la medición a pasar unos 0,65 m más allá de la pared. Además, `previa` de la restricción es `_posicionPermitida`: un solo ciclo del otro lado da vuelta la preferencia de lado.
+
+**Análisis (simulación 1D con ruido correlacionado; detalle y script en las notas de la sesión, `histeresis-celda-paredes.md`):** hoy, caminando a 0,5 m de la pared con σ 0,5 m, salen unos 14 cruces falsos por minuto. Subir los ciclos contando la misma celda no sirve con celdas de 0,5 m (la candidata cambia de celda y el conteo se reinicia). Subirlos sin más baja el parpadeo pero alarga los episodios del lado equivocado (más recálculos de ruta que hoy), porque volver también cuesta N ciclos.
+
+**Cambios de código (aprobados por el usuario; sin commit, sin probar en el teléfono):**
+- `histeresis_celda.dart` (nuevo): la histéresis salió de `pantalla_naveg.dart` y ahora es `HisteresisCelda`, pública, para poder probarla. Recibe la grilla, `esZonaProhibida` y `conectadas`, igual que `RestriccionZonas`. Si la candidata está del otro lado de una pared (desde la celda confirmada no se llega caminando, en cruz y sin atravesar paredes, sin un rodeo de más de `rodeoMaxMetros` = 2 m; no se busca a más de `distanciaMaxMetros` = 6 m), pide `ciclosPared` ciclos seguidos del otro lado, en cualquier celda. Durante `ciclosParaDeshacer` = 11 ciclos (~2 s) después de cruzar, volver al lado de antes cuesta lo normal, y deshacer no abre otra ventana.
+- `pantalla_naveg.dart`: se construye con `late final`, como `_restriccionZonas`. El uso pide 1 ciclo caminando y 3 parado del mismo lado (como antes), y 5 caminando (~0,9 s) y 11 parado (~2 s) a través de una pared. La regla de la pared corre solo con `restringirZonas` activo y el resolvedor listo. Se quitó la clase privada vieja (y su `ciclosParaConfirmar = 2`, que nadie usaba) y se actualizaron los comentarios.
+- `test/histeresis_celda_test.dart` (nuevo): 12 casos (sin pared y con puerta cerca se confirma igual que antes, 5 y 11 ciclos a través de la pared, el conteo por lado con celdas de 0,5 m, la ventana para deshacer y su largo exacto). `flutter test`: 33 casos en verde. `flutter analyze`: los mismos 4 avisos de antes.
+
+**Simulado:** de 13,8 a 1,6 cruces falsos por minuto, y de 0,23 a 0,03 recálculos por minuto. Costo: corregir una posición que quedó del lado equivocado a través de una pared tarda 0,9 s en vez de 0,18 s caminando (~0,2 s más hasta que la posición se asienta) y ~2 s en vez de 0,54 s parado. Los movimientos normales y las puertas no cambian.
+
+**Sin tocar:** el estimador, `restriccion_zonas.dart`, `pathfinder.dart` y la `previa` de la restricción. Lo opcional que no se hizo: `previa` = celda confirmada (en la simulación reduce los cruces a la mitad).
+
+**Pendiente:** probarlo en el teléfono caminando pegado a una pared angosta. El punto no debería pasar al otro lado ni recalcular la ruta, y del lado propio tiene que seguir sin demora. Si una corrección real se siente lenta, bajar a 3 y 8 ciclos (variante liviana). Seguimientos que la histéresis no resuelve: pegado a la pared y con mucho ruido, la posición sigue del lado equivocado entre el 8 y el 23 % del tiempo (es del estimador o de `RestriccionZonas`). Además, `_verificarLlegada` mide en línea recta (1,5 m) y puede anunciar la llegada a un lugar del otro lado de una pared.

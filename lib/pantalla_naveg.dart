@@ -27,6 +27,7 @@ import 'detector_movimiento.dart';
 import 'ajustes_navegacion.dart';
 import 'panel_ajustes_navegacion.dart';
 import 'restriccion_zonas.dart';
+import 'histeresis_celda.dart';
 import 'tema.dart';
 import 'piso_util.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -311,8 +312,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   Offset? _posicionFinal;
 
   // Histéresis de celda: estabiliza en qué celda de la grilla está el usuario,
-  // evitando el parpadeo de borde entre dos celdas adyacentes (ver clase abajo).
-  final _HisteresisCelda _histeresisCelda = _HisteresisCelda();
+  // evitando el parpadeo de borde entre dos celdas adyacentes y los saltos al
+  // otro lado de una pared angosta (ver [HisteresisCelda]). Mira las mismas
+  // paredes que [_restriccionZonas].
+  late final HisteresisCelda _histeresisCelda = HisteresisCelda(
+    grilla: _grilla,
+    prohibida: _resolvedor.esZonaProhibida,
+    conectadas: _resolvedor.conectadas,
+  );
 
   // Throttle de repintado: desacopla el rebuild de la UI del ritmo del scan
   // BLE (que con continuousUpdates dispara muchos callbacks por segundo).
@@ -1792,18 +1799,28 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // segundo y, durante la navegacion, el repintado del mapa + ruta satura
         // el hilo de UI y la pantalla se congela.
         //
-        // Histeresis de celda: SOLO filtra el parpadeo de un unico ciclo
-        // ruidoso justo en el borde entre dos celdas (2 ciclos ~ 0.36 s). No es
-        // un gate de velocidad: si la posicion real cambia de celda de forma
-        // sostenida, confirma casi de inmediato.
+        // Histéresis de celda (ver [HisteresisCelda]): no es un gate de
+        // velocidad, sólo filtra el parpadeo en el borde entre dos celdas.
+        // Parado exige más confirmaciones (nada debería cambiar de celda);
+        // caminando confirma de inmediato, para no sumar latencia encima del
+        // filtro.
+        //
+        // Del otro lado de una pared angosta pide más: 5 ciclos caminando
+        // (~0,9 s) y 11 parado (~2 s). Es justo donde el ruido hacía saltar
+        // al usuario atrás de la pared desde que las zonas se bloquean por el
+        // centro de la celda. Sólo con la restricción de zonas activa: si está
+        // apagada, la posición no sabe nada del plano.
         final ix = _grilla.indiceX(nuevaPosicionFinal.dx);
         final iy = _grilla.indiceY(nuevaPosicionFinal.dy);
-        // Histéresis de celda adaptativa: parado exige más confirmaciones
-        // (nada debería cambiar de celda), caminando confirma casi de
-        // inmediato para no agregar latencia sobre el filtro.
-        final ciclosConfirmar = fPos > 0.5 ? 1 : 3;
-        final celdaFirme =
-            _histeresisCelda.actualizar(ix, iy, _grilla, ciclosConfirmar);
+        final caminando = fPos > 0.5;
+        final celdaFirme = _histeresisCelda.actualizar(
+          ix,
+          iy,
+          ciclos: caminando ? 1 : 3,
+          ciclosPared: (_ajustes.restringirZonas && _resolvedorListo)
+              ? (caminando ? 5 : 11)
+              : null,
+        );
         final posicionSnap = celdaFirme != null
             ? Offset(_grilla.centroX(celdaFirme.ix), _grilla.centroY(celdaFirme.iy))
             : nuevaPosicionFinal;
@@ -4773,73 +4790,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         ),
       ),
     );
-  }
-}
-
-/// Histéresis de celda para estabilizar el punto del usuario en la grilla.
-///
-/// Sin esto, cuando el usuario está cerca del borde entre dos celdas la posición
-/// oscila entre ellas con cada lectura BLE, generando saltos en el mapa e
-/// instrucciones de voz alternadas ("girá a la derecha" / "girá a la izquierda")
-/// en segundos. Esta clase solo confirma una celda nueva tras
-/// [ciclosParaConfirmar] lecturas consecutivas en ella, y mientras tanto mantiene
-/// la celda anterior. (Nombre sin acento: los identificadores Dart son ASCII.)
-class _HisteresisCelda {
-  // Celda actualmente confirmada como posición del usuario.
-  ({int ix, int iy})? _celdaConfirmada;
-
-  // Conteo de lecturas consecutivas que proponen una celda distinta.
-  int _ciclosEnCeldaNueva = 0;
-  ({int ix, int iy})? _celdaCandidataActual;
-
-  // Lecturas consecutivas en la misma celda candidata antes de confirmarla como
-  // nueva posición. Reducido de 5 a 2 (~0.36 s a ~5.5 Hz): esta era la
-  // TERCERA capa de espera apilada sobre el pipeline de posicionamiento (EMA
-  // + gate de confirmación de ~5 ciclos ya filtran el ruido real antes de
-  // llegar acá). Con 5 ciclos acá también, un solo movimiento del usuario
-  // podía tardar >1.5 s extra en reflejarse en el mapa ENCIMA de la demora
-  // del gate anterior — la suma de ambas es lo que hacía ver el ícono
-  // congelado en movimiento continuo. 2 ciclos alcanza para filtrar el
-  // parpadeo de un único frame ruidoso justo en el borde de una celda.
-  static const int ciclosParaConfirmar = 2;
-
-  /// Propone una nueva celda. Retorna la celda confirmada vigente.
-  ///
-  /// [grilla] queda disponible para futuras reglas dependientes del tamaño de
-  /// celda (p. ej. histéresis variable); hoy la lógica es puramente por índice.
-  ({int ix, int iy})? actualizar(int ix, int iy, GrillaNav grilla,
-      [int? ciclosRequeridos]) {
-    final requeridos = ciclosRequeridos ?? ciclosParaConfirmar;
-    if (_celdaConfirmada == null) {
-      _celdaConfirmada = (ix: ix, iy: iy);
-      return _celdaConfirmada;
-    }
-    if (ix == _celdaConfirmada!.ix && iy == _celdaConfirmada!.iy) {
-      // Sigue en la misma celda → resetear candidata.
-      _ciclosEnCeldaNueva = 0;
-      _celdaCandidataActual = null;
-      return _celdaConfirmada;
-    }
-    // Celda distinta: ¿es la misma candidata que la lectura anterior?
-    if (_celdaCandidataActual?.ix == ix && _celdaCandidataActual?.iy == iy) {
-      _ciclosEnCeldaNueva++;
-    } else {
-      // Cambió de candidata → empezar a contar desde 1.
-      _celdaCandidataActual = (ix: ix, iy: iy);
-      _ciclosEnCeldaNueva = 1;
-    }
-    if (_ciclosEnCeldaNueva >= requeridos) {
-      _celdaConfirmada = _celdaCandidataActual;
-      _ciclosEnCeldaNueva = 0;
-      _celdaCandidataActual = null;
-    }
-    return _celdaConfirmada;
-  }
-
-  void resetear() {
-    _celdaConfirmada = null;
-    _ciclosEnCeldaNueva = 0;
-    _celdaCandidataActual = null;
   }
 }
 
