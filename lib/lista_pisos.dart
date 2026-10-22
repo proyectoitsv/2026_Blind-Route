@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'database.dart';
 import 'pantalla_config.dart';
+import 'pantalla_naveg.dart';
 import 'piso_util.dart';
 import 'supabase_service.dart';
 import 'tema.dart';
@@ -31,6 +32,25 @@ class _ListaPisosState extends State<ListaPisos> {
   void _refrescarPisos() async {
     final datos = await DatabaseHelper.instance.obtenerPisosPorEdificio(widget.edificioId);
     if (mounted) setState(() => _pisos = datos);
+  }
+
+  /// Abre la pantalla de navegación del usuario sobre este piso. Es donde el
+  /// admin regula los ajustes de navegación del edificio (botón de ajustes,
+  /// arriba a la derecha): hay que caminar para saber si andan.
+  void _probarNavegacion(Map<String, dynamic> piso) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PantallaNavegacion(
+          pisoId: piso['id'],
+          rutaImagen: piso['ruta_imagen'],
+          escalaX: (piso['escala_metros'] as num?)?.toDouble() ?? 50,
+          escalaY: (piso['escala_metros_alto'] as num?)?.toDouble() ?? 50,
+          tamCeldaMetros: (piso['tam_celda_metros'] as num?)?.toDouble() ?? 1.0,
+          rotacionMapa: (piso['rotacion_mapa'] as num?)?.toDouble() ?? 0.0,
+        ),
+      ),
+    );
   }
 
   Future<bool> _confirmarBorrado(BuildContext context, String nombre) async {
@@ -286,6 +306,14 @@ class _ListaPisosState extends State<ListaPisos> {
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            // Navegar este piso como lo haría el usuario,
+                            // con el panel de ajustes: los filtros se
+                            // regulan caminando, no desde un formulario.
+                            IconButton(
+                              icon: const Icon(Icons.navigation_rounded, color: TemaApp.acento),
+                              tooltip: 'Probar navegación',
+                              onPressed: () => _probarNavegacion(piso),
+                            ),
                             IconButton(
                               icon: const Icon(Icons.edit_rounded, color: TemaApp.acento),
                               tooltip: 'Cambiar número de piso',
