@@ -1,11 +1,13 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart'
+    show debugPrint, mapEquals, visibleForTesting;
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Parámetro numérico de la navegación que se puede regular desde la app.
+/// Parámetro numérico de la navegación que se puede regular desde la app del
+/// administrador.
 class ParametroAjuste {
-  /// Clave con la que se guarda en el teléfono.
+  /// Clave con la que se guarda, en el teléfono y en la nube.
   final String clave;
   final String nombre;
 
@@ -25,7 +27,16 @@ class ParametroAjuste {
   /// Decimales con que se muestra (los que permite [paso]).
   final int decimales;
 
+  /// Valor del código: rige si nadie lo cambió (ver [AjustesNavegacion]).
   final double porDefecto;
+
+  /// true si el administrador lo puede cambiar para un edificio. Los que
+  /// dependen del teléfono (el acelerómetro) o de la persona (cuándo quiere
+  /// escuchar los giros) no: afinados con el teléfono del admin, dejarían el
+  /// edificio ajustado a su equipo y no al del usuario.
+  final bool porEdificio;
+
+  /// Valor vigente: el que lee la navegación.
   double valor;
 
   ParametroAjuste({
@@ -38,8 +49,12 @@ class ParametroAjuste {
     required this.maximo,
     required this.paso,
     required this.porDefecto,
+    this.porEdificio = false,
     this.decimales = 1,
   }) : valor = porDefecto;
+
+  /// [v] dentro del rango permitido.
+  double acotar(double v) => v.clamp(minimo, maximo).toDouble();
 
   int get divisiones => ((maximo - minimo) / paso).round();
 
@@ -57,95 +72,70 @@ class ParametroAjuste {
   }
 }
 
-/// Una configuración guardada de todos los ajustes de navegación, con nombre,
-/// descripción (para anotar qué anda y qué no) y calificación de 0 a 5.
-///
-/// Las de fábrica ([deFabrica]) sirven de referencia: su nombre y sus valores
-/// no se cambian desde la app; sí su descripción y su calificación. Para
-/// probar otros valores se duplican.
-class Preseleccion {
-  final String id;
-  final bool deFabrica;
-  String nombre;
-  String descripcion;
+/// De dónde sale el valor vigente de un parámetro.
+enum OrigenAjuste {
+  /// Nadie lo cambió: rige [ParametroAjuste.porDefecto].
+  codigo,
 
-  /// 0 a 5 estrellas.
-  int calificacion;
+  /// Lo cambió un administrador para todos los edificios.
+  general,
 
-  /// Valor de cada parámetro, por [ParametroAjuste.clave]. Si falta alguno
-  /// (un parámetro agregado después de guardarla) rige su valor por defecto.
-  final Map<String, double> valores;
-
-  bool frenarLateralConBrujula;
-  bool restringirZonas;
-
-  Preseleccion({
-    required this.id,
-    required this.deFabrica,
-    required this.nombre,
-    required this.descripcion,
-    required this.valores,
-    this.calificacion = 0,
-    this.frenarLateralConBrujula = true,
-    this.restringirZonas = true,
-  });
-
-  Map<String, dynamic> aJson() => {
-        'id': id,
-        'deFabrica': deFabrica,
-        'nombre': nombre,
-        'descripcion': descripcion,
-        'calificacion': calificacion,
-        'valores': valores,
-        'frenarLateralConBrujula': frenarLateralConBrujula,
-        'restringirZonas': restringirZonas,
-      };
-
-  /// Null si [j] no es una preselección válida.
-  static Preseleccion? deJson(Map<String, dynamic> j) {
-    final id = j['id'];
-    if (id is! String || id.isEmpty) return null;
-    final valores = <String, double>{};
-    final v = j['valores'];
-    if (v is Map) {
-      v.forEach((k, x) {
-        if (k is String && x is num && x.isFinite) valores[k] = x.toDouble();
-      });
-    }
-    final cal = j['calificacion'];
-    return Preseleccion(
-      id: id,
-      deFabrica: j['deFabrica'] == true,
-      nombre: j['nombre'] is String ? j['nombre'] as String : 'Sin nombre',
-      descripcion: j['descripcion'] is String ? j['descripcion'] as String : '',
-      calificacion: cal is num ? cal.toInt().clamp(0, 5) : 0,
-      valores: valores,
-      frenarLateralConBrujula: j['frenarLateralConBrujula'] != false,
-      restringirZonas: j['restringirZonas'] != false,
-    );
-  }
+  /// Lo cambió un administrador para el edificio actual.
+  edificio,
 }
 
 /// ═══════════════════════════════════════════════════════════════════════════
-/// AJUSTES DE NAVEGACIÓN REGULABLES
+/// AJUSTES DE NAVEGACIÓN
 /// ═══════════════════════════════════════════════════════════════════════════
 ///
 /// Valores que hay que afinar caminando con el teléfono, no en el escritorio:
-/// cuándo se dice cada giro, cuánto se filtra la posición y si puede entrar a
-/// una zona prohibida. Se agrupan en preselecciones ([Preseleccion]) que se
-/// eligen, califican y editan desde el panel de la pantalla de navegación
-/// (botón "Ajustes de navegación", arriba a la derecha; ver
-/// panel_ajustes_navegacion.dart). Se aplican al instante y quedan guardadas
-/// en el teléfono: así se prueba una, se camina la ruta y se anota qué anduvo.
+/// cuándo se dice cada giro y cuánto se filtra la posición.
 ///
-/// Los valores por defecto de cada parámetro son los de la preselección
-/// "Equilibrada"; sólo rigen si una preselección guardada no tiene alguno.
+/// ── QUIÉN LOS CAMBIA ─────────────────────────────────────────────────────
+/// El usuario no: alguien que no ve podría desconfigurar la navegación sin
+/// darse cuenta. El panel (panel_ajustes_navegacion.dart) existe sólo en la
+/// app del administrador, en la pantalla de navegación ("Probar navegación"
+/// en la lista de pisos), para regularlos caminando.
+///
+/// ── TRES CAPAS ────────────────────────────────────────────────────────────
+/// El valor vigente de cada parámetro sale de la primera capa que lo tenga:
+///
+///  1. **Edificio**: lo que un administrador cambió para el edificio actual.
+///     Sólo los parámetros que dependen del edificio
+///     ([ParametroAjuste.porEdificio]).
+///  2. **General**: lo que un administrador cambió para todos los
+///     edificios.
+///  3. **Código**: [ParametroAjuste.porDefecto].
+///
+/// MIENTRAS SE CALIBRA, cualquier administrador cambia las dos capas (ver
+/// supabase/ajustes_navegacion.sql). Hubo un rol "desarrollador" que era
+/// el único que podía tocar los generales, y se sacó porque no andaba.
+/// Cuando los valores queden calibrados, pasan al código y se dejan de
+/// poder cambiar desde la app los que no dependen del edificio.
+///
+/// Cada capa guarda SÓLO lo que se cambió en ella, no una copia de todo: si
+/// el edificio guardara todos los valores, un cambio posterior en los
+/// generales no le llegaría nunca.
+///
+/// Las capas viven en la nube (tabla `ajustes_navegacion`; la lectura y la
+/// subida las hace `SupabaseService`) y en el teléfono, para navegar sin
+/// conexión. Los edificios se identifican por su nombre, igual que los pisos
+/// publicados: si se renombra un edificio, sus ajustes quedan con el nombre
+/// viejo.
+///
+/// Antes había "preselecciones" con nombre y calificación, guardadas en el
+/// teléfono. Se eliminaron: lo que quedó guardado de ellas
+/// (`nav_preselecciones`, `nav_preseleccion_activa`) no se lee más.
 ///
 /// Es un singleton: la pantalla de navegación se vuelve a crear en cada salto
 /// de piso y tiene que seguir usando los mismos valores.
 class AjustesNavegacion {
   AjustesNavegacion._();
   static final AjustesNavegacion instancia = AjustesNavegacion._();
+
+  /// Instancia aparte, sin estado compartido con [instancia]. Para tests.
+  @visibleForTesting
+  factory AjustesNavegacion.nueva() => AjustesNavegacion._();
 
   // ── Giros (ver "GIROS ANTICIPADOS" en la pantalla de navegación) ──────────
 
@@ -162,6 +152,7 @@ class AjustesNavegacion {
     maximo: 3,
     paso: 0.1,
     porDefecto: 0.8,
+    porEdificio: true,
   );
 
   /// Cuánto antes de que el usuario llegue a la esquina EMPIEZA a decirse
@@ -259,6 +250,7 @@ class AjustesNavegacion {
     maximo: 5,
     paso: 0.1,
     porDefecto: 2.0,
+    porEdificio: true,
   );
 
   /// Lo mismo caminando. Antes eran 7 lecturas (~1,1 s).
@@ -274,6 +266,7 @@ class AjustesNavegacion {
     maximo: 3,
     paso: 0.1,
     porDefecto: 0.8,
+    porEdificio: true,
   );
 
   /// Frecuencia de corte del One Euro con el usuario quieto
@@ -290,6 +283,7 @@ class AjustesNavegacion {
     paso: 0.01,
     decimales: 2,
     porDefecto: 0.08,
+    porEdificio: true,
   );
 
   /// Frecuencia de corte del One Euro caminando
@@ -306,6 +300,7 @@ class AjustesNavegacion {
     paso: 0.05,
     decimales: 2,
     porDefecto: 0.45,
+    porEdificio: true,
   );
 
   /// Término de velocidad del One Euro ([FiltroUnEuroPosicion.beta]).
@@ -323,6 +318,7 @@ class AjustesNavegacion {
     paso: 0.05,
     decimales: 2,
     porDefecto: 0.05,
+    porEdificio: true,
   );
 
   /// Tope de velocidad del punto caminando (tope de paso por ciclo de la
@@ -338,6 +334,7 @@ class AjustesNavegacion {
     maximo: 4,
     paso: 0.1,
     porDefecto: 2,
+    porEdificio: true,
   );
 
   List<ParametroAjuste> get parametrosPosicion => [
@@ -350,20 +347,27 @@ class AjustesNavegacion {
         velocidadMaxima,
       ];
 
+  // ── Interruptores de prueba (no se guardan ni se publican) ────────────────
+  //
+  // Sirven para comparar en el campo, no son configuración: viven sólo en
+  // memoria, arrancan prendidos cada vez que se abre la app y en la app del
+  // usuario no se pueden tocar. Así un interruptor olvidado apagado no queda
+  // así para siempre.
+
   /// true: la brújula frena el movimiento de costado respecto de hacia
   /// dónde mira el usuario ([PuertaRumbo]). Con la brújula desviada, eso
   /// retiene parte del avance real y lo suelta de golpe al doblar: apagarlo
   /// sirve para ver si el problema viene de ahí.
   bool frenarLateralConBrujula = true;
 
-  // ── Zonas ─────────────────────────────────────────────────────────────────
-
   /// true: la posición del usuario nunca queda adentro de una zona no
-  /// transitable (ver [RestriccionZonas]). Se deja apagable para comparar en
-  /// el campo.
+  /// transitable (ver [RestriccionZonas]).
   bool restringirZonas = true;
 
   List<ParametroAjuste> get todos => [...parametrosGiro, ...parametrosPosicion];
+
+  List<ParametroAjuste> get _porEdificio =>
+      [for (final p in todos) if (p.porEdificio) p];
 
   // ── Diagnóstico de la señal (no se guarda) ────────────────────────────────
 
@@ -378,347 +382,241 @@ class AjustesNavegacion {
   String? diagnosticoSenal;
   DateTime? diagnosticoSenalHora;
 
-  // ── Preselecciones ────────────────────────────────────────────────────────
+  // ── Capas ─────────────────────────────────────────────────────────────────
   //
-  // Los valores de arriba son los VIGENTES: los que lee la navegación. Salen
-  // siempre de la preselección activa ([activa]). Elegir otra, o cambiar un
-  // valor de la activa en el editor, los vuelve a copiar ([_aplicar]).
+  // Los [ParametroAjuste.valor] son los VIGENTES: los que lee la navegación.
+  // Se recalculan desde las capas ([_aplicar]) cada vez que cambia una o se
+  // cambia de edificio.
 
-  static const String _clavePreselecciones = 'nav_preselecciones';
-  static const String _claveActiva = 'nav_preseleccion_activa';
-  static const String _idPorDefecto = 'fabrica_equilibrada';
+  /// Id en la nube de la capa general.
+  static const String idGeneral = 'general';
+  static const String _prefijoEdificio = 'edificio:';
 
-  /// Primero las de fábrica, en el orden de [_deFabrica]; después las
-  /// propias, en el orden en que se crearon.
-  final List<Preseleccion> preselecciones = [];
-  String _idActiva = _idPorDefecto;
+  /// Id en la nube de la capa de un edificio.
+  static String idEdificio(String nombre) => '$_prefijoEdificio$nombre';
 
-  Preseleccion get activa => preselecciones.firstWhere(
-        (p) => p.id == _idActiva,
-        orElse: () => preselecciones.first,
-      );
+  /// Lo cambiado para todos los edificios, por [ParametroAjuste.clave].
+  Map<String, double> _general = {};
 
-  bool esActiva(Preseleccion p) => p.id == activa.id;
+  /// Lo cambiado en cada edificio (por nombre), por clave.
+  final Map<String, Map<String, double>> _edificios = {};
 
-  /// Valores de una preselección con todos los parámetros, para no olvidar
-  /// ninguno al definir las de fábrica.
-  Map<String, double> _valores({
-    required double atraso,
-    required double giro,
-    required double aviso,
-    required double distanciaQuieto,
-    required double umbral,
-    required double ventanaQuieto,
-    required double ventanaCaminando,
-    required double corteQuieto,
-    required double corteCaminando,
-    required double empuje,
-    required double velMax,
-  }) =>
-      {
-        atrasoPosicion.clave: atraso,
-        anticipoGiro.clave: giro,
-        anticipoAviso.clave: aviso,
-        distanciaGiroQuieto.clave: distanciaQuieto,
-        umbralCaminata.clave: umbral,
-        ventanaSenalQuieto.clave: ventanaQuieto,
-        ventanaSenalCaminando.clave: ventanaCaminando,
-        filtroQuieto.clave: corteQuieto,
-        filtroCaminando.clave: corteCaminando,
-        empujeVelocidad.clave: empuje,
-        velocidadMaxima.clave: velMax,
-      };
+  String? _edificioActual;
 
-  /// ── LAS DE FÁBRICA ─────────────────────────────────────────────────────
-  ///
-  /// Cada una apunta a una hipótesis distinta de por qué la posición anda
-  /// mal, para probarlas caminando la misma ruta y comparar. El atraso de la
-  /// posición de cada una sale de sus propios filtros: ventana de señal
-  /// caminando (la mitad de la ventana) + filtro caminando (1 / 2π·fc) +
-  /// ~0,1 s del resto. Es una estimación: si los giros salen
-  /// tarde o temprano, duplicarla y corregir el atraso.
-  ///
-  /// Sus valores no se editan desde la app (se actualizan con el código), pero
-  /// el nombre y la descripción que escribió el usuario, y su calificación,
-  /// se conservan.
-  List<Preseleccion> _deFabrica() => [
-        Preseleccion(
-          id: _idPorDefecto,
-          deFabrica: true,
-          nombre: 'Equilibrada',
-          descripcion: 'Punto de partida. Ventanas de señal cortas, filtro '
-              'medio y poco empuje. Atraso estimado: 0,8 s.',
-          valores: _valores(
-            atraso: 0.8,
-            giro: 0.6,
-            aviso: 6,
-            distanciaQuieto: 1.0,
-            umbral: 0.6,
-            ventanaQuieto: 2.0,
-            ventanaCaminando: 0.8,
-            corteQuieto: 0.08,
-            corteCaminando: 0.45,
-            empuje: 0.05,
-            velMax: 2.0,
-          ),
-        ),
-        Preseleccion(
-          id: 'fabrica_rapida',
-          deFabrica: true,
-          nombre: 'Respuesta rápida',
-          descripcion: 'Para cuando el punto queda atrás o tarda en arrancar. '
-              'Ventanas y filtros al mínimo razonable y sin empuje: sigue '
-              'rápido, pero tiembla y salta más. Atraso estimado: 0,6 s.',
-          valores: _valores(
-            atraso: 0.6,
-            giro: 0.6,
-            aviso: 6,
-            distanciaQuieto: 1.0,
-            umbral: 0.5,
-            ventanaQuieto: 1.5,
-            ventanaCaminando: 0.6,
-            corteQuieto: 0.12,
-            corteCaminando: 0.7,
-            empuje: 0,
-            velMax: 2.0,
-          ),
-        ),
-        Preseleccion(
-          id: 'fabrica_estable',
-          deFabrica: true,
-          nombre: 'Estable',
-          descripcion: 'Para lugares donde la señal rebota (metal, mucha '
-              'gente) y el punto salta. Más suavizado y velocidad máxima baja: '
-              'se mueve parejo, pero con más atraso, y los giros se anuncian '
-              'antes para compensarlo. Atraso estimado: 1,1 s.',
-          valores: _valores(
-            atraso: 1.1,
-            giro: 0.6,
-            aviso: 7,
-            distanciaQuieto: 1.2,
-            umbral: 0.7,
-            ventanaQuieto: 3.0,
-            ventanaCaminando: 1.1,
-            corteQuieto: 0.05,
-            corteCaminando: 0.3,
-            empuje: 0,
-            velMax: 1.6,
-          ),
-        ),
-        Preseleccion(
-          id: 'fabrica_telefono_firme',
-          deFabrica: true,
-          nombre: 'Teléfono firme en la mano',
-          descripcion: 'Para caminar con el teléfono quieto en la mano (con '
-              'bastón, por ejemplo), cuando el acelerómetro no se entera de '
-              'que caminás y el punto queda frenado. Umbral de caminata bajo. '
-              'Si el punto se mueve estando parado, no es esta. Atraso '
-              'estimado: 0,8 s.',
-          valores: _valores(
-            atraso: 0.8,
-            giro: 0.6,
-            aviso: 6,
-            distanciaQuieto: 1.0,
-            umbral: 0.4,
-            ventanaQuieto: 1.8,
-            ventanaCaminando: 0.8,
-            corteQuieto: 0.1,
-            corteCaminando: 0.45,
-            empuje: 0.05,
-            velMax: 2.0,
-          ),
-        ),
-        Preseleccion(
-          id: 'fabrica_sin_brujula',
-          deFabrica: true,
-          nombre: 'Sin freno de brújula',
-          descripcion: 'Igual que Equilibrada, pero la brújula no frena el '
-              'movimiento de costado. Si con esta el punto deja de saltar al '
-              'doblar, el problema era la brújula desviada.',
-          frenarLateralConBrujula: false,
-          valores: _valores(
-            atraso: 0.8,
-            giro: 0.6,
-            aviso: 6,
-            distanciaQuieto: 1.0,
-            umbral: 0.6,
-            ventanaQuieto: 2.0,
-            ventanaCaminando: 0.8,
-            corteQuieto: 0.08,
-            corteCaminando: 0.45,
-            empuje: 0.05,
-            velMax: 2.0,
-          ),
-        ),
-      ];
+  /// Ids de capas con cambios hechos en este teléfono que todavía no se
+  /// subieron a la nube (por ejemplo, regulando en un subsuelo sin señal).
+  final Set<String> _pendientes = {};
 
-  /// Copia los valores de [p] a los vigentes.
-  void _aplicar(Preseleccion p) {
-    for (final def in todos) {
-      final v = p.valores[def.clave] ?? def.porDefecto;
-      def.valor = v.clamp(def.minimo, def.maximo).toDouble();
+  /// Edificio cuyos ajustes rigen ahora. Null fuera de un edificio.
+  String? get edificioActual => _edificioActual;
+
+  Map<String, double> get _delEdificio {
+    final nombre = _edificioActual;
+    return nombre == null ? const {} : (_edificios[nombre] ?? const {});
+  }
+
+  /// De qué capa sale el valor vigente de [p].
+  OrigenAjuste origen(ParametroAjuste p) {
+    if (_delEdificio.containsKey(p.clave)) return OrigenAjuste.edificio;
+    if (_general.containsKey(p.clave)) return OrigenAjuste.general;
+    return OrigenAjuste.codigo;
+  }
+
+  /// Valor de [p] sin contar el edificio: el general, o el del código.
+  double valorGeneral(ParametroAjuste p) =>
+      p.acotar(_general[p.clave] ?? p.porDefecto);
+
+  /// true si la capa general tiene un valor propio para [p].
+  bool generalCambiado(ParametroAjuste p) => _general.containsKey(p.clave);
+
+  /// Valor de [p] en el edificio actual, si lo tiene cambiado.
+  double? valorDelEdificio(ParametroAjuste p) => _delEdificio[p.clave];
+
+  void _aplicar() {
+    final edificio = _delEdificio;
+    for (final p in todos) {
+      p.valor = p.acotar(edificio[p.clave] ?? _general[p.clave] ?? p.porDefecto);
     }
-    frenarLateralConBrujula = p.frenarLateralConBrujula;
-    restringirZonas = p.restringirZonas;
   }
 
-  /// Pasa a usar [p].
-  void seleccionar(Preseleccion p) {
-    _idActiva = p.id;
-    _aplicar(p);
-    debugPrint('[Ajustes] Configuración en uso: $resumen');
-    guardar();
+  /// Pasa a usar los ajustes de [nombre] (null: sólo general y código).
+  Future<void> usarEdificio(String? nombre) async {
+    await cargar();
+    _edificioActual = nombre;
+    _aplicar();
+    debugPrint('[Ajustes] ${nombre ?? "Sin edificio"}: $resumen');
   }
 
-  /// Avisa que se editó [p] (valores, nombre, descripción o calificación):
-  /// si es la que está en uso, sus valores rigen desde ya. Y se guarda.
-  void preseleccionCambiada(Preseleccion p) {
-    if (esActiva(p)) _aplicar(p);
-    guardar();
+  // ── Edición (app del administrador) ───────────────────────────────────────
+  //
+  // Cada cambio rige al instante (se regula caminando), se guarda en el
+  // teléfono y queda pendiente de subir a la nube.
+
+  /// Cambia [p] sólo para el edificio actual. No hace nada si no hay
+  /// edificio o si [p] no se puede cambiar por edificio.
+  void cambiarEnEdificio(ParametroAjuste p, double v) {
+    final nombre = _edificioActual;
+    if (nombre == null || !p.porEdificio) return;
+    (_edificios[nombre] ??= {})[p.clave] = p.acotar(v);
+    _cambioLocal(idEdificio(nombre));
   }
 
-  /// Nueva preselección propia con los valores de [base] (la activa si no se
-  /// dice otra). Queda en uso: crearla es para probarla.
-  Preseleccion crearPropia({Preseleccion? base}) {
-    final origen = base ?? activa;
-    final cantidad = preselecciones.where((p) => !p.deFabrica).length;
-    final nueva = Preseleccion(
-      id: 'propia_${DateTime.now().microsecondsSinceEpoch}',
-      deFabrica: false,
-      nombre: base == null
-          ? 'Personalizada ${cantidad + 1}'
-          : 'Copia de ${origen.nombre}',
-      descripcion: 'Basada en "${origen.nombre}".',
-      valores: Map.of(origen.valores),
-      frenarLateralConBrujula: origen.frenarLateralConBrujula,
-      restringirZonas: origen.restringirZonas,
-    );
-    preselecciones.add(nueva);
-    seleccionar(nueva);
-    return nueva;
+  /// Saca el valor propio del edificio actual para [p]: vuelve a regir el
+  /// general.
+  void volverAlGeneral(ParametroAjuste p) {
+    final nombre = _edificioActual;
+    if (nombre == null) return;
+    final valores = _edificios[nombre];
+    if (valores == null || valores.remove(p.clave) == null) return;
+    if (valores.isEmpty) _edificios.remove(nombre);
+    _cambioLocal(idEdificio(nombre));
   }
 
-  /// Borra una preselección propia. Si estaba en uso, se pasa a la de
-  /// fábrica por defecto.
-  void borrar(Preseleccion p) {
-    if (p.deFabrica) return;
-    final estabaActiva = esActiva(p);
-    preselecciones.removeWhere((x) => x.id == p.id);
-    if (estabaActiva) {
-      seleccionar(preselecciones.firstWhere(
-        (x) => x.id == _idPorDefecto,
-        orElse: () => preselecciones.first,
-      ));
+  /// Cambia [p] para todos los edificios.
+  void cambiarGeneral(ParametroAjuste p, double v) {
+    _general[p.clave] = p.acotar(v);
+    _cambioLocal(idGeneral);
+  }
+
+  /// Saca el valor general de [p]: vuelve a regir el del código.
+  void volverAlCodigo(ParametroAjuste p) {
+    if (_general.remove(p.clave) == null) return;
+    _cambioLocal(idGeneral);
+  }
+
+  void _cambioLocal(String id) {
+    _pendientes.add(id);
+    _aplicar();
+    _guardar();
+  }
+
+  // ── Nube (lo usa SupabaseService) ─────────────────────────────────────────
+
+  Set<String> get pendientes => Set.unmodifiable(_pendientes);
+  bool get hayPendientes => _pendientes.isNotEmpty;
+
+  /// Valores de la capa [id], para subirlos.
+  Map<String, double> valoresDe(String id) {
+    if (id == idGeneral) return Map.of(_general);
+    if (id.startsWith(_prefijoEdificio)) {
+      final nombre = id.substring(_prefijoEdificio.length);
+      return Map.of(_edificios[nombre] ?? const {});
+    }
+    return const {};
+  }
+
+  /// Lo que hay en la nube para la capa [id] (null o vacío si no hay nada).
+  ///
+  /// Si esa capa tiene cambios de este teléfono sin subir, no se pisan: van
+  /// a la nube en la próxima subida. De un edificio sólo se toman los
+  /// parámetros que se pueden cambiar por edificio, aunque la nube traiga
+  /// otros.
+  void recibirDeNube(String id, Object? valores) {
+    if (_pendientes.contains(id)) return;
+    if (id == idGeneral) {
+      _general = leerValores(valores, todos);
+    } else if (id.startsWith(_prefijoEdificio)) {
+      final nombre = id.substring(_prefijoEdificio.length);
+      final leidos = leerValores(valores, _porEdificio);
+      if (leidos.isEmpty) {
+        _edificios.remove(nombre);
+      } else {
+        _edificios[nombre] = leidos;
+      }
     } else {
-      guardar();
+      return;
     }
+    _aplicar();
+    _guardar();
   }
 
-  /// Las ventanas de señal se guardaban en LECTURAS y ahora van en SEGUNDOS,
-  /// con otra clave. Una configuración propia guardada antes se convierte
-  /// suponiendo ~6 lecturas por segundo, que era lo que esos valores daban
-  /// por hecho.
-  void _migrarVentanas(Preseleccion p) {
-    void migrar(String claveVieja, ParametroAjuste nuevo) {
-      final viejo = p.valores.remove(claveVieja);
-      if (viejo == null || p.valores.containsKey(nuevo.clave)) return;
-      final seg = (viejo / 6.25 * 10).round() / 10;
-      p.valores[nuevo.clave] = seg.clamp(nuevo.minimo, nuevo.maximo).toDouble();
-    }
-
-    migrar('nav_ventana_senal_quieto', ventanaSenalQuieto);
-    migrar('nav_ventana_senal_caminando', ventanaSenalCaminando);
+  /// Avisa que la capa [id] se subió con [subidos]. Si mientras tanto se
+  /// cambió otra vez, sigue pendiente.
+  void subidoANube(String id, Map<String, double> subidos) {
+    if (!mapEquals(valoresDe(id), subidos)) return;
+    _pendientes.remove(id);
+    _guardar();
   }
 
-  // ── Guardado ──────────────────────────────────────────────────────────────
+  /// Los valores de [json] que corresponden a [permitidos], dentro de su
+  /// rango. Lo que no es un número válido, o no es de un parámetro
+  /// permitido, se ignora: así un parámetro agregado o quitado en otra
+  /// versión de la app no rompe nada.
+  static Map<String, double> leerValores(
+    Object? json,
+    Iterable<ParametroAjuste> permitidos,
+  ) {
+    final leidos = <String, double>{};
+    if (json is! Map) return leidos;
+    for (final p in permitidos) {
+      final x = json[p.clave];
+      if (x is num && x.isFinite) leidos[p.clave] = p.acotar(x.toDouble());
+    }
+    return leidos;
+  }
 
-  bool _cargado = false;
+  // ── Guardado en el teléfono ───────────────────────────────────────────────
+
+  static const String _claveGuardado = 'nav_ajustes_capas';
+
+  Future<void>? _carga;
 
   /// Lee lo guardado en el teléfono. Sólo la primera vez: después todo vive
   /// en memoria y se guarda en cada cambio.
-  Future<void> cargar() async {
-    if (_cargado) return;
-    final fabrica = _deFabrica();
+  Future<void> cargar() => _carga ??= _leer();
+
+  Future<void> _leer() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final guardadas = <Preseleccion>[];
-      final texto = prefs.getString(_clavePreselecciones);
+      final texto = prefs.getString(_claveGuardado);
       if (texto != null) {
-        final lista = jsonDecode(texto);
-        if (lista is List) {
-          for (final j in lista) {
-            final p = j is Map<String, dynamic> ? Preseleccion.deJson(j) : null;
-            if (p != null) guardadas.add(p);
+        final j = jsonDecode(texto);
+        if (j is Map) {
+          _general = leerValores(j['general'], todos);
+          final edificios = j['edificios'];
+          if (edificios is Map) {
+            edificios.forEach((nombre, valores) {
+              if (nombre is! String) return;
+              final leidos = leerValores(valores, _porEdificio);
+              if (leidos.isNotEmpty) _edificios[nombre] = leidos;
+            });
           }
+          final pendientes = j['pendientes'];
+          if (pendientes is List) _pendientes.addAll(pendientes.whereType<String>());
         }
       }
-
-      preselecciones.clear();
-      // Las de fábrica: valores del código, notas y calificación del usuario.
-      for (final f in fabrica) {
-        final i = guardadas.indexWhere((g) => g.id == f.id);
-        if (i >= 0) {
-          f.descripcion = guardadas[i].descripcion;
-          f.calificacion = guardadas[i].calificacion;
-        }
-        preselecciones.add(f);
-      }
-      for (final g in guardadas.where((g) => !g.deFabrica)) {
-        _migrarVentanas(g);
-        preselecciones.add(g);
-      }
-
-      _idActiva = prefs.getString(_claveActiva) ?? _idPorDefecto;
-
-      // Antes de las preselecciones los valores se guardaban sueltos: si los
-      // hay, se conservan como una propia para no perder lo ya probado.
-      if (texto == null && prefs.containsKey(atrasoPosicion.clave)) {
-        final anteriores = Preseleccion(
-          id: 'propia_anteriores',
-          deFabrica: false,
-          nombre: 'Valores anteriores',
-          descripcion: 'Los valores que estaban regulados antes de que '
-              'existieran las configuraciones guardadas.',
-          valores: {
-            for (final def in todos)
-              def.clave: prefs.getDouble(def.clave) ?? def.porDefecto,
-          },
-          frenarLateralConBrujula:
-              prefs.getBool('nav_frenar_lateral_brujula') ?? true,
-          restringirZonas: prefs.getBool('nav_restringir_zonas') ?? true,
-        );
-        preselecciones.add(anteriores);
-        _idActiva = anteriores.id;
-      }
-
-      _cargado = true;
     } catch (e) {
       debugPrint('[Ajustes] No se pudieron leer los ajustes guardados: $e');
-      if (preselecciones.isEmpty) preselecciones.addAll(fabrica);
     }
-    _aplicar(activa);
-    _idActiva = activa.id; // por si la guardada ya no existe
-    debugPrint('[Ajustes] Configuración en uso: $resumen');
+    _aplicar();
   }
 
-  Future<void> guardar() async {
+  Future<void> _guardar() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(
-        _clavePreselecciones,
-        jsonEncode([for (final p in preselecciones) p.aJson()]),
+        _claveGuardado,
+        jsonEncode({
+          'general': _general,
+          'edificios': _edificios,
+          'pendientes': _pendientes.toList(),
+        }),
       );
-      await prefs.setString(_claveActiva, _idActiva);
     } catch (e) {
       debugPrint('[Ajustes] No se pudieron guardar los ajustes: $e');
     }
   }
 
-  /// La configuración en uso y todos sus valores en una línea, para el log.
+  /// Todos los valores vigentes en una línea, con su origen, para el log.
   String get resumen => [
-        '"${activa.nombre}"',
-        for (final p in todos) '${p.nombre} ${p.texto}',
-        'frenar lateral con brújula $frenarLateralConBrujula',
-        'restringir zonas $restringirZonas',
+        for (final p in todos)
+          '${p.nombre} ${p.texto}'
+              '${switch (origen(p)) {
+                OrigenAjuste.edificio => ' (edificio)',
+                OrigenAjuste.general => ' (general)',
+                OrigenAjuste.codigo => '',
+              }}',
+        if (!frenarLateralConBrujula) 'SIN freno lateral por brújula',
+        if (!restringirZonas) 'SIN restricción de zonas',
       ].join(' · ');
 }
