@@ -32,6 +32,22 @@ class AsistenteTrazo {
   /// esto, un trazo de pocos píxeles saltaría entre ángulos guía a cada frame.
   static const double largoMinimoMetros = 0.20;
 
+  // ── Tolerancias en PANTALLA ─────────────────────────────────────────────
+  // Las dos de arriba están en metros, así que no achican con el zoom: con
+  // 40 cm de alineación, una pared de 20 cm era imposible. El tercer vértice
+  // caía a 20 cm de la línea del primero, la guía de cierre lo tiraba sobre
+  // esa línea y la pared quedaba sin ancho. Si se sabe cuántos metros mide un
+  // píxel ([ajustar], `metrosPorPixel`), las tolerancias se toman en
+  // píxeles, que es lo que puede precisar el dedo: con zoom se dibuja más
+  // fino. Nunca pasan de los valores en metros, así que sin zoom el imán
+  // anda igual que antes.
+
+  /// Tolerancia de alineación, en píxeles de pantalla.
+  static const double toleranciaAlineacionPx = 12.0;
+
+  /// Largo mínimo para imantar, en píxeles de pantalla.
+  static const double largoMinimoPx = 14.0;
+
   static const List<double> _ortogonales = [0, 90, 180, 270];
   static const List<double> _conDiagonales = [0, 45, 90, 135, 180, 225, 270, 315];
 
@@ -48,6 +64,9 @@ class AsistenteTrazo {
   /// - [diagonales]: incluye los múltiplos de 45°. Se usa en zonas; en la
   ///   medición de escala se deja en false porque el largo y el ancho del
   ///   plano se miden sobre los ejes.
+  /// - [metrosPorPixel]: cuántos metros del plano mide un píxel de pantalla
+  ///   con el zoom actual. Con él, las tolerancias se achican al hacer zoom
+  ///   (ver "Tolerancias en PANTALLA"). Null: tolerancias fijas en metros.
   ///
   /// Devuelve el punto corregido junto con las guías que quedaron activas,
   /// para que el mapa las pueda dibujar.
@@ -59,11 +78,24 @@ class AsistenteTrazo {
     Offset? anclaSecundaria,
     bool diagonales = false,
     bool activo = true,
+    double? metrosPorPixel,
   }) {
     if (!activo) return AjusteTrazo(punto, const []);
 
     final mx = _metrosSeguros(metrosX);
     final my = _metrosSeguros(metrosY);
+
+    final mpp = (metrosPorPixel != null &&
+            metrosPorPixel.isFinite &&
+            metrosPorPixel > 0)
+        ? metrosPorPixel
+        : null;
+    final toleranciaAlineacion = mpp == null
+        ? toleranciaAlineacionMetros
+        : min(toleranciaAlineacionMetros, toleranciaAlineacionPx * mpp);
+    final largoMinimo = mpp == null
+        ? largoMinimoMetros
+        : min(largoMinimoMetros, largoMinimoPx * mpp);
 
     var p = punto;
     final guias = <GuiaTrazo>[];
@@ -77,7 +109,7 @@ class AsistenteTrazo {
       final dyM = (punto.dy - ancla.dy) * my;
       final largo = sqrt(dxM * dxM + dyM * dyM);
 
-      if (largo >= largoMinimoMetros) {
+      if (largo >= largoMinimo) {
         final actual = atan2(dyM, dxM) * 180 / pi;
         final candidatos = diagonales ? _conDiagonales : _ortogonales;
 
@@ -122,21 +154,21 @@ class AsistenteTrazo {
       if (guias.isEmpty) {
         // Sin imantado de ángulo: se alinean los ejes de forma independiente.
         var nx = p.dx, ny = p.dy;
-        if (difX <= toleranciaAlineacionMetros) {
+        if (difX <= toleranciaAlineacion) {
           nx = s.dx;
           guias.add(GuiaTrazo(ancla: s, anguloGrados: 90));
         }
-        if (difY <= toleranciaAlineacionMetros) {
+        if (difY <= toleranciaAlineacion) {
           ny = s.dy;
           guias.add(GuiaTrazo(ancla: s, anguloGrados: 0));
         }
         p = Offset(nx, ny);
-      } else if (ejeXLibre && difX <= toleranciaAlineacionMetros) {
+      } else if (ejeXLibre && difX <= toleranciaAlineacion) {
         // El segmento quedó horizontal: deslizarlo en x hasta alinear con s
         // deja la arista de cierre perfectamente vertical.
         p = Offset(s.dx, p.dy);
         guias.add(GuiaTrazo(ancla: s, anguloGrados: 90));
-      } else if (ejeYLibre && difY <= toleranciaAlineacionMetros) {
+      } else if (ejeYLibre && difY <= toleranciaAlineacion) {
         p = Offset(p.dx, s.dy);
         guias.add(GuiaTrazo(ancla: s, anguloGrados: 0));
       }

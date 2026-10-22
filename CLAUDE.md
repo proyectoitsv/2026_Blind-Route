@@ -38,7 +38,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `flutter_tts`, `speech_to_text` (voz).
 - `supabase_flutter`, `wakelock_plus`, `permission_handler`, `image_picker`.
 - Lints: `flutter_lints` (`analysis_options.yaml`).
-- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos) y `test/ajustes_navegacion_test.dart` (ajustes en capas; 10 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
+- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos) `test/ajustes_navegacion_test.dart` (ajustes en capas; 10 casos) y `test/asistente_trazo_test.dart` (imán con zoom, paredes finas; 5 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
 
 ## Estructura de `lib/`
 
@@ -79,7 +79,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `grilla_nav.dart`: grilla de navegación. El lado de celda es configurable por piso, entre 0.5 y 1.0 m.
 - `pathfinder.dart`: A* en cruz (sin diagonales) con un heap mínimo propio. Una celda está bloqueada solo si su **centro** cae en una zona. Dos celdas vecinas se conectan si el segmento entre sus centros no atraviesa ninguna zona ("paredes", calculadas una vez por piso, también para las diagonales). Expone `esZonaProhibida`, `conectadas` y `puntoEnZona` para la restricción de zonas.
 - `seguidor_ruta.dart`: dónde está el usuario respecto de la ruta y qué tramo indicarle.
-- `asistente_trazo.dart`: "imán" de ángulos (rectos y 45°) para trazar la escala y las zonas prohibidas.
+- `asistente_trazo.dart`: "imán" de ángulos (rectos y 45°) para trazar la escala y las zonas prohibidas. Con `metrosPorPixel`, la alineación y el largo mínimo se miden en píxeles de pantalla (con tope en los valores en metros de siempre): con zoom se dibuja más fino.
 - `ajustes_navegacion.dart`: parámetros de los giros anticipados (atraso, anticipos) y del seguimiento de la posición (umbral de caminata, ventanas de señal, filtro One Euro, velocidad máxima). El valor vigente sale de **tres capas**: lo cambiado en el edificio actual, lo cambiado en general y el valor del código. Cada capa guarda solo lo que se cambió en ella. Por edificio solo se cambian los que dependen del edificio (`porEdificio`); el umbral de caminata y los anticipos son solo generales. Se guardan en el teléfono (`shared_preferences`) y en la nube. Los interruptores de prueba (freno lateral por brújula, restringir zonas) viven solo en memoria.
 - `panel_ajustes_navegacion.dart`: panel de ajustes, **solo en la app del admin**, en la pantalla de navegación. Alcances "Este edificio" y "General", los dos para cualquier admin mientras se calibra. Cada cambio rige al instante y se sube a la nube al soltar el control. Muestra el diagnóstico "Señal ahora".
 - `entorno_app.dart`: `EntornoApp.esAdmin`, que fija `main_admin.dart`. Lo usa la pantalla de navegación para mostrar el panel solo en el admin.
@@ -118,7 +118,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 
 - Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en `54d36f1`.
 - Lo de las sesiones del 2026-10-19 y del 2026-10-21 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`). **Los ajustes de navegación por edificio (2026-10-22) están SIN commitear.** Nada de esas sesiones está probado en el teléfono. Detalle en el Registro.
-- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (43 casos).
+- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (48 casos).
 - Varios commits anteriores están marcados como "no probado" (`6d105e6`, `c34654a`, `b5c83df`, `29bc508`).
 - `feedback.md` está vacío. Es el archivo de feedback del proyecto.
 - `log.txt` (~8 MB, codificado en UTF-16) es un volcado de logcat en la raíz del repositorio. Es anterior a los cambios de la sesión: no tiene sus líneas de diagnóstico.
@@ -218,3 +218,19 @@ Al cerrar un chat por la regla del 30%, agregar acá una entrada con fecha, los 
 - **Arreglo, mapa corrido al abrir la navegación:** al llegar la primera posición la cámara iba a zoom 1, pero en un piso chico el plano se agranda hasta llenar la pantalla y el recuadro del mapa es más chico: quedaba recortado y corrido hacia un costado. Ahora la escala base es 28 px/m, salvo que a esa escala el plano entre entero en el recuadro: ahí se muestra entero y centrado (`_zoomEscalaBase` en `pantalla_naveg.dart`). En pisos grandes no cambia: cerca de un borde la vista sigue sin mostrar afuera del plano, así que el usuario puede quedar corrido del centro.
 
 **Pendiente:** lo indicado en "Próximos pasos" y "Pendientes conocidos" del Estado actual.
+
+### 2026-10-22: paredes finas en el editor de zonas
+
+**Documentación modificada:** este `claude.md`.
+
+**Problema:** no se podía dibujar una pared fina (por ejemplo, de 20 cm). Con el imán prendido se aplastaba, y sin el imán todo quedaba torcido. No eran los ángulos. Había tres medidas fijas en el plano que no achicaban con el zoom: (1) tocar a menos de 0,05 del plano normalizado de un vértice (unos 2 m en un plano de 40 m) lo agarraba en vez de crear otro; (2) la guía de cierre alineaba con el primer vértice todo lo que estuviera a menos de 40 cm, y el tercer vértice de la pared caía sobre la línea del primero; (3) el zoom tenía un tope de 2,5× (unos 24 px por metro en un plano de 40 m).
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `asistente_trazo.dart`: parámetro `metrosPorPixel`. Alineación 12 px y largo mínimo 14 px en pantalla, con tope en los 40 cm y 20 cm de siempre (sin zoom anda igual que antes).
+- `pantalla_config.dart`: `TransformationController` en el mapa de edición. Zoom máximo según el plano, hasta 200 px por metro (una pared de 20 cm mide 40 px). El agarre de vértices y de puntos de escala se mide en píxeles (22 px, con tope en el radio de siempre). Pasa `metrosPorPixel` al asistente y `escalaVista` al mapa.
+- `mapa_widget.dart`: parámetro `escalaVista` (por defecto 1, así la navegación no cambia). Con zoom, la grilla, los bordes de zonas, el polígono en curso, las manijas de vértices, la medición de escala, las guías y los marcadores de beacons y lugares miden lo mismo en pantalla. Las escaleras siguen a escala real.
+- `test/asistente_trazo_test.dart` (nuevo): 5 casos.
+
+**Sin tocar:** el agarre de beacons y lugares (usa el marcador tocado y un radio en el plano).
+
+**Pendiente:** probar en el teléfono que se pueda acercar, dibujar una pared de 10 a 20 cm recta y con ancho, y que con poco zoom el imán y el agarre se sientan como antes.
