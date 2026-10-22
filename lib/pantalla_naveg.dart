@@ -25,7 +25,9 @@ import 'grilla_nav.dart';
 import 'filtro_un_euro.dart';
 import 'detector_movimiento.dart';
 import 'ajustes_navegacion.dart';
+import 'entorno_app.dart';
 import 'panel_ajustes_navegacion.dart';
+import 'supabase_service.dart';
 import 'restriccion_zonas.dart';
 import 'histeresis_celda.dart';
 import 'tema.dart';
@@ -905,10 +907,25 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         ],
       );
       _resolvedorListo = true;
-      // Ajustes regulables de los giros y de la posición (ver
+      // Ajustes de los giros y de la posición de ESTE edificio (ver
       // [AjustesNavegacion]). Antes del scan: las ventanas de señal ya rigen
       // desde la primera lectura BLE, antes del primer ciclo de posición.
-      await _ajustes.cargar();
+      // Primero lo guardado en el teléfono (en el edificio puede no haber
+      // señal); la nube se consulta aparte y, si trae algo distinto, rige
+      // desde el ciclo siguiente.
+      final pisoConEdificio =
+          await DatabaseHelper.instance.obtenerPisoConEdificio(widget.pisoId);
+      final edificio = pisoConEdificio?['edificio_nombre'] as String?;
+      await _ajustes.usarEdificio(edificio);
+      unawaited(
+        SupabaseService.instance
+            .sincronizarAjustesNavegacion(edificio)
+            .timeout(const Duration(seconds: 8))
+            .catchError((Object e) {
+          debugPrint('[Ajustes] Sin ajustes de la nube, se usan los del '
+              'teléfono: $e');
+        }),
+      );
       _aplicarAjustesPosicion();
       // Acelerómetro: si el dispositivo no lo expone, el detector devuelve un
       // factor intermedio fijo y el filtro sigue funcionando (con un
@@ -3965,8 +3982,27 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (_seguirUsuario && mounted) setState(() => _seguirUsuario = false);
   }
 
+  /// Zoom de la escala base: [_pixelesPorMetro] en pantalla, salvo que a esa
+  /// escala el plano entero entre en el recuadro: ahí, el que lo llena.
+  ///
+  /// ANTES era siempre zoom 1. Pero en un piso chico el plano se agranda
+  /// hasta llenar la PANTALLA ([_calcularTamPlano]), y el recuadro del mapa
+  /// es más chico que la pantalla (barra de arriba, márgenes, avisos). A zoom
+  /// 1 el plano quedaba un poco más grande que el recuadro: al llegar la
+  /// primera posición la vista pasaba del plano entero y centrado a uno
+  /// recortado y corrido hacia un costado.
+  double _zoomEscalaBase(Size viewport, Size plano) {
+    final mx = _grilla.metrosX > 0 ? _grilla.metrosX : 1.0;
+    final pixelesPorMetroPlano = plano.width / mx;
+    return max(
+      _pixelesPorMetro / pixelesPorMetroPlano,
+      _zoomMinimo(viewport, plano),
+    );
+  }
+
   /// Centra el mapa en la posición del usuario. Conserva el zoom, salvo que
-  /// esté más alejado que la escala base: ahí vuelve a zoom 1.
+  /// esté más alejado que la escala base ([_zoomEscalaBase]): ahí vuelve a
+  /// ella.
   void _centrarEnUsuario({bool animado = true}) {
     // Mirando otro piso el usuario no está en ese plano: no hay qué centrar.
     if (_otroPiso != null) return;
@@ -3976,8 +4012,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (pos == null || viewport == null || plano == null) return;
     // Si la cámara ya va hacia un zoom, se respeta ese y no el de este frame
     // (que está a mitad de camino).
-    final zoomBase = _camaraZoomObjetivo ?? _transformMapa.value.getMaxScaleOnAxis();
-    final zoom = max(zoomBase, 1.0)
+    final zoomActual = _camaraZoomObjetivo ?? _transformMapa.value.getMaxScaleOnAxis();
+    final zoom = max(zoomActual, _zoomEscalaBase(viewport, plano))
         .clamp(_zoomMinimo(viewport, plano), _zoomMaximo)
         .toDouble();
     final punto = Offset(pos.dx * plano.width, pos.dy * plano.height);
@@ -4459,21 +4495,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
             ],
           ),
           actions: [
-            // Para probar en el campo: cuándo se dicen los giros y si la
-            // posición puede caer en zonas prohibidas (ver AjustesNavegacion).
-            Semantics(
-              label: 'Ajustes de navegación',
-              button: true,
-              child: SizedBox(
-                width: TemaApp.targetTactil,
-                height: TemaApp.targetTactil,
-                child: IconButton(
-                  icon: const Icon(Icons.tune_rounded, color: TemaApp.textoSecundario),
-                  tooltip: 'Ajustes de navegación',
-                  onPressed: () => mostrarPanelAjustesNavegacion(context),
+            // Sólo en la app del admin: regular los ajustes del edificio
+            // caminando (ver AjustesNavegacion). El usuario no los cambia.
+            if (EntornoApp.esAdmin)
+              Semantics(
+                label: 'Ajustes de navegación',
+                button: true,
+                child: SizedBox(
+                  width: TemaApp.targetTactil,
+                  height: TemaApp.targetTactil,
+                  child: IconButton(
+                    icon: const Icon(Icons.tune_rounded, color: TemaApp.textoSecundario),
+                    tooltip: 'Ajustes de navegación',
+                    onPressed: () => mostrarPanelAjustesNavegacion(context),
+                  ),
                 ),
               ),
-            ),
             if (_destinoSeleccionado != null)
               Semantics(
                 label: 'Cancelar navegación',

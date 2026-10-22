@@ -2,10 +2,12 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'ajustes_navegacion.dart';
 import 'beacon_model.dart';
 import 'zona_model.dart';
 import 'poi_model.dart';
@@ -394,9 +396,10 @@ class SupabaseService {
     await File(rutaLocal).writeAsBytes(bytes, flush: true);
 
     // 3) Insertar/actualizar en la base local en una sola transacción.
-    return DatabaseHelper.instance.importarMapaDescargado(
+    final edificioNombre = (row['edificio_nombre'] as String?) ?? 'Descargado';
+    final pisoId = await DatabaseHelper.instance.importarMapaDescargado(
       remoteId: remoteId,
-      edificioNombre: (row['edificio_nombre'] as String?) ?? 'Descargado',
+      edificioNombre: edificioNombre,
       pisoNombre: (row['piso_nombre'] as String?) ?? 'Piso',
       rutaImagen: rutaLocal,
       escalaX: (row['escala_metros'] as num?)?.toDouble() ?? 50,
@@ -409,6 +412,83 @@ class SupabaseService {
       calibraciones: (row['calibraciones'] as List?) ?? const [],
       remoteActualizado: row['actualizado_en'] as String?,
     );
+
+    // 4) Ajustes de navegación del edificio. Ahora hay conexión; en el
+    //    edificio puede no haberla. Si fallan, el mapa igual queda: se
+    //    navega con lo último guardado y se reintenta al navegar.
+    try {
+      await sincronizarAjustesNavegacion(edificioNombre);
+    } catch (e) {
+      debugPrint('[Ajustes] No se pudieron bajar los ajustes de '
+          '"$edificioNombre": $e');
+    }
+    return pisoId;
+  }
+
+  // ── AJUSTES DE NAVEGACIÓN ─────────────────────────────────────────────────
+  //
+  // Tabla `ajustes_navegacion`: una fila por capa (ver [AjustesNavegacion]),
+  // con id "general" o "edificio:<nombre>" y los valores cambiados en JSONB.
+  // La lee cualquiera (también la app del usuario, sin login) y la escribe
+  // cualquier admin logueado. Lo controla la nube
+  // (supabase/ajustes_navegacion.sql), no la app.
+
+  static const String _tablaAjustes = 'ajustes_navegacion';
+
+  /// Sube los cambios pendientes de este teléfono y baja los ajustes
+  /// generales y los de [edificio] (null: sólo los generales).
+  ///
+  /// Se sube primero: si se bajara antes, lo de la nube no pisaría los
+  /// cambios locales (siguen pendientes), pero el teléfono no vería lo que
+  /// otro haya cambiado en los parámetros que no tocó hasta la próxima vez.
+  Future<void> sincronizarAjustesNavegacion(String? edificio) async {
+    if (!configurado) return;
+    final ajustes = AjustesNavegacion.instancia;
+    await ajustes.cargar();
+    try {
+      await subirAjustesNavegacion();
+    } catch (e) {
+      // Sin permiso o sin conexión: queda pendiente y se baja igual.
+      debugPrint('[Ajustes] No se pudieron subir los cambios pendientes: $e');
+    }
+
+    final ids = [
+      AjustesNavegacion.idGeneral,
+      if (edificio != null) AjustesNavegacion.idEdificio(edificio),
+    ];
+    final filas = await _client
+        .from(_tablaAjustes)
+        .select('id, valores')
+        .inFilter('id', ids);
+    final recibidos = <String, Object?>{
+      for (final f in filas) f['id'] as String: f['valores'],
+    };
+    // Un id sin fila es una capa sin cambios: se recibe vacía, así un ajuste
+    // que se borró en la nube también se borra en el teléfono.
+    for (final id in ids) {
+      ajustes.recibirDeNube(id, recibidos[id]);
+    }
+  }
+
+  /// Sube las capas con cambios pendientes (la app del usuario nunca tiene).
+  /// Si la nube rechaza una capa (sin permiso, sin conexión), corta con ese
+  /// error y la capa sigue pendiente. Sin sesión de admin, corta con
+  /// [StateError].
+  Future<void> subirAjustesNavegacion() async {
+    final ajustes = AjustesNavegacion.instancia;
+    if (!configurado || !ajustes.hayPendientes) return;
+    if (_client.auth.currentUser == null) {
+      throw StateError('Hace falta iniciar sesión como administrador.');
+    }
+    for (final id in ajustes.pendientes.toList()) {
+      final valores = ajustes.valoresDe(id);
+      await _client.from(_tablaAjustes).upsert({
+        'id': id,
+        'valores': valores,
+        'actualizado_en': DateTime.now().toUtc().toIso8601String(),
+      });
+      ajustes.subidoANube(id, valores);
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

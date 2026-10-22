@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'database.dart';
+import 'entorno_app.dart';
 import 'pantalla_login_admin.dart';
 import 'supabase_config.dart';
 
@@ -9,6 +10,7 @@ import 'supabase_config.dart';
 /// Build: flutter run --flavor admin -t lib/main_admin.dart
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  EntornoApp.esAdmin = true;
 
   if (SupabaseConfig.configurado) {
     await Supabase.initialize(

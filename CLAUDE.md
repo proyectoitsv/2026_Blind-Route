@@ -38,7 +38,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `flutter_tts`, `speech_to_text` (voz).
 - `supabase_flutter`, `wakelock_plus`, `permission_handler`, `image_picker`.
 - Lints: `flutter_lints` (`analysis_options.yaml`).
-- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) y `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
+- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos) y `test/ajustes_navegacion_test.dart` (ajustes en capas; 10 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
 
 ## Estructura de `lib/`
 
@@ -62,7 +62,8 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 
 **Nube**
 - `supabase_config.dart`: URL y clave pública del proyecto.
-- `supabase_service.dart`: catálogo liviano de mapas publicados. Los datos pesados (beacons, zonas, calibraciones) se bajan recién al tocar "Descargar".
+- `supabase_service.dart`: catálogo liviano de mapas publicados. Los datos pesados (beacons, zonas, calibraciones) se bajan recién al tocar "Descargar". También sube y baja los ajustes de navegación (tabla `ajustes_navegacion`).
+- `../supabase/ajustes_navegacion.sql`: tabla y permisos de los ajustes de navegación (lee cualquiera, escribe cualquier admin logueado). Se corre a mano en el SQL Editor de Supabase y se puede volver a correr.
 
 **Posicionamiento**
 - `bluetooth_helper.dart`: escaneo BLE. Es un recurso global y único. Escanea en modo `lowLatency` y renueva el escaneo cada 25 min (límite de Android).
@@ -79,8 +80,9 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `pathfinder.dart`: A* en cruz (sin diagonales) con un heap mínimo propio. Una celda está bloqueada solo si su **centro** cae en una zona. Dos celdas vecinas se conectan si el segmento entre sus centros no atraviesa ninguna zona ("paredes", calculadas una vez por piso, también para las diagonales). Expone `esZonaProhibida`, `conectadas` y `puntoEnZona` para la restricción de zonas.
 - `seguidor_ruta.dart`: dónde está el usuario respecto de la ruta y qué tramo indicarle.
 - `asistente_trazo.dart`: "imán" de ángulos (rectos y 45°) para trazar la escala y las zonas prohibidas.
-- `ajustes_navegacion.dart`: parámetros de los giros anticipados (atraso, anticipos), del seguimiento de la posición (umbral de caminata, ventanas de señal, filtro One Euro, velocidad máxima, freno lateral por brújula) y de la restricción de zonas, agrupados en **preselecciones** (5 de fábrica y las propias, con nombre, descripción y calificación de 0 a 5). Se guardan con `shared_preferences`.
-- `panel_ajustes_navegacion.dart`: panel de la pantalla de navegación para elegir, calificar, anotar, duplicar y editar preselecciones. Muestra el diagnóstico "Señal ahora" (lecturas por segundo por beacon).
+- `ajustes_navegacion.dart`: parámetros de los giros anticipados (atraso, anticipos) y del seguimiento de la posición (umbral de caminata, ventanas de señal, filtro One Euro, velocidad máxima). El valor vigente sale de **tres capas**: lo cambiado en el edificio actual, lo cambiado en general y el valor del código. Cada capa guarda solo lo que se cambió en ella. Por edificio solo se cambian los que dependen del edificio (`porEdificio`); el umbral de caminata y los anticipos son solo generales. Se guardan en el teléfono (`shared_preferences`) y en la nube. Los interruptores de prueba (freno lateral por brújula, restringir zonas) viven solo en memoria.
+- `panel_ajustes_navegacion.dart`: panel de ajustes, **solo en la app del admin**, en la pantalla de navegación. Alcances "Este edificio" y "General", los dos para cualquier admin mientras se calibra. Cada cambio rige al instante y se sube a la nube al soltar el control. Muestra el diagnóstico "Señal ahora".
+- `entorno_app.dart`: `EntornoApp.esAdmin`, que fija `main_admin.dart`. Lo usa la pantalla de navegación para mostrar el panel solo en el admin.
 
 **Voz**
 - `voz_service.dart`: TTS y STT centralizados.
@@ -114,9 +116,9 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 
 ## Estado actual
 
-- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD sigue en `a5d4db0`.
-- **Todo lo de las sesiones del 2026-10-19 y del 2026-10-21 está SIN commitear** en `app_doble`. Ningún cambio de esas sesiones está probado en el teléfono. Detalle en el Registro.
-- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (33 casos).
+- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en `54d36f1`.
+- Lo de las sesiones del 2026-10-19 y del 2026-10-21 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`). **Los ajustes de navegación por edificio (2026-10-22) están SIN commitear.** Nada de esas sesiones está probado en el teléfono. Detalle en el Registro.
+- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (43 casos).
 - Varios commits anteriores están marcados como "no probado" (`6d105e6`, `c34654a`, `b5c83df`, `29bc508`).
 - `feedback.md` está vacío. Es el archivo de feedback del proyecto.
 - `log.txt` (~8 MB, codificado en UTF-16) es un volcado de logcat en la raíz del repositorio. Es anterior a los cambios de la sesión: no tiene sus líneas de diagnóstico.
@@ -126,12 +128,16 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 2. Probar "mapa no encontrado" con el mapa ya descargado. Buscar en el log `[Modo automático] Primer beacon con mapa local a los X s` y `[Piso] Elegido … a los X s`.
 3. Ajustar el atraso empezando por **Equilibrada**: anticipo del giro en 0, después subir el atraso hasta que "Girá…" salga en la esquina.
 4. Probar las zonas con el criterio por centro: que la posición no salte cerca de esquinas chicas, que la ruta pase por pasillos que antes se cortaban y que no atraviese paredes angostas. Si aparece en el log `[Pathfinder] Sin ruta con el margen de borde activo`, revisar si la franja de borde (`margenBordeMetros`) tapa un pasillo real.
-5. Decidir con el usuario si se commitea todo (marcado "(no probado)") y en qué orden.
+5. Ajustes por edificio: volver a correr `supabase/ajustes_navegacion.sql` en Supabase (la versión sin rol de desarrollador) y probar "Probar navegación" (lista de pisos) con el panel: que los cambios digan "Todo guardado en la nube" y que la app de usuario los reciba al descargar el mapa o al abrir la navegación.
+6. Poner como valores del código (`porDefecto`) los valores que el usuario va a pasar. Hoy son los de la vieja preselección "Equilibrada".
+7. Decidir con el usuario si se commitea lo pendiente (marcado "(no probado)").
 
 **Pendientes conocidos:**
 - Las calibraciones guardadas antes pueden tener valores inflados por lecturas repetidas. Conviene repetir las que se hicieron con beacons que se oían poco.
 - Las preselecciones de fábrica tienen valores estimados. Si ninguna anda, el usuario va a crear la suya.
 - Histéresis de celda frente a paredes angostas: implementada (`histeresis_celda.dart`), falta probarla en el teléfono. Ver el Registro del 2026-10-21.
+- Cuando el usuario pase los valores calibrados, ponerlos en el código (`porDefecto`) y sacar de la app lo que ya no se tiene que poder cambiar: el alcance "General" y, por edificio, todo lo que no dependa del edificio.
+- Las preselecciones viejas quedan guardadas en los teléfonos (`nav_preselecciones`) sin usarse. Se pueden borrar más adelante.
 - El A* no se mueve en diagonal. Las paredes ya están calculadas para las diagonales, pero habilitarlas obliga a revisar `seguidor_ruta.dart` (tramos rectos, giros de 90°, largo de la ruta).
 
 ## Registro de cambios entre chats
@@ -190,3 +196,25 @@ Al cerrar un chat por la regla del 30%, agregar acá una entrada con fecha, los 
 **Sin tocar:** el estimador, `restriccion_zonas.dart`, `pathfinder.dart` y la `previa` de la restricción. Lo opcional que no se hizo: `previa` = celda confirmada (en la simulación reduce los cruces a la mitad).
 
 **Pendiente:** probarlo en el teléfono caminando pegado a una pared angosta. El punto no debería pasar al otro lado ni recalcular la ruta, y del lado propio tiene que seguir sin demora. Si una corrección real se siente lenta, bajar a 3 y 8 ciclos (variante liviana). Seguimientos que la histéresis no resuelve: pegado a la pared y con mucho ruido, la posición sigue del lado equivocado entre el 8 y el 23 % del tiempo (es del estimador o de `RestriccionZonas`). Además, `_verificarLlegada` mide en línea recta (1,5 m) y puede anunciar la llegada a un lugar del otro lado de una pared.
+
+### 2026-10-22: ajustes de navegación por edificio, solo en el admin
+
+**Documentación modificada:** este `claude.md`.
+
+**Pedido:** el usuario no tiene que poder cambiar los filtros. Los cambia el admin, por edificio. Los generales los cambia solo el desarrollador, por ahora desde la nube; cuando estén afinados pasan al código. Las preselecciones con estrellas se eliminan.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `ajustes_navegacion.dart`: se quitaron las preselecciones. Tres capas (edificio → general → código), cada una solo con lo cambiado. `porEdificio` en cada parámetro: atraso, ventanas de señal, filtros, empuje y velocidad máxima sí; umbral de caminata y anticipos no (dependen del teléfono o de la persona). Lo de la nube no pisa cambios locales sin subir (`pendientes`). Guardado en `shared_preferences` (`nav_ajustes_capas`).
+- `supabase_service.dart`: `sincronizarAjustesNavegacion` (sube lo pendiente y baja general y edificio), `subirAjustesNavegacion` y `esDesarrollador` (rol en el `app_metadata`). `descargarMapa` baja también los ajustes del edificio.
+- `supabase/ajustes_navegacion.sql` (nuevo): tabla `ajustes_navegacion` (id `general` o `edificio:<nombre>`, `valores` JSONB). La lee cualquiera; un edificio lo escribe el admin que publicó algún piso de ese edificio (o el desarrollador); los generales, solo el desarrollador. Incluye el `update` para darle el rol a un email.
+- `panel_ajustes_navegacion.dart`: reescrito. Alcance "Este edificio" o "General", origen de cada valor, "Volver al valor general" o "al del código", estado de la subida y "Señal ahora".
+- `pantalla_naveg.dart`: al abrir usa los ajustes guardados del edificio y consulta la nube aparte (8 s de límite). El botón del panel solo aparece con `EntornoApp.esAdmin`.
+- `lista_pisos.dart`: botón "Probar navegación" en cada piso (admin).
+- `entorno_app.dart` (nuevo) y `main_admin.dart`: `EntornoApp.esAdmin = true`.
+- `test/ajustes_navegacion_test.dart` (nuevo): 10 casos.
+- **Arreglo, rol de desarrollador:** la app del admin reusa la sesión guardada al abrirse, y el rol viaja en el usuario y el token de esa sesión, así que un rol dado después de iniciar sesión no se veía (ni la nube lo aceptaba) hasta renovar el token. Ahora el panel renueva la sesión al abrirse (`SupabaseService.actualizarSesion`) y muestra el email y el rol. El desarrollador arranca en "General"; en "Este edificio", el umbral de caminata y los anticipos siguen bloqueados a propósito (se cambian en "General").
+- **Se sacó el rol de desarrollador** (no andaba con el email, a pedido del usuario): `esDesarrollador`, `actualizarSesion` y la línea de usuario del panel. Los dos alcances quedan para cualquier admin y la nube deja escribir generales y edificios a cualquier admin logueado (el SQL nuevo borra las políticas viejas). En "Este edificio" el umbral de caminata y los anticipos siguen bloqueados; se cambian en "General". Cuando estén calibrados, los valores pasan al código.
+- **Arreglo, selector de alcance ilegible:** la hoja del panel tomaba el tema claro de `MaterialApp` (se abre con el contexto de la pantalla, que está por encima de su `Theme(TemaApp.tema)`), y los textos "Este edificio" / "General" salían oscuros sobre fondo oscuro. Ahora el panel se envuelve en `TemaApp.tema`.
+- **Arreglo, mapa corrido al abrir la navegación:** al llegar la primera posición la cámara iba a zoom 1, pero en un piso chico el plano se agranda hasta llenar la pantalla y el recuadro del mapa es más chico: quedaba recortado y corrido hacia un costado. Ahora la escala base es 28 px/m, salvo que a esa escala el plano entre entero en el recuadro: ahí se muestra entero y centrado (`_zoomEscalaBase` en `pantalla_naveg.dart`). En pisos grandes no cambia: cerca de un borde la vista sigue sin mostrar afuera del plano, así que el usuario puede quedar corrido del centro.
+
+**Pendiente:** lo indicado en "Próximos pasos" y "Pendientes conocidos" del Estado actual.
