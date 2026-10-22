@@ -264,6 +264,83 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   List<GuiaTrazo> _guias = const [];
   Offset? _guiaPunto;
 
+  // ── Zoom del mapa de edición ──────────────────────────────────────────────
+  // Para dibujar detalles chicos (una pared de 20 cm) hace falta acercarse
+  // mucho, y que lo que depende del dedo se mida en la PANTALLA y no en el
+  // plano: el radio para agarrar un vértice y las tolerancias del imán. Antes
+  // se medían en el plano y no achicaban con el zoom: tocar a menos de ~2 m de
+  // un vértice (en un plano de 40 m) lo agarraba en vez de crear otro, y la
+  // guía de cierre tiraba todo lo que estuviera a menos de 40 cm.
+
+  final TransformationController _transformMapa = TransformationController();
+
+  /// Zoom con que se está viendo el mapa. Se actualiza con un margen (ver
+  /// [_alCambiarZoom]) porque cambiarlo redibuja el mapa.
+  double _escalaVista = 1.0;
+
+  /// Tamaño del recuadro del mapa (lo deja el LayoutBuilder).
+  Size? _tamVisor;
+
+  /// Escala que se alcanza con el zoom máximo: con 200 px por metro, una
+  /// pared de 20 cm mide 40 px en pantalla.
+  static const double _pixelesPorMetroMaxEdicion = 200;
+
+  /// Radio de agarre de un vértice o de un punto de escala, en píxeles de
+  /// pantalla. Nunca más que el radio normalizado de siempre, así que sin
+  /// zoom se agarra igual que antes.
+  static const double _radioAgarrePx = 22;
+
+  void _alCambiarZoom() {
+    final z = _transformMapa.value.getMaxScaleOnAxis();
+    if (!mounted || z <= 0) return;
+    // 4 % alcanza para que manijas y trazos no se vean cambiar de tamaño, y
+    // evita redibujar el mapa en cada cuadro de un pellizco.
+    if ((z / _escalaVista - 1).abs() > 0.04) setState(() => _escalaVista = z);
+  }
+
+  /// Tamaño del plano dentro del recuadro, sin zoom (como lo arma MapaWidget).
+  Size? get _tamPlanoBase {
+    final visor = _tamVisor;
+    if (visor == null || visor.isEmpty) return null;
+    return MapaWidget.calcularTamanoContenido(
+      visor,
+      visor,
+      aspectoForzado: _escalaY > 0 ? _escalaX / _escalaY : null,
+    );
+  }
+
+  /// Metros del plano que mide un píxel de pantalla con el zoom actual.
+  double? get _metrosPorPixel {
+    final plano = _tamPlanoBase;
+    final zoom = _transformMapa.value.getMaxScaleOnAxis();
+    if (plano == null || plano.width <= 0 || zoom <= 0 || _escalaX <= 0) {
+      return null;
+    }
+    return _escalaX / (plano.width * zoom);
+  }
+
+  /// Zoom máximo: el que lleva el plano a [_pixelesPorMetroMaxEdicion], y
+  /// nunca menos que el 2,5 de siempre (el de InteractiveViewer).
+  double get _zoomMaximo {
+    final plano = _tamPlanoBase;
+    if (plano == null || plano.width <= 0 || _escalaX <= 0) return 2.5;
+    final pixelesPorMetro = plano.width / _escalaX;
+    return max(2.5, _pixelesPorMetroMaxEdicion / pixelesPorMetro);
+  }
+
+  /// Qué tan lejos está [b] de [a] para agarrarlo, en "radios de agarre" (1
+  /// o menos es adentro). Se mide en píxeles de pantalla; [radioNormalizado]
+  /// es el radio de siempre en coordenadas normalizadas, que queda de tope.
+  double _distanciaEnRadios(Offset a, Offset b, double radioNormalizado) {
+    final plano = _tamPlanoBase;
+    final zoom = _transformMapa.value.getMaxScaleOnAxis();
+    if (plano == null || zoom <= 0) return (a - b).distance / radioNormalizado;
+    final dx = (a.dx - b.dx) * plano.width * zoom;
+    final dy = (a.dy - b.dy) * plano.height * zoom;
+    final radioPx = min(_radioAgarrePx, radioNormalizado * plano.width * zoom);
+    return sqrt(dx * dx + dy * dy) / radioPx;
+  }
+
   /// Pasa [n] por el asistente y actualiza las guías a dibujar. Devuelve el
   /// punto ya corregido. No llama a setState: los llamadores lo hacen (o
   /// invocan _moverVertice, que ya repinta).
@@ -281,6 +358,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       anclaSecundaria: anclaSecundaria,
       diagonales: diagonales,
       activo: _asistenteRecto,
+      metrosPorPixel: _metrosPorPixel,
     );
     final habiaGuia = _guias.isNotEmpty;
     _guias = r.guias;
@@ -346,12 +424,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     _escalaY = widget.escalaY;
     _tamCelda = widget.tamCeldaMetros;
     _grilla = GrillaNav(metrosX: _escalaX, metrosY: _escalaY, tamCeldaMetros: _tamCelda);
+    _transformMapa.addListener(_alCambiarZoom);
     _cargarDatosIniciales();
   }
 
   @override
   void dispose() {
     _etiquetaCalCtrl.dispose();
+    _transformMapa.dispose();
     _compassConfigSub?.cancel();
     BluetoothHelper.detenerScanSeguro(dueno: this);
     super.dispose();
@@ -999,9 +1079,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   int? _verticeCercano(Offset n) {
     int? mejorIdx;
-    double mejorDist = _radioAgarreVertice;
+    double mejorDist = 1.0;
     for (int i = 0; i < _verticesEnCurso.length; i++) {
-      final d = (_verticesEnCurso[i] - n).distance;
+      final d = _distanciaEnRadios(_verticesEnCurso[i], n, _radioAgarreVertice);
       if (d <= mejorDist) {
         mejorDist = d;
         mejorIdx = i;
@@ -1812,9 +1892,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// radio de agarre, o null si el toque no cae sobre ningún punto ya marcado.
   int? _puntoCercano(Offset n) {
     int? mejorIdx;
-    double mejorDist = _radioAgarrePunto;
+    double mejorDist = 1.0;
     for (int i = 0; i < _puntosEscala.length; i++) {
-      final d = (_puntosEscala[i] - n).distance;
+      final d = _distanciaEnRadios(_puntosEscala[i], n, _radioAgarrePunto);
       if (d <= mejorDist) {
         mejorDist = d;
         mejorIdx = i;
@@ -2373,7 +2453,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                InteractiveViewer(
+                LayoutBuilder(builder: (context, restricciones) {
+                _tamVisor = restricciones.biggest;
+                return InteractiveViewer(
+                  transformationController: _transformMapa,
+                  maxScale: _zoomMaximo,
                   // En escala y en zonas, UN dedo dibuja o arrastra puntos, así
                   // que se desactiva el pan de un dedo; el zoom de dos dedos
                   // queda siempre activo (al apoyar el segundo dedo el gesto en
@@ -2432,6 +2516,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     // Guías del asistente de trazo (magenta punteado).
                     guias: _guias,
                     guiaPunto: _guiaPunto,
+                    escalaVista: _escalaVista,
                     // Copia nueva en cada build: el painter compara por
                     // referencia, así que al mover un punto (mutación in-place)
                     // esta copia fuerza el repintado en cada frame del arrastre.
@@ -2505,7 +2590,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                             .toList()
                         : const [],
                   ),
-                ),
+                );
+                }),
                     // Marco rojo: deja a la vista que el mapa está en modo
                     // borrar aunque no se esté mirando el botón.
                     if (_borrando)

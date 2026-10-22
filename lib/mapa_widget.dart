@@ -61,6 +61,7 @@ void _dibujarMira(
   required Color color,
   bool activo = false,
   double alphaRelleno = 0.16,
+  double escala = 1.0,
 }) {
   final gap = radio * 0.30; // hueco central: no se tapa el punto exacto
   final brazo = radio * 1.30; // los brazos sobresalen del anillo (estilo mira)
@@ -88,11 +89,11 @@ void _dibujarMira(
     canvas.drawLine(centro + Offset(0, gap), centro + Offset(0, brazo), p);
   }
 
-  trazo(Colors.white, activo ? 4.0 : 3.0); // halo de contraste
-  trazo(color, activo ? 2.4 : 1.8);
+  trazo(Colors.white, (activo ? 4.0 : 3.0) * escala); // halo de contraste
+  trazo(color, (activo ? 2.4 : 1.8) * escala);
 
   // Punto central exacto (con borde blanco).
-  final rp = activo ? 2.6 : 2.0;
+  final rp = (activo ? 2.6 : 2.0) * escala;
   canvas.drawCircle(centro, rp, Paint()..color = color);
   canvas.drawCircle(
     centro,
@@ -100,7 +101,7 @@ void _dibujarMira(
     Paint()
       ..color = Colors.white
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0,
+      ..strokeWidth = 1.0 * escala,
   );
 }
 
@@ -169,6 +170,13 @@ class _MapaPainter extends CustomPainter {
   /// punto que el operador está moviendo).
   final Offset? guiaPunto;
 
+  /// Zoom con que se está viendo el mapa (ver [MapaWidget.escalaVista]).
+  final double escalaVista;
+
+  /// Factor para que trazos, manijas y textos de edición midan siempre lo
+  /// mismo en pantalla, sin importar el zoom. Por debajo de zoom 1 no achica.
+  double get _k => 1 / max(1.0, escalaVista);
+
   _MapaPainter({
     required this.zonas,
     required this.verticesEnCurso,
@@ -182,6 +190,7 @@ class _MapaPainter extends CustomPainter {
     this.verticeArrastrado,
     this.guias = const [],
     this.guiaPunto,
+    this.escalaVista = 1.0,
   });
 
   @override
@@ -197,7 +206,7 @@ class _MapaPainter extends CustomPainter {
       final paintGrilla = Paint()
         ..color = Colors.black.withValues(alpha: 0.30)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.0;
+        ..strokeWidth = 1.0 * _k;
       for (int i = 0; i <= grilla.celdasX; i++) {
         final x = (i * grilla.tamCeldaX * w).clamp(0.0, w);
         canvas.drawLine(Offset(x, 0), Offset(x, h), paintGrilla);
@@ -226,7 +235,7 @@ class _MapaPainter extends CustomPainter {
     final paintBorde = Paint()
       ..color = TemaApp.zonaRestringidaBorde
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5;
+      ..strokeWidth = 2.5 * _k;
 
     for (final zona in zonas) {
       if (zona.vertices.length < 2) continue;
@@ -294,7 +303,7 @@ class _MapaPainter extends CustomPainter {
       final paintContorno = Paint()
         ..color = Colors.orange.withValues(alpha: 0.90)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0
+        ..strokeWidth = 2.0 * _k
         ..strokeJoin = StrokeJoin.round;
       canvas.drawPath(pathContorno, paintContorno);
 
@@ -304,10 +313,10 @@ class _MapaPainter extends CustomPainter {
         final paintCierre = Paint()
           ..color = Colors.orange.withValues(alpha: 0.55)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5
+          ..strokeWidth = 1.5 * _k
           ..strokeCap = StrokeCap.round;
         // Guiones entre el último punto y el primero.
-        _lineaPunteada(canvas, ultimo, primero, paintCierre);
+        _lineaPunteada(canvas, ultimo, primero, paintCierre, paso: 8.0 * _k);
       }
 
       // Círculos numerados en cada vértice. Funcionan como manijas de arrastre:
@@ -319,23 +328,24 @@ class _MapaPainter extends CustomPainter {
       for (var i = 0; i < verticesEnCurso.length; i++) {
         final c = _desnormalizar(verticesEnCurso[i], tamanoImagen);
         final activo = verticeArrastrado == i;
-        final radio = activo ? 15.0 : 11.0;
+        final radio = (activo ? 15.0 : 11.0) * _k;
         if (activo) {
-          canvas.drawCircle(
-              c, radio + 9, Paint()..color = Colors.orange.withValues(alpha: 0.22));
+          canvas.drawCircle(c, radio + 9 * _k,
+              Paint()..color = Colors.orange.withValues(alpha: 0.22));
         }
         _dibujarMira(canvas, c,
             radio: radio,
             color: activo ? Colors.deepOrange : Colors.orange,
-            activo: activo);
+            activo: activo,
+            escala: _k);
         // Número del vértice, corrido arriba-derecha para no tapar el centro.
         tp.text = TextSpan(
           text: '${i + 1}',
           style: TextStyle(
             color: Colors.white,
-            fontSize: activo ? 12 : 10,
+            fontSize: (activo ? 12 : 10) * _k,
             fontWeight: FontWeight.bold,
-            shadows: const [Shadow(color: Colors.black, blurRadius: 2)],
+            shadows: [Shadow(color: Colors.black, blurRadius: 2 * _k)],
           ),
         );
         tp.layout();
@@ -348,7 +358,7 @@ class _MapaPainter extends CustomPainter {
       final paintLinea = Paint()
         ..color = Colors.purple
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3.0
+        ..strokeWidth = 3.0 * _k
         ..strokeCap = StrokeCap.round;
       // Líneas entre puntos consecutivos (largo y ancho).
       for (int i = 1; i < puntosMedicion.length; i++) {
@@ -361,7 +371,8 @@ class _MapaPainter extends CustomPainter {
       // Puntos: mira violeta para fijar cada extremo con precisión.
       for (final p in puntosMedicion) {
         final c = _desnormalizar(p, tamanoImagen);
-        _dibujarMira(canvas, c, radio: 11.0, color: Colors.purple);
+        _dibujarMira(canvas, c,
+            radio: 11.0 * _k, color: Colors.purple, escala: _k);
       }
     }
 
@@ -373,7 +384,7 @@ class _MapaPainter extends CustomPainter {
         tp.text = TextSpan(
           text: String.fromCharCode(icono.codePoint),
           style: TextStyle(
-            fontSize: 18,
+            fontSize: 18 * _k,
             fontFamily: icono.fontFamily,
             package: icono.fontPackage,
             color: Colors.green[700],
@@ -398,7 +409,7 @@ class _MapaPainter extends CustomPainter {
     final paintGuia = Paint()
       ..color = TemaApp.guiaAlineacion.withValues(alpha: 0.90)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.6
+      ..strokeWidth = 1.6 * _k
       ..strokeCap = StrokeCap.round;
 
     // Los ejes tienen escalas métricas distintas, así que la dirección de la
@@ -419,7 +430,7 @@ class _MapaPainter extends CustomPainter {
       uy = uy / n * 3.0;
       final a = _desnormalizar(Offset(g.ancla.dx - ux, g.ancla.dy - uy), tam);
       final b = _desnormalizar(Offset(g.ancla.dx + ux, g.ancla.dy + uy), tam);
-      _lineaPunteada(canvas, a, b, paintGuia, paso: 10);
+      _lineaPunteada(canvas, a, b, paintGuia, paso: 10 * _k);
     }
     canvas.restore();
 
@@ -430,26 +441,27 @@ class _MapaPainter extends CustomPainter {
       textDirection: TextDirection.ltr,
       text: TextSpan(
         text: guias.first.etiqueta,
-        style: const TextStyle(
+        style: TextStyle(
           color: Colors.white,
-          fontSize: 11,
+          fontSize: 11 * _k,
           fontWeight: FontWeight.bold,
         ),
       ),
     )..layout();
     final c = _desnormalizar(punto, tam);
-    final ancho = tp.width + 12, alto = tp.height + 6;
+    final k = _k;
+    final ancho = tp.width + 12 * k, alto = tp.height + 6 * k;
     // Si no entra a la derecha, la etiqueta se pasa al otro lado del punto.
-    var izq = c.dx + 14;
-    if (izq + ancho > tam.width) izq = c.dx - 14 - ancho;
-    var arriba = c.dy - 30;
-    if (arriba < 0) arriba = c.dy + 14;
+    var izq = c.dx + 14 * k;
+    if (izq + ancho > tam.width) izq = c.dx - 14 * k - ancho;
+    var arriba = c.dy - 30 * k;
+    if (arriba < 0) arriba = c.dy + 14 * k;
     final rect = RRect.fromRectAndRadius(
       Rect.fromLTWH(izq, arriba, ancho, alto),
-      const Radius.circular(4),
+      Radius.circular(4 * k),
     );
     canvas.drawRRect(rect, Paint()..color = TemaApp.guiaEtiqueta);
-    tp.paint(canvas, Offset(rect.left + 6, rect.top + 3));
+    tp.paint(canvas, Offset(rect.left + 6 * k, rect.top + 3 * k));
   }
 
   @override
@@ -465,7 +477,8 @@ class _MapaPainter extends CustomPainter {
       old.celdasCalibradas != celdasCalibradas ||
       old.verticeArrastrado != verticeArrastrado ||
       old.guias != guias ||
-      old.guiaPunto != guiaPunto;
+      old.guiaPunto != guiaPunto ||
+      old.escalaVista != escalaVista;
 }
 
 /// Painter liviano de la posición del usuario: pinta solo la celda actual y la
@@ -598,6 +611,14 @@ class MapaWidget extends StatelessWidget {
   /// Punto al que se pega la etiqueta con el ángulo imantado.
   final Offset? guiaPunto;
 
+  /// Zoom con que el contenedor está mostrando el mapa (el InteractiveViewer
+  /// de la pantalla de configuración). Con él, las manijas, los trazos y los
+  /// marcadores se dibujan del mismo tamaño en pantalla con cualquier zoom.
+  /// Sin esto, a zoom 20 una manija de vértice medía cientos de píxeles y
+  /// tapaba justo lo que se quería dibujar (una pared fina). En 1 (por
+  /// defecto) todo se dibuja como siempre.
+  final double escalaVista;
+
   /// Modo calibración: centro normalizado de la celda seleccionada (amarillo) y
   /// centros de las celdas que ya tienen calibraciones guardadas (pin ✓).
   final Offset? celdaResaltada;
@@ -648,6 +669,7 @@ class MapaWidget extends StatelessWidget {
     this.lugarArrastrado,
     this.guias = const [],
     this.guiaPunto,
+    this.escalaVista = 1.0,
   });
 
   /// Tamaño del plano renderizado dentro del [contenedor], conservando una
@@ -694,6 +716,10 @@ class MapaWidget extends StatelessWidget {
 
             final offsetX = (contenedor.width - tamanoRenderizado.width) / 2;
             final offsetY = (contenedor.height - tamanoRenderizado.height) / 2;
+
+            // Marcadores (beacons, lugares) del mismo tamaño en pantalla con
+            // cualquier zoom del contenedor (ver [escalaVista]).
+            final k = 1 / max(1.0, escalaVista);
 
             Widget mapa = Stack(
               children: [
@@ -755,6 +781,7 @@ class MapaWidget extends StatelessWidget {
                           verticeArrastrado: verticeArrastrado,
                           guias: guias,
                           guiaPunto: guiaPunto,
+                          escalaVista: escalaVista,
                         ),
                       ),
                     ),
@@ -778,27 +805,30 @@ class MapaWidget extends StatelessWidget {
                   return Positioned(
                     left: px,
                     top: py,
-                    child: Listener(
-                      behavior: HitTestBehavior.translucent,
-                      onPointerDown: modoEdicion && onAgarreBeacon != null
-                          ? (_) => onAgarreBeacon!(b.mac)
-                          : null,
-                      child: GestureDetector(
+                    child: Transform.scale(
+                      scale: k,
+                      child: Listener(
                         behavior: HitTestBehavior.translucent,
-                        // Toque simple (antes era long-press): sólo llega con
-                        // el modo "Borrar" activo, así que no hay con qué
-                        // confundirlo.
-                        onTap: modoEdicion && onTapBeacon != null
-                            ? () => onTapBeacon!(b.mac)
+                        onPointerDown: modoEdicion && onAgarreBeacon != null
+                            ? (_) => onAgarreBeacon!(b.mac)
                             : null,
-                        child: SizedBox(
-                          width: caja,
-                          height: caja,
-                          child: CustomPaint(
-                            painter: _MiraBeaconPainter(
-                              color: color,
-                              activo: activo,
-                              edicion: modoEdicion,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          // Toque simple (antes era long-press): sólo llega con
+                          // el modo "Borrar" activo, así que no hay con qué
+                          // confundirlo.
+                          onTap: modoEdicion && onTapBeacon != null
+                              ? () => onTapBeacon!(b.mac)
+                              : null,
+                          child: SizedBox(
+                            width: caja,
+                            height: caja,
+                            child: CustomPaint(
+                              painter: _MiraBeaconPainter(
+                                color: color,
+                                activo: activo,
+                                edicion: modoEdicion,
+                              ),
                             ),
                           ),
                         ),
@@ -866,55 +896,60 @@ class MapaWidget extends StatelessWidget {
                   // Ahora la columna se ancla en x y se corre media columna
                   // hacia la izquierda, sea cual sea su ancho.
                   final px = offsetX + lugar.posicion.dx * tamanoRenderizado.width;
-                  final py = offsetY + lugar.posicion.dy * tamanoRenderizado.height - 28;
+                  final py =
+                      offsetY + lugar.posicion.dy * tamanoRenderizado.height - 28 * k;
                   return Positioned(
                     left: px,
                     top: py,
                     child: FractionalTranslation(
                       translation: const Offset(-0.5, 0),
-                      child: Listener(
-                        // Agarre por el marcador que se ve (ícono o etiqueta).
-                        onPointerDown: onAgarreLugar != null
-                            ? (_) => onAgarreLugar!(lugar)
-                            : null,
-                        child: GestureDetector(
-                          onTap:
-                              onTapLugar != null ? () => onTapLugar!(lugar) : null,
-                          // Agrandado mientras se arrastra. La escala se ancla
-                          // cerca de la punta del ícono (la posición exacta);
-                          // la etiqueta cuelga por debajo de ese punto.
-                          child: Transform.scale(
-                            scale: arrastrado ? 1.35 : 1.0,
-                            alignment: const Alignment(0, 0.25),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.place,
-                                  color: modoEdicion
-                                      ? Colors.purple
-                                      : Colors.purple[700],
-                                  size: 28,
-                                ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 4, vertical: 1),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.85),
-                                    borderRadius: BorderRadius.circular(4),
+                      child: Transform.scale(
+                        scale: k,
+                        alignment: Alignment.topCenter,
+                        child: Listener(
+                          // Agarre por el marcador que se ve (ícono o etiqueta).
+                          onPointerDown: onAgarreLugar != null
+                              ? (_) => onAgarreLugar!(lugar)
+                              : null,
+                          child: GestureDetector(
+                            onTap:
+                                onTapLugar != null ? () => onTapLugar!(lugar) : null,
+                            // Agrandado mientras se arrastra. La escala se ancla
+                            // cerca de la punta del ícono (la posición exacta);
+                            // la etiqueta cuelga por debajo de ese punto.
+                            child: Transform.scale(
+                              scale: arrastrado ? 1.35 : 1.0,
+                              alignment: const Alignment(0, 0.25),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.place,
+                                    color: modoEdicion
+                                        ? Colors.purple
+                                        : Colors.purple[700],
+                                    size: 28,
                                   ),
-                                  child: Text(
-                                    lugar.nombre,
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: modoEdicion
-                                          ? Colors.purple[800]
-                                          : Colors.purple[900],
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 4, vertical: 1),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(alpha: 0.85),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      lugar.nombre,
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: modoEdicion
+                                            ? Colors.purple[800]
+                                            : Colors.purple[900],
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
                           ),
                         ),
