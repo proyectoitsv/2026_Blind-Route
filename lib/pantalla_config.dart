@@ -569,8 +569,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       builder: (ctx) => AlertDialog(
         title: const Text('Eliminar de la nube'),
         content: const Text(
-          'Se quitará este mapa del catálogo. Los usuarios ya no podrán '
-          'descargarlo (quienes ya lo tienen se les borrará del teléfono).\n\n¿Continuar?',
+          'Se quita del catálogo y se borra de los teléfonos que ya lo '
+          'tienen.\n\n¿Continuar?',
         ),
         actions: [
           TextButton(
@@ -826,7 +826,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         content: TextField(
           controller: controller,
           decoration: const InputDecoration(
-            hintText: 'Ej: BlindRoute (deja vacio para ver todos)',
+            hintText: 'Ej: BlindRoute (vacío: todos)',
             border: OutlineInputBorder(),
           ),
           autofocus: true,
@@ -1047,7 +1047,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         content: TextField(
           controller: controller,
           decoration: const InputDecoration(
-            hintText: 'Ej: Escaleras, Ascensor (deja vacio para usar nombre por defecto)',
+            hintText: 'Ej: Escaleras, Ascensor (vacío: nombre por defecto)',
             border: OutlineInputBorder(),
           ),
           autofocus: true,
@@ -1597,9 +1597,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (!await _fijarRotacion(atan2(s, c) * 180 / pi) || !mounted) return;
     avisar(precisa
         ? 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°'
-        : 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°, pero la '
-            'brújula no estaba precisa. Conviene calibrarla (un 8 en el '
-            'aire) y repetir la toma.');
+        : 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°, con la '
+            'brújula imprecisa. Calibrala (un 8 en el aire) y repetí.');
   }
 
   // -- Calibración de posición: toma multi-muestra ---------------------------
@@ -1721,9 +1720,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(
-            'Punto clave NO guardado: solo ${lecturas.length} beacon(s) '
-            'visibles y hacen falta 3. Probá desde una celda con mejor '
-            'cobertura.',
+            'Punto clave no guardado: se ven ${lecturas.length} beacon(s) y '
+            'hacen falta 3.',
           )),
         );
       }
@@ -1979,12 +1977,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   Future<void> _ponerMedidaEscala() async {
     if (_faltaMedidaLargo) {
       final metros = await _pedirMetros('Largo de la línea',
-          'Marcaste el LARGO. ¿Cuántos metros mide en la vida real?');
+          '¿Cuántos metros mide el largo en la realidad?');
       if (metros == null || !mounted) return;
       setState(() => _largoMetros = metros);
     } else if (_faltaMedidaAncho) {
       final metros = await _pedirMetros('Ancho de la línea',
-          'Marcaste el ANCHO. ¿Cuántos metros mide en la vida real?');
+          '¿Cuántos metros mide el ancho en la realidad?');
       if (metros == null || !mounted) return;
       setState(() => _anchoMetros = metros);
       await _recalcularYGuardarEscala(mostrarAviso: true);
@@ -2035,9 +2033,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         if (mostrarAviso) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(
-              'Escala guardada: ${escalaX.toStringAsFixed(1)} m × ${escalaY.toStringAsFixed(1)} m '
-              '→ grilla de ${_grilla.celdasX} × ${_grilla.celdasY} celdas de ${_tamCelda.toStringAsFixed(1)} m. '
-              'Podés arrastrar los puntos para ajustar.',
+              'Escala guardada: ${escalaX.toStringAsFixed(1)} × ${escalaY.toStringAsFixed(1)} m '
+              '(grilla de ${_grilla.celdasX} × ${_grilla.celdasY}, celdas de ${_tamCelda.toStringAsFixed(1)} m).',
             )),
           );
         }
@@ -2192,49 +2189,49 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (_borrando) {
       switch (_modo) {
         case _ModoEdicion.beacons:
-          return 'MODO BORRAR: tocá un beacon para eliminarlo. Tocá "Listo" para volver a editar.';
+          return 'BORRAR: tocá un beacon. "Listo" para salir.';
         case _ModoEdicion.zonas:
-          return 'MODO BORRAR: tocá una zona para eliminarla. Tocá "Listo" para volver a editar.';
+          return 'BORRAR: tocá una zona. "Listo" para salir.';
         default:
-          return 'MODO BORRAR: tocá un lugar, una escalera o un ascensor para eliminarlo. Tocá "Listo" para volver a editar.';
+          return 'BORRAR: tocá un lugar, escalera o ascensor. "Listo" para salir.';
       }
     }
     switch (_modo) {
       case _ModoEdicion.beacons:
-        return 'Seleccioná un dispositivo de la lista y tocá el mapa para ubicarlo. Arrastrá la mira de un beacon para reacomodarlo (zoom con dos dedos). Para eliminar, usá el botón Borrar.';
+        return 'Elegí un dispositivo de la lista y tocá el mapa para ubicarlo. Arrastrá la mira de un beacon para moverlo.';
       case _ModoEdicion.zonas:
         if (_verticesEnCurso.isEmpty) {
-          return 'Tocá el mapa para marcar los vértices de la zona (podés arrastrar sin soltar para afinar el punto). Necesitás al menos 3. Para eliminar una zona, usá el botón Borrar.';
+          return 'Tocá el mapa para marcar los vértices (mínimo 3). Arrastrá sin soltar para afinar.';
         }
-        return '${_verticesEnCurso.length} punto(s) marcado(s). Arrastrá cualquier punto naranja para corregir su ubicación. Seguí tocando para agregar más, o cerrá la zona.';
+        return '${_verticesEnCurso.length} punto(s). Tocá para agregar, arrastrá para corregir o cerrá la zona.';
       case _ModoEdicion.lugares:
-        return 'Tocá el mapa para agregar un lugar, una escalera o un ascensor. Arrastrá su ícono para moverlo. Para cambiarle el nombre o el rubro, tocalo en la lista de abajo. Para eliminar, usá el botón Borrar.';
+        return 'Tocá el mapa para agregar un lugar, escalera o ascensor. Arrastralo para moverlo; se edita desde la lista.';
       case _ModoEdicion.escala:
         final actual = 'Escala actual: ${_escalaX.toStringAsFixed(1)} m × ${_escalaY.toStringAsFixed(1)} m '
             '(grilla ${_grilla.celdasX}×${_grilla.celdasY}).';
         switch (_puntosEscala.length) {
           case 0:
-            return '$actual Tocá el mapa para marcar el primer punto del LARGO (podés arrastrar sin soltar para afinarlo).';
+            return '$actual Marcá el primer punto del LARGO.';
           case 1:
-            return '$actual Tocá el segundo punto del LARGO. Arrastrá cualquier punto violeta para corregirlo.';
+            return '$actual Marcá el segundo punto del LARGO.';
           case 2:
             if (_largoMetros == null) {
-              return '$actual Acomodá los dos puntos y tocá "Medida del largo" para ingresar sus metros.';
+              return '$actual Acomodá los puntos y tocá "Medida del largo".';
             }
-            return '$actual Largo: ${_largoMetros!.toStringAsFixed(1)} m. Tocá el tercer punto para marcar el ANCHO desde el segundo.';
+            return '$actual Largo: ${_largoMetros!.toStringAsFixed(1)} m. Marcá el tercer punto: el ANCHO va desde el segundo.';
         }
         if (_anchoMetros == null) {
-          return '$actual Largo: ${_largoMetros?.toStringAsFixed(1)} m. Acomodá el tercer punto y tocá "Medida del ancho" para ingresar sus metros.';
+          return '$actual Largo: ${_largoMetros?.toStringAsFixed(1)} m. Acomodá el tercer punto y tocá "Medida del ancho".';
         }
-        return '$actual Medición lista. Arrastrá cualquiera de los 3 puntos violetas para acomodarlos: la escala se recalcula sola. "Reiniciar" para medir de nuevo.';
+        return '$actual Medición lista. Arrastrá los puntos para ajustar o "Reiniciar" para medir de nuevo.';
       case _ModoEdicion.calibracion:
         if (_celdaCalSeleccionada == null) {
-          return 'Tocá en el mapa la celda donde estás parado para calibrar.';
+          return 'Tocá la celda donde estás parado.';
         }
         final c = _celdaCalSeleccionada!;
-        return 'Celda (${c.ix},${c.iy}) seleccionada. Registrá la calibración desde el panel inferior.';
+        return 'Celda (${c.ix},${c.iy}). Tomá la calibración desde el panel de abajo.';
       case _ModoEdicion.brujula:
-        return 'Apuntá el borde superior del teléfono hacia lo que en el plano es "arriba" y tocá "Usar la dirección actual". El offset se guarda solo.';
+        return 'Apuntá el teléfono hacia el "arriba" del plano y tocá "Usar la dirección actual".';
     }
   }
 
@@ -2987,18 +2984,16 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                               ),
                               subtitle: Text(
                                 !_tomaEsFingerprint
-                                    ? 'Activalo en esquinas donde hay que doblar, puertas '
-                                        'o el pie de una escalera.'
+                                    ? 'Para esquinas donde se dobla, puertas o el pie de '
+                                        'una escalera.'
                                     : _headingEnVivo == null
-                                        ? 'Medición larga (${_duracionFingerprint.inSeconds} s). '
-                                            'SIN BRÚJULA: el patrón se va a guardar sin rumbo y '
-                                            'va a ser menos preciso, porque tu cuerpo tapa los '
-                                            'beacons que quedan detrás tuyo.'
-                                        : 'Medición larga (${_duracionFingerprint.inSeconds} s). '
-                                            'Poné el cuerpo mirando hacia donde vas a venir '
-                                            'caminando (ahora: ${_headingEnVivo!.toStringAsFixed(0)}°). '
-                                            'Si a esta esquina se llega desde dos lados, '
-                                            'tomá un punto clave por cada sentido.',
+                                        ? 'Medición de ${_duracionFingerprint.inSeconds} s. '
+                                            'Sin brújula: se guarda sin rumbo y es menos '
+                                            'preciso.'
+                                        : 'Medición de ${_duracionFingerprint.inSeconds} s. '
+                                            'Mirá hacia donde se llega caminando (ahora: '
+                                            '${_headingEnVivo!.toStringAsFixed(0)}°). Si se llega '
+                                            'desde dos lados, tomá uno por cada sentido.',
                                 style: const TextStyle(fontSize: 12),
                               ),
                             ),
@@ -3058,14 +3053,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                         const SizedBox(height: 6),
                         Text(
                           _tomaEsFingerprint
-                              ? '¡No te muevas ni gires! Mantené el teléfono en la misma mano '
-                                  'y altura que vas a usar al navegar, y el cuerpo mirando para '
-                                  'el mismo lado: el patrón se compara después contra esa misma '
-                                  'postura y ese mismo rumbo. '
+                              ? 'No te muevas ni gires. Teléfono como para navegar, '
+                                  'mirando siempre hacia el mismo lado. '
                                   '(${_rumboMedioToma == null ? "sin brújula" : "rumbo ${_rumboMedioToma!.toStringAsFixed(0)}°"}'
                                   ' · $_muestrasAcumuladas lecturas)'
-                              : '¡No te muevas de la celda! El sistema promedia las lecturas '
-                                  'automáticamente. ($_muestrasAcumuladas lecturas)',
+                              : 'No te muevas de la celda. '
+                                  '($_muestrasAcumuladas lecturas)',
                           style: const TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
                         ),
                       ] else ...[
@@ -3189,10 +3182,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                 ]),
                 SizedBox(height: 6),
                 Text(
-                  '1. Si la precisión no es alta, mové el teléfono haciendo un 8 en el aire.\n'
-                  '2. Sostené el teléfono como para navegar y apuntá su borde superior hacia lo que en el plano es "arriba".\n'
-                  '3. Tocá "Usar la dirección actual" y quedate quieto 2 segundos.\n'
-                  'El offset se guarda solo. Con el slider lo podés ajustar fino.',
+                  '1. Si la precisión no es alta, hacé un 8 en el aire.\n'
+                  '2. Apuntá el borde superior del teléfono hacia el "arriba" del plano.\n'
+                  '3. Tocá "Usar la dirección actual" y quedate quieto 2 s.\n'
+                  'Se guarda solo. El ajuste fino va con el slider.',
                   style: TextStyle(color: TemaApp.textoBlanco, fontSize: 14, height: 1.5),
                 ),
               ],
@@ -3346,13 +3339,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     final texto = alta
         ? 'Precisión de la brújula: alta.'
         : p == null
-            ? 'Precisión de la brújula: desconocida o baja. Mové el teléfono '
-                'haciendo un 8 en el aire antes de calibrar.'
+            ? 'Precisión de la brújula: desconocida. Hacé un 8 en el aire '
+                'antes de calibrar.'
             : p <= 30
-                ? 'Precisión de la brújula: media. Mové el teléfono haciendo '
-                    'un 8 en el aire hasta que sea alta.'
-                : 'Precisión de la brújula: baja. Mové el teléfono haciendo '
-                    'un 8 en el aire hasta que sea alta.';
+                ? 'Precisión de la brújula: media. Hacé un 8 en el aire hasta '
+                    'que sea alta.'
+                : 'Precisión de la brújula: baja. Hacé un 8 en el aire hasta '
+                    'que sea alta.';
     final color = alta ? TemaApp.instruccionAccent : TemaApp.advertencia;
     return Container(
       padding: const EdgeInsets.all(12),
@@ -3482,8 +3475,8 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
   String get _ayudaRubro {
     final r = Rubros.porId(_rubro);
     if (r == null) {
-      return 'Elegilo para que el lugar se encuentre por lo que es '
-          '("quiero comer", "un kiosco").';
+      return 'Permite encontrarlo por lo que es ("quiero comer", "un '
+          'kiosco").';
     }
     const muestra = 6;
     final palabras = r.palabras.take(muestra).join(', ');
@@ -3677,8 +3670,8 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
                   labelText: 'Otras palabras (opcional)',
                   hintText: 'el mac, mc',
                   helperText:
-                      'Sólo lo propio de este lugar (apodos, marcas), separado '
-                      'por comas. Lo general ya viene con el rubro.',
+                      'Apodos o marcas de este lugar, separados por comas. Lo '
+                      'general ya lo pone el rubro.',
                   helperMaxLines: 3,
                   border: OutlineInputBorder(),
                 ),
@@ -3742,10 +3735,9 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
               const SizedBox(height: 2),
               Text(
                 _esAscensor
-                    ? 'Es el lado donde está la puerta del ascensor, '
-                        'tal como se ve el plano en pantalla.'
-                    : 'Es el lado por donde se llega a la boca de la escalera, '
-                        'tal como se ve el plano en pantalla.',
+                    ? 'El lado de la puerta, según el plano en pantalla.'
+                    : 'El lado por donde se entra a la escalera, según el '
+                        'plano en pantalla.',
                 style: const TextStyle(fontSize: 12),
               ),
               const SizedBox(height: 10),

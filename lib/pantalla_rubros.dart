@@ -99,9 +99,8 @@ class _PantallaRubrosState extends State<PantallaRubros> {
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
           children: [
             const Text(
-              'Las palabras de cada rubro son las que puede decir alguien '
-              'para encontrar esos lugares. Los cambios llegan a los usuarios '
-              'cuando volvés a publicar el mapa.',
+              'Las palabras de cada rubro sirven para pedir sus lugares por '
+              'voz. Los cambios llegan al volver a publicar el mapa.',
               style: TextStyle(
                 color: TemaApp.textoSecundario,
                 fontSize: 14,
@@ -380,8 +379,7 @@ class _EditorRubroState extends State<_EditorRubro> {
     final aviso = usados == 0
         ? 'Ningún lugar lo usa.'
         : '${usados == 1 ? 'Un lugar lo usa y va a quedar' : '$usados lugares lo usan y van a quedar'} '
-            'sin rubro. Para que el cambio llegue a los usuarios, '
-            'republicá los mapas donde estén.';
+            'sin rubro. Republicá sus mapas para que llegue a los usuarios.';
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -473,9 +471,9 @@ class _EditorRubroState extends State<_EditorRubro> {
             ),
             const SizedBox(height: 4),
             const Text(
-              'Cómo puede pedir alguien un lugar de este rubro: el nombre, '
-              'verbos ("comer"), necesidades ("hambre"), productos. En '
-              'singular; tildes y mayúsculas dan igual.',
+              'Cómo se pide un lugar de este rubro: nombre, verbos '
+              '("comer"), necesidades ("hambre"), productos. En singular; '
+              'tildes y mayúsculas dan igual.',
               style: TextStyle(
                 color: TemaApp.textoSecundario,
                 fontSize: 13,
@@ -579,9 +577,9 @@ class _EditorRubroState extends State<_EditorRubro> {
                     SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Este rubro no se puede borrar: la navegación lo usa '
-                        'para preguntar si el baño es de hombres o de '
-                        'mujeres. Sus palabras sí se pueden cambiar.',
+                        'No se puede borrar: se usa para preguntar si el baño '
+                        'es de hombres o de mujeres. Sus palabras sí se '
+                        'pueden cambiar.',
                         style: TextStyle(
                           color: TemaApp.textoSecundario,
                           fontSize: 13,
