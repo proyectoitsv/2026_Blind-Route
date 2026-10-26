@@ -323,9 +323,15 @@ class ProcesadorSenal {
   /// terreno perdido. Y lo que mas mejora es la separacion contra un falso
   /// positivo a 6 m, que pasa de 0.82 dB a 1.50 dB de brecha.
   ///
+  /// SE SUBIO DE 45 A 90 (probado en el campo): parado justo en el punto
+  /// clave pero mirando hacia otro lado, el patron quedaba afuera y la
+  /// posicion no se corregia nunca, que era la queja. Con +/- 90 la mediana
+  /// empeora poco (4.65 contra 4.19 dB) y sigue afuera lo peor: mirar para el
+  /// lado contrario, con el cuerpo tapando los beacons de adelante del patron.
+  ///
   /// Bajarlo afina mas pero exige capturar mas orientaciones por celda; subirlo
   /// deja pasar mas sombra corporal.
-  static const double _fpToleranciaRumbo = 45.0;
+  static const double _fpToleranciaRumbo = 90.0;
 
   /// Diferencia angular minima con signo entre dos rumbos, en `[-180, 180]`.
   static double _difRumbo(double a, double b) {
@@ -403,10 +409,14 @@ class ProcesadorSenal {
   /// tambien que quien consume esto deba acotar el resultado con un radio
   /// espacial alrededor de la posicion que ya calculo la multilateracion: el
   /// fingerprint refina el ultimo metro, no ubica desde cero.
+  ///
+  /// [diagnostico]: si se pasa, se le agrega una línea por punto clave con lo
+  /// que dio la comparación o por qué quedó afuera (para el log).
   static CoincidenciaFingerprint? compararFingerprints({
     required Map<String, double> lecturasVivas,
     required List<CalibracionRegistro> calibraciones,
     double? rumboVivo,
+    List<String>? diagnostico,
   }) {
     CoincidenciaFingerprint? mejor;
     double mejorDb = double.infinity;
@@ -414,6 +424,7 @@ class ProcesadorSenal {
 
     for (final cal in calibraciones) {
       if (!cal.esFingerprint) continue;
+      final nombre = '${cal.etiqueta ?? ""}(${cal.celdaIx},${cal.celdaIy})';
 
       // Puerta angular: el patron solo compite si fue capturado mirando en una
       // direccion parecida a la actual. Si falta cualquiera de los dos rumbos
@@ -423,7 +434,9 @@ class ProcesadorSenal {
       // el radio espacial que aplica el consumidor.
       final rumboGuardado = cal.rumboCaptura;
       if (rumboVivo != null && rumboGuardado != null) {
-        if (_difRumbo(rumboVivo, rumboGuardado).abs() > _fpToleranciaRumbo) {
+        final dif = _difRumbo(rumboVivo, rumboGuardado).abs();
+        if (dif > _fpToleranciaRumbo) {
+          diagnostico?.add('$nombre mirando a ${dif.round()}° del patrón');
           continue;
         }
       }
@@ -439,7 +452,10 @@ class ProcesadorSenal {
         difs.add(viva - rssiGuardado);
       }
       final comunes = difs.length;
-      if (comunes < _fpMinComunes) continue;
+      if (comunes < _fpMinComunes) {
+        diagnostico?.add('$nombre $comunes beacons en común');
+        continue;
+      }
 
       // Offset comun robusto (mediana, no media: la media se corre si un
       // beacon esta en fading profundo).
@@ -464,6 +480,7 @@ class ProcesadorSenal {
         suma += d * d;
       }
       final rms = sqrt(suma / usados.length);
+      diagnostico?.add('$nombre ${rms.toStringAsFixed(1)} dB');
       if (rms < mejorDb) {
         // El anterior mejor pasa a ser "el mejor de otra celda" solo si
         // efectivamente era otra celda.
@@ -487,9 +504,14 @@ class ProcesadorSenal {
       }
     }
 
-    if (mejor == null || mejor.confianza <= 0) return null;
+    if (mejor == null) return null;
+    if (mejor.confianza <= 0) {
+      diagnostico?.add('ninguno por debajo de $_fpDbMalo dB');
+      return null;
+    }
     if (mejorOtraCeldaDb.isFinite &&
         (mejorOtraCeldaDb - mejor.distanciaDb) < _fpMargenDb) {
+      diagnostico?.add('ambiguo entre dos celdas');
       return null; // ambiguo entre dos puntos clave
     }
     return mejor;

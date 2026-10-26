@@ -38,7 +38,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `flutter_tts`, `speech_to_text` (voz).
 - `supabase_flutter`, `wakelock_plus`, `permission_handler`, `image_picker`.
 - Lints: `flutter_lints` (`analysis_options.yaml`).
-- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos) `test/ajustes_navegacion_test.dart` (ajustes en capas; 10 casos) y `test/asistente_trazo_test.dart` (imán con zoom, paredes finas; 5 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
+- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos) `test/ajustes_navegacion_test.dart` (ajustes en capas; 10 casos), `test/asistente_trazo_test.dart` (imán con zoom, paredes finas; 5 casos) `test/orientador_llegada_test.dart` (orientación hacia el lugar al llegar; 12 casos) y `test/ajustes_voz_test.dart` (ajustes de voz del usuario; 3 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
 
 ## Estructura de `lib/`
 
@@ -79,6 +79,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `grilla_nav.dart`: grilla de navegación. El lado de celda es configurable por piso, entre 0.5 y 1.0 m.
 - `pathfinder.dart`: A* en cruz (sin diagonales) con un heap mínimo propio. Una celda está bloqueada solo si su **centro** cae en una zona. Dos celdas vecinas se conectan si el segmento entre sus centros no atraviesa ninguna zona ("paredes", calculadas una vez por piso, también para las diagonales). Expone `esZonaProhibida`, `conectadas` y `puntoEnZona` para la restricción de zonas.
 - `seguidor_ruta.dart`: dónde está el usuario respecto de la ruta y qué tramo indicarle.
+- `orientador_llegada.dart`: al llegar a un lugar, escalera o ascensor, lo hace girar con la brújula hasta quedar de frente antes de anunciar la llegada. Lógica pura; la alimenta `pantalla_naveg.dart` ciclo a ciclo.
 - `asistente_trazo.dart`: "imán" de ángulos (rectos y 45°) para trazar la escala y las zonas prohibidas. Con `metrosPorPixel`, la alineación y el largo mínimo se miden en píxeles de pantalla (con tope en los valores en metros de siempre): con zoom se dibuja más fino.
 - `ajustes_navegacion.dart`: parámetros de los giros anticipados (atraso, anticipos) y del seguimiento de la posición (umbral de caminata, ventanas de señal, filtro One Euro, velocidad máxima). El valor vigente sale de **tres capas**: lo cambiado en el edificio actual, lo cambiado en general y el valor del código. Cada capa guarda solo lo que se cambió en ella. Por edificio solo se cambian los que dependen del edificio (`porEdificio`); el umbral de caminata y los anticipos son solo generales. Se guardan en el teléfono (`shared_preferences`) y en la nube. Los interruptores de prueba (freno lateral por brújula, restringir zonas) viven solo en memoria.
 - `panel_ajustes_navegacion.dart`: panel de ajustes, **solo en la app del admin**, en la pantalla de navegación. Alcances "Este edificio" y "General", los dos para cualquier admin mientras se calibra. Cada cambio rige al instante y se sube a la nube al soltar el control. Muestra el diagnóstico "Señal ahora".
@@ -86,6 +87,8 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 
 **Voz**
 - `voz_service.dart`: TTS y STT centralizados.
+- `ajustes_voz.dart`: velocidad, volumen, tono y repetición de las indicaciones, a gusto de cada persona (porcentaje de la voz de siempre). Sólo en el teléfono (`shared_preferences`, clave `ajustes_voz`). Los aplica `VozService`.
+- `pantalla_ajustes_voz.dart`: pantalla de esos ajustes en la app del usuario (botón "Ajustes de voz" del inicio). Al soltar un control dice una frase de prueba.
 - `buscador_lugares.dart`: búsqueda de lugares por voz, por nombre, rubro o palabras clave.
 
 ## Conceptos del dominio
@@ -116,10 +119,11 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 
 ## Estado actual
 
-- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en `6c3d063`.
+- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en el commit de la orientación al llegar, los puntos clave y los ajustes de voz (2026-10-26), sobre `aee68a8`.
 - Lo de las sesiones del 2026-10-19 al 2026-10-22 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`, `01cfe36`, `6c3d063`). Según el Registro, nada de eso está probado en el teléfono.
-- Lo del 2026-10-26 ("Ubicación lista" y textos del admin) está commiteado y el usuario lo probó en el teléfono.
-- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (48 casos).
+- Lo del 2026-10-26 ("Ubicación lista" y textos del admin) está commiteado en `aee68a8` y el usuario lo probó en el teléfono.
+- Lo demás del 2026-10-26 también está commiteado: orientación al llegar, "Ubicación lista" con la posición asentada, palabras cortas, puntos clave y ajustes de voz del usuario. El usuario probó los puntos clave y los ajustes de voz ("mejoró bastante"). El arreglo del idioma de la voz no está probado; de lo demás no dijo nada. Detalle en el Registro.
+- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (63 casos).
 - Varios commits anteriores están marcados como "no probado" (`6d105e6`, `c34654a`, `b5c83df`, `29bc508`).
 - `feedback.md` está vacío. Es el archivo de feedback del proyecto.
 - `log.txt` (~8 MB, codificado en UTF-16) es un volcado de logcat en la raíz del repositorio. Es anterior a los cambios de la sesión: no tiene sus líneas de diagnóstico.
@@ -131,6 +135,11 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 4. Probar las zonas con el criterio por centro: que la posición no salte cerca de esquinas chicas, que la ruta pase por pasillos que antes se cortaban y que no atraviese paredes angostas. Si aparece en el log `[Pathfinder] Sin ruta con el margen de borde activo`, revisar si la franja de borde (`margenBordeMetros`) tapa un pasillo real.
 5. Ajustes por edificio: volver a correr `supabase/ajustes_navegacion.sql` en Supabase (la versión sin rol de desarrollador) y probar "Probar navegación" (lista de pisos) con el panel: que los cambios digan "Todo guardado en la nube" y que la app de usuario los reciba al descargar el mapa o al abrir la navegación.
 6. Poner como valores del código (`porDefecto`) los valores que el usuario va a pasar. Hoy son los de la vieja preselección "Equilibrada".
+7. Orientación al llegar: llegar a un lugar que queda al costado, a uno que queda adelante y a una escalera o ascensor. Ver que diga hacia dónde girar, que no hable mientras se gira y que "Llegaste" salga al quedar de frente.
+8. "Ubicación lista" con la posición asentada: abrir la navegación quieto (tendría que decirlo entre 3 y 6 s después de aparecer el punto, ya sin saltos) y caminando (a los 6 s). En el log: `[Posicionamiento] Ubicación asentada: …`.
+9. Palabras cortas: contestar "sí" / "no" enseguida después de la pregunta y pedir destinos de una palabra. En el log, `[Voz] Entendido: "…" (interpretaciones: …)` muestra qué oyó el reconocedor y cuál se eligió.
+10. Puntos clave: tomar uno, pararse ahí mirando para distintos lados y ver que la posición vaya a la celda. El log `[Fingerprint]` (cada ~2 s, sólo con puntos clave en el piso) dice qué dio cada uno en dB, si quedó afuera por el rumbo, por pocos beacons, por ambigüedad o por el radio, y el peso aplicado.
+11. Ajustes de voz en la app del usuario: cambiar velocidad, volumen, tono y repetición con TalkBack prendido; que se escuche la frase de prueba y que los cambios sigan al reabrir la app.
 
 **Pendientes conocidos:**
 - Las calibraciones guardadas antes pueden tener valores inflados por lecturas repetidas. Conviene repetir las que se hicieron con beacons que se oían poco.
@@ -277,3 +286,96 @@ Al cerrar un chat por la regla del 30%, agregar acá una entrada con fecha, los 
 **Verificado:** `flutter analyze` con los mismos 4 avisos de antes y `flutter test` con 48 casos en verde.
 
 **Pendiente:** revisar si algún texto del admin quedó demasiado corto.
+
+### 2026-10-26: orientación hacia el lugar al llegar
+
+**Documentación modificada:** este `claude.md`.
+
+**Problema:** la llegada se anuncia a 1,5 m, y muchas veces el lugar queda al costado (la ruta dobla justo antes, o termina en el pasillo con la puerta a un lado). "Llegaste a X" no decía hacia dónde estaba la entrada.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `orientador_llegada.dart` (nuevo): `OrientadorLlegada`, lógica pura. Con el rumbo objetivo fijo desde la llegada: si ya está de frente (±30°) termina enseguida; si no, dice hacia dónde girar ("Girá a la izquierda", "Girá un poco a la derecha" con menos de 60°, "Date la vuelta" desde 150°). Mientras gira (más de 30°/s) no habla. Quieto sin estar de frente 0,8 s, corrige (2,5 s entre indicaciones distintas, 5 s para repetir la misma). De frente y quieto 0,6 s → listo. A los 15 s se vence. El rumbo no se recalcula porque, girando en el lugar, el cuerpo tapa beacons y la posición se mueve.
+- `orientacion_service.dart`: `rumboHacia()` (lo usa `calcularIndicacion`) y `diferenciaAngular()` pasa a ser pública.
+- `pantalla_naveg.dart`: al detectar la llegada (destino final o escalera del tramo) se corta la guía como antes, pero en vez de anunciar arranca la orientación: "Estás llegando a Baño. Girá a la izquierda." Al quedar de frente: "Llegaste a Baño. Está adelante." En la escalera: "Escalera. Está adelante. Subí al piso 2 y mantené la pantalla apretada." (antes decía el giro una sola vez dentro de esa frase). Vencida, dice de qué lado quedó ("Está a tu izquierda"). Sin brújula, o con el lugar a menos de 0,5 m, se anuncia como antes. Rumbo: en escaleras y ascensores con entrada cargada, desde el punto de entrada hacia la boca; en el resto, desde la posición adelantada sobre la ruta lo que avanzó durante el atraso (`_posicionAlLlegar`) hacia el punto del lugar. Las correcciones usan `hablarSinEsperar` y se reintentan si el motor está ocupado; con un pedido de destino en curso se espera. Tarjeta propia mientras se orienta ("Girá a la izquierda" / "De frente", "Hacia Baño"), sin `liveRegion` para no pisar a la voz.
+- `test/orientador_llegada_test.dart` (nuevo): 12 casos.
+
+**Sin tocar:** el radio de llegada (1,5 m) ni los 3 ciclos para confirmarla. Los lugares comunes no tienen dirección de entrada cargada: el rumbo va al punto del lugar.
+
+**Pendiente:** probarlo en el teléfono (paso 7 del Estado actual). Si la brújula del lugar es mala, la orientación puede dar vueltas hasta los 15 s; ahí conviene subir la tolerancia (`toleranciaGrados`) o bajar el máximo.
+
+### 2026-10-26: "Ubicación lista" con la posición asentada
+
+**Documentación modificada:** este `claude.md`.
+
+**Problema:** "Ubicación lista" salía con el primer fix, pero durante la fase de adquisición (3 s con el filtro rápido y 3 s de rampa) el punto salta unos segundos hasta acomodarse.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `pantalla_naveg.dart`: `_actualizarAsentamiento` y `_ubicacionAsentada`. El aviso sigue pendiente desde el primer fix, pero se dice recién con la posición asentada: al terminar la adquisición (6 s) o antes, pasados los 3 s del tramo pleno, si el usuario está quieto (factor de movimiento ≤ 0,5) y la posición no se alejó más de 1 m de un mismo punto durante 1,5 s. Caminando se espera a los 6 s. Lo anota en el log (`[Posicionamiento] Ubicación asentada: …`).
+- Saltos de piso: "Ubicación lista. Vamos a…" lleva el "Ubicación lista" sólo si la posición ya se asentó (`_tomarUbicacionLista`). Si no, dice "Vamos a…" y el aviso sale solo después. Se quitaron los casos especiales del salto en `_anunciarUbicacionLista`.
+
+**Sin tocar:** la guía. Si se pide un destino antes de que se asiente, la ruta y la primera indicación salen igual con la posición del momento, y "Ubicación lista" puede llegar después de esa indicación.
+
+**Pendiente:** probarlo en el teléfono (paso 8 del Estado actual). Si tarda demasiado parado, bajar `_ventanaAsentamiento`; si igual salta después del aviso, subirla o esperar siempre al final de la adquisición.
+
+### 2026-10-26: palabras cortas en el reconocimiento de voz
+
+**Documentación modificada:** este `claude.md`.
+
+**Causas encontradas:**
+1. El micrófono se abría tarde. Después de la pregunta había 200 ms en la pantalla, otros 200 ms en `VozService.escuchar` y, en cada escucha, la consulta de idiomas al servicio de voz de Android (`_stt.locales()`, un broadcast de ida y vuelta que puede tardar cientos de ms), todo con la pantalla ya diciendo "Escuchando". Un "sí" dicho enseguida se perdía entero; en una frase larga sólo el principio.
+2. Se usaba sólo la interpretación más probable. El plugin (speech_to_text 7.3.0, `EXTRA_MAX_RESULTS` = 10) devuelve hasta 10, y con palabras cortas la correcta muchas veces no es la primera.
+3. La búsqueda de respaldo de destinos (`_buscarMejorCoincidencia`) aceptaba un lugar si su nombre CONTENÍA lo reconocido: "a", "e" o "va" coincidían con casi cualquiera y se iba a un lugar al azar sin preguntar. Un texto vacío coincidía con el primer lugar.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `voz_service.dart`: el locale se averigua una vez, apenas se inicializa el reconocedor (`_localeEspanol`). `escuchar` recibe `entiende` y entrega la primera interpretación que el que pregunta sabe interpretar (si ninguna, la más probable). Log `[Voz] Entendido`.
+- `pantalla_naveg.dart`: sin la espera de 200 ms de la pantalla (queda la de `VozService`). Cada pregunta pasa su `entiende`: sí/no, nombre u orden de una opción, "cualquiera", cancelar, género del baño, y en el pedido de destino, que nombre algún lugar (`BuscadorLugares.candidatos`) o un baño. Helper `_dice`. La búsqueda por contención pide 3 letras o más.
+
+**Sin tocar (opciones para probar después):** el modelo de lenguaje del reconocedor. Hoy es dictado (`ListenMode.confirmation` → `LANGUAGE_MODEL_FREE_FORM`); `ListenMode.search` usa `LANGUAGE_MODEL_WEB_SEARCH`, pensado para frases cortas. Tampoco hay una vibración cuando el micrófono se abre de verdad, que ayudaría a saber cuándo hablar.
+
+### 2026-10-26: parámetros fijos que se podrían regular
+
+Relevamiento a pedido del usuario (sin cambios de código). Además de los filtros del panel, los de más impacto probable:
+- **Instalación:** potencia de los beacons, altura (~2 m), que en cada punto se vean al menos 3, no ponerlos alineados ni sobre metal. Es lo que más pesa en la precisión.
+- **Qué beacons entran al cálculo** (`pantalla_naveg.dart`): `_umbralRSSI` = −90 dBm (≈ 20 m con el modelo por defecto), `_maxBeaconsParaCalcular` = 6, `_minBeaconsActivos` = 2. Dependen de la densidad: candidatos a "por edificio".
+- **Modelo por defecto** (`procesador_senal.dart`): `_txPower` −55 dBm y `_pathLossExponent` 2,7, para los beacons sin 3 calibraciones a distancias distintas.
+- **Puntos clave** (`pantalla_naveg.dart`): `_fpGananciaMax` 0,35, `_fpRadioMaxMetros` 4, `_fpCiclosParaAplicar` 3. Con buenos puntos clave en las esquinas, subir la ganancia afina justo donde se dobla.
+- **Indicaciones por voz** (`voz_service.dart`): `_confirmacionesNecesarias` 4 y `_estabilidadMinima` 1,8 s (anti-rebote, suma atraso a las indicaciones no anticipadas), `_intervaloMinimo` 15 s, velocidad del TTS 0,48 (una voz más rápida acorta cada indicación; es preferencia de la persona).
+- **Llegada y recálculo** (`pantalla_naveg.dart`, `seguidor_ruta.dart`): `_radioLlegadaMetros` 1,5, `_ciclosParaLlegada` 3, `_tiempoFueraDeRuta` 1,5 s, `_desvioReplanInmediatoMetros` 3, `toleranciaEnRutaMetros` 0,75.
+- **Rutas** (`pathfinder.dart`): `margenBordeMetros` 1, `costoMaxBorde` 2, `amortiguacionZonaMetros` 1 y `costoMaxZona` 0,6 deciden cuánto se aleja la ruta de las paredes (hay personas ciegas que prefieren ir pegadas a la pared).
+- **Movimiento y adquisición:** `umbralQuieto` 0,25 y `_esperaQuietoMs` 800 (`detector_movimiento.dart`), adquisición 3 + 3 s, `_zonaMuertaQuietoMetros` 0,35.
+- **Modo automático** (`modo_automatico.dart`): `_ventanaEleccionPiso` 3 s, `_margenPisoDb` 4, `_beaconsPorPiso` 3. Un piso mal elegido es de los errores más caros.
+- **Calibración** (`pantalla_config.dart`): 10 s por toma y 25 s por punto clave. Las ventanas del admin y del modo automático siguen fijas en 3,0 / 1,1 s (`ProcesadorSenal`), no usan las del panel.
+
+### 2026-10-26: puntos clave que no corregían y ajustes de voz del usuario
+
+**Documentación modificada:** este `claude.md`.
+
+**Referencia del usuario:** video del visualizador (rssi_monitor) con el beacon Holy-IOT-B1 quieto a ~45 cm. Crudo de −64 a −35 dBm, desviación ~3,2 dB, 5,2 lecturas/s; el filtro de BlindRoute baja la desviación a ~1,9 dB, pero la distancia percibida igual salta entre ~35 y 60 cm.
+
+**Problema 1:** parado exactamente en un punto clave, la posición seguía en otro lado. Causas:
+1. La corrección corría la posición medida un 35 % × confianza hacia el punto clave en cada ciclo, pero el ciclo siguiente la multilateración vuelve a calcular desde las lecturas (con el ancla a la posición anterior: 3 veces el peso de los rangos parado, 0,25 caminando). La posición quedaba a mitad de camino: en una cuenta aproximada, 55-70 % de la distancia parado y 27-40 % caminando.
+2. Un solo ciclo sin coincidencia (ambiguo, por encima de 10 dB, o el rumbo cruzando el límite) reiniciaba todo, y con el ruido de los beacons pasaba seguido.
+3. Un punto clave sólo contaba mirando a ±45° de como se tomó: parado ahí mirando para otro lado, no se usaba.
+4. El radio de 4 m se medía desde la multilateración del ciclo: si seguía errada en más de 4 m, la corrección se soltaba sola.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `pantalla_naveg.dart`: peso acumulado (`_fpPeso`) que sube hacia la confianza a 0,35 por ciclo mientras coincide y baja igual cuando deja de coincidir; la posición medida se corre ese peso hacia la celda (`_fpObjetivo`). Parado llega al 90 % o más. Se toleran 4 ciclos sin coincidencia (`_fpCiclosGracia`) antes de soltar el punto clave. El radio se mide desde la posición filtrada anterior. "Estás en X" se da por dicho sólo si el motor lo aceptó (antes se perdía si la voz estaba ocupada). Log `[Fingerprint]` cada ~2 s.
+- `procesador_senal.dart`: tolerancia de rumbo de 45° a 90°. `compararFingerprints` acepta `diagnostico` (una línea por punto clave para el log).
+
+**Sin tocar:** la métrica (diferencial y robusta), los umbrales de 4 y 10 dB, el margen de 2 dB y la toma en el admin (25 s, mediana truncada). Si con esto todavía no alcanza, lo siguiente es promediar más el vector vivo estando quieto o subir los umbrales en dB.
+
+**Problema 2:** velocidad, volumen y demás de la voz son gustos de cada persona, y no se podían cambiar.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `ajustes_voz.dart` (nuevo): `AjustesVoz` con velocidad (60-200 %, 100 % = la 0,48 de siempre), volumen (20-100 %), tono (70-140 %) y "repetir la indicación cada" (5-40 s, antes 15 s fijos). Reusa `ParametroAjuste`.
+- `voz_service.dart`: carga y aplica los ajustes al inicializarse (`aplicarAjustes()`); `_intervaloMinimo` sale de `AjustesVoz`.
+- `pantalla_ajustes_voz.dart` (nuevo) y `pantalla_princ_usuario.dart`: botón "Ajustes de voz" (el de "Mapas disponibles" pasó al helper `_botonSecundario`). Controles para lector de pantalla; 0,7 s después del último cambio guarda y dice "Así suena la voz."; "Probar la voz" y "Volver a los valores de fábrica".
+- `test/ajustes_voz_test.dart` (nuevo): 3 casos.
+
+**Sin tocar:** los anticipos del giro y del aviso, que también dependen de la persona pero hoy son ajustes generales del admin. Se podrían pasar a esta pantalla.
+
+**Probado por el usuario:** los puntos clave y los ajustes de voz ("mejoró bastante").
+
+**Arreglo, la frase de prueba salía en otro idioma** ("ashi suena la voiz"): `VozService._inicializarTTS` fijaba es-AR con el motor de voz todavía arrancando. flutter_tts (Android) guarda esas llamadas, las ejecuta al terminar de arrancar y después pone el idioma de la voz por defecto del teléfono, así que el es-AR quedaba pisado. Pasaba con la inicialización del inicio de la app del usuario; la navegación vuelve a inicializar con el motor listo, y por eso ahí se escuchaba bien (el modo automático, que habla antes que la navegación, probablemente también salía con la voz del teléfono). Ahora primero se hace una consulta que entra en esa cola (`isLanguageAvailable`) y recién cuando vuelve se fija el idioma; si el motor no lo acepta queda en el log (`[Voz] El motor de voz no aceptó es-AR`). Commiteado, sin probar.
+
+**Pendiente:** pasos 10 y 11 del Estado actual, y escuchar la frase de prueba de los ajustes de voz recién abierta la app.
