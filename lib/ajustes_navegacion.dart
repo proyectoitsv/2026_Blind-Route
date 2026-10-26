@@ -144,8 +144,8 @@ class AjustesNavegacion {
   final ParametroAjuste atrasoPosicion = ParametroAjuste(
     clave: 'nav_atraso_posicion_seg',
     nombre: 'Atraso de la posición',
-    ayuda: 'Cuánto tarde llega la posición por el filtrado de los beacons. '
-        'Si los giros se dicen con la esquina ya pasada, subirlo.',
+    ayuda: 'Retraso de la posición por el filtrado. Subirlo si "Girá" llega '
+        'con la esquina ya pasada.',
     unidad: 's',
     unidadHablada: 'segundos',
     minimo: 0,
@@ -160,9 +160,8 @@ class AjustesNavegacion {
   final ParametroAjuste anticipoGiro = ParametroAjuste(
     clave: 'nav_anticipo_giro_seg',
     nombre: 'Anticipo del giro',
-    ayuda: 'Cuánto antes de llegar a la esquina empieza a decirse "Girá". '
-        'En 0 se empieza a decir al llegar, y decirlo lleva cerca de un '
-        'segundo.',
+    ayuda: 'Cuánto antes de la esquina empieza a decirse "Girá". En 0, al '
+        'llegar (la frase dura ~1 s).',
     unidad: 's',
     unidadHablada: 'segundos',
     minimo: 0,
@@ -175,8 +174,7 @@ class AjustesNavegacion {
   final ParametroAjuste anticipoAviso = ParametroAjuste(
     clave: 'nav_anticipo_aviso_seg',
     nombre: 'Anticipo del aviso previo',
-    ayuda: 'Cuánto antes de llegar a la esquina se dice "En N metros, '
-        'girá...".',
+    ayuda: 'Cuánto antes de la esquina se dice "En N metros, girá...".',
     unidad: 's',
     unidadHablada: 'segundos',
     minimo: 2,
@@ -190,8 +188,7 @@ class AjustesNavegacion {
   final ParametroAjuste distanciaGiroQuieto = ParametroAjuste(
     clave: 'nav_distancia_giro_quieto_m',
     nombre: 'Distancia del giro, parado',
-    ayuda: 'Con el usuario quieto no hay tiempos que calcular: el giro se '
-        'dice al quedar a esta distancia de la esquina.',
+    ayuda: 'Parado, el giro se dice a esta distancia de la esquina.',
     unidad: 'm',
     unidadHablada: 'metros',
     minimo: 0.5,
@@ -218,9 +215,8 @@ class AjustesNavegacion {
   final ParametroAjuste umbralCaminata = ParametroAjuste(
     clave: 'nav_umbral_caminata',
     nombre: 'Umbral de caminata',
-    ayuda: 'Cuánto tiene que sacudirse el teléfono para contar como '
-        'caminando. Si la posición tarda en arrancar al caminar, bajarlo. Si '
-        'se mueve estando parado, subirlo.',
+    ayuda: 'Movimiento del teléfono que cuenta como caminar. Bajarlo si el '
+        'punto tarda en arrancar; subirlo si se mueve parado.',
     unidad: 'm/s²',
     unidadHablada: 'metros por segundo al cuadrado',
     minimo: 0.35,
@@ -241,9 +237,8 @@ class AjustesNavegacion {
   final ParametroAjuste ventanaSenalQuieto = ParametroAjuste(
     clave: 'nav_ventana_senal_quieto_seg',
     nombre: 'Ventana de señal, parado',
-    ayuda: 'Cuántos segundos de lecturas de cada beacon se promedian con el '
-        'usuario quieto. Más: el punto tiembla menos parado, pero tarda más '
-        'en arrancar.',
+    ayuda: 'Segundos de señal que se promedian parado. Más: tiembla menos, '
+        'pero tarda más en arrancar.',
     unidad: 's',
     unidadHablada: 'segundos',
     minimo: 0.5,
@@ -257,9 +252,8 @@ class AjustesNavegacion {
   final ParametroAjuste ventanaSenalCaminando = ParametroAjuste(
     clave: 'nav_ventana_senal_caminando_seg',
     nombre: 'Ventana de señal, caminando',
-    ayuda: 'Cuántos segundos de lecturas se promedian caminando. Es la mayor '
-        'fuente de atraso (agrega la mitad de la ventana): más corta, menos '
-        'atraso pero más saltos.',
+    ayuda: 'Segundos de señal que se promedian caminando. Suma de atraso la '
+        'mitad de su valor. Menos: menos atraso, más saltos.',
     unidad: 's',
     unidadHablada: 'segundos',
     minimo: 0.2,
@@ -274,8 +268,8 @@ class AjustesNavegacion {
   final ParametroAjuste filtroQuieto = ParametroAjuste(
     clave: 'nav_filtro_quieto_hz',
     nombre: 'Filtro, parado',
-    ayuda: 'Qué tan rápido sigue el punto a la señal con el usuario quieto. '
-        'Más: empieza a moverse antes al arrancar, pero tiembla más parado.',
+    ayuda: 'Qué tan rápido sigue el punto a la señal, parado. Más: arranca '
+        'antes, pero tiembla más.',
     unidad: 'Hz',
     unidadHablada: 'hertz',
     minimo: 0.02,
@@ -291,8 +285,8 @@ class AjustesNavegacion {
   final ParametroAjuste filtroCaminando = ParametroAjuste(
     clave: 'nav_filtro_caminando_hz',
     nombre: 'Filtro, caminando',
-    ayuda: 'Qué tan rápido sigue el punto a la señal caminando. Más: menos '
-        'atraso, pero se cuela más ruido.',
+    ayuda: 'Qué tan rápido sigue el punto a la señal, caminando. Más: menos '
+        'atraso, más ruido.',
     unidad: 'Hz',
     unidadHablada: 'hertz',
     minimo: 0.1,
@@ -308,9 +302,8 @@ class AjustesNavegacion {
   final ParametroAjuste empujeVelocidad = ParametroAjuste(
     clave: 'nav_empuje_velocidad',
     nombre: 'Empuje por velocidad',
-    ayuda: 'Cuánto se apura el filtro cuando el punto ya viene rápido. Es lo '
-        'que lo hace "alcanzar de golpe" después de un atraso: bajarlo si '
-        'avanza a los saltos.',
+    ayuda: 'Cuánto se acelera el filtro cuando el punto ya viene rápido. '
+        'Bajarlo si avanza a los saltos.',
     unidad: '',
     unidadHablada: '',
     minimo: 0,
@@ -326,8 +319,8 @@ class AjustesNavegacion {
   final ParametroAjuste velocidadMaxima = ParametroAjuste(
     clave: 'nav_velocidad_maxima_ms',
     nombre: 'Velocidad máxima del punto',
-    ayuda: 'Lo más rápido que puede moverse el punto caminando. Bajarlo '
-        'frena los saltos y que se pase de largo; muy bajo, se queda atrás.',
+    ayuda: 'Tope de velocidad del punto. Bajarlo si salta o se pasa de largo; '
+        'muy bajo, se queda atrás.',
     unidad: 'm/s',
     unidadHablada: 'metros por segundo',
     minimo: 1,
