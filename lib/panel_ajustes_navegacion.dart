@@ -105,17 +105,16 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
         await _nube.subirAjustesNavegacion();
       } on PostgrestException catch (e) {
         error = e.code == '42501'
-            ? 'La nube no aceptó el cambio. Hace falta haber corrido '
-                'supabase/ajustes_navegacion.sql y tener la sesión de '
-                'administrador iniciada.'
-            : 'La nube respondió con un error: ${e.message}';
+            ? 'La nube rechazó el cambio. Revisar la sesión de admin y que '
+                'se haya corrido supabase/ajustes_navegacion.sql.'
+            : 'Error de la nube: ${e.message}';
         break;
       } on StateError catch (e) {
         error = e.message;
         break;
       } catch (e) {
-        error = 'Sin conexión. Los cambios quedan en el teléfono y se suben '
-            'la próxima vez que se abra la navegación con señal.';
+        error = 'Sin conexión: quedan en el teléfono y se suben al abrir la '
+            'navegación con señal.';
         break;
       }
     }
@@ -168,10 +167,10 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
               const SizedBox(height: 8),
               Text(
                 _alcance == _Alcance.general
-                    ? 'Los cambios valen para todos los edificios, salvo donde '
-                        'un edificio tenga su propio valor.'
-                    : 'Los cambios valen sólo para este edificio. Lo que no se '
-                        'toca sigue los valores generales.',
+                    ? 'Rige en todos los edificios, salvo los que tengan un '
+                        'valor propio.'
+                    : 'Rige sólo en este edificio. Lo que no se cambia sigue '
+                        'el valor general.',
                 style: const TextStyle(
                     fontSize: 13, color: TemaApp.textoSecundario),
               ),
@@ -183,10 +182,9 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
               const Padding(
                 padding: EdgeInsets.only(bottom: 12),
                 child: Text(
-                  'Si el punto tarda en arrancar y después avanza de golpe: '
-                  'bajar el umbral de caminata y las ventanas de señal, subir '
-                  'los filtros. Si se pasa de largo: bajar el empuje y la '
-                  'velocidad máxima.',
+                  'Arranca tarde y avanza de golpe: bajar el umbral y las '
+                  'ventanas, subir los filtros. Se pasa de largo: bajar el '
+                  'empuje y la velocidad máxima.',
                   style:
                       TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
                 ),
@@ -197,25 +195,23 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
               const Padding(
                 padding: EdgeInsets.only(bottom: 4),
                 child: Text(
-                  'Para comparar en el campo. Vuelven a prenderse al cerrar la '
-                  'app y en la app del usuario están siempre prendidos.',
+                  'Para comparar. Se vuelven a prender al cerrar la app; en '
+                  'la del usuario siempre están prendidos.',
                   style:
                       TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
                 ),
               ),
               _interruptor(
-                titulo: 'Frenar el movimiento de costado con la brújula',
+                titulo: 'Freno lateral por brújula',
                 detalle: 'Con la brújula desviada retiene parte del avance y '
-                    'lo suelta de golpe al doblar. Apagarlo para ver si el '
-                    'problema viene de ahí.',
+                    'lo suelta de golpe al doblar.',
                 valor: _ajustes.frenarLateralConBrujula,
                 cambiar: (v) => _ajustes.frenarLateralConBrujula = v,
               ),
               _interruptor(
-                titulo: 'No dejar la posición en zonas prohibidas',
-                detalle: 'Si el posicionamiento cae en una zona no '
-                    'transitable, se usa la celda transitable que mejor '
-                    'coincide.',
+                titulo: 'Sacar la posición de zonas prohibidas',
+                detalle: 'Si cae en una zona no transitable, la lleva a la '
+                    'celda libre más cercana.',
                 valor: _ajustes.restringirZonas,
                 cambiar: (v) => _ajustes.restringirZonas = v,
               ),
@@ -283,7 +279,7 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
     final hora = _ajustes.diagnosticoSenalHora;
     if (texto == null || hora == null) {
       return const Text(
-        'Señal: todavía sin medir (se mide navegando, cada 5 segundos).',
+        'Señal: sin medir (se mide cada 5 s navegando).',
         style: TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
       );
     }
@@ -319,10 +315,9 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
             const Padding(
               padding: EdgeInsets.only(top: 4),
               child: Text(
-                'Los beacons emiten pocas veces por segundo: así ninguna '
-                'configuración puede tener poco atraso y poco ruido a la '
-                'vez. Conviene configurarlos para emitir cada 100 a 200 ms '
-                '(de 5 a 10 veces por segundo).',
+                'Pocas lecturas: no se puede tener poco atraso y poco ruido '
+                'a la vez. Configurar los beacons para emitir cada 100 a '
+                '200 ms.',
                 style: TextStyle(fontSize: 12, color: TemaApp.advertencia),
               ),
             ),
@@ -397,12 +392,10 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
       }
       final propio = _ajustes.valorDelEdificio(p);
       if (propio != null) {
-        aviso = 'Este edificio tiene su propio valor '
-            '(${p.formatear(propio)}): acá rige ese.';
+        aviso = 'Este edificio usa su propio valor (${p.formatear(propio)}).';
       }
     } else if (!p.porEdificio) {
-      origen = 'Es igual en todos los edificios (depende del teléfono o de la '
-          'persona): se cambia en "General".';
+      origen = 'No depende del edificio: se cambia en "General".';
     } else if (!hayEdificio) {
       origen = 'Sin edificio: no se puede cambiar por edificio.';
     } else if (_ajustes.origen(p) == OrigenAjuste.edificio) {

@@ -647,6 +647,19 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // que filtrar y lo que el usuario percibe es silencio.
   bool _primeraInstruccionPendiente = false;
 
+  // ── "UBICACIÓN LISTA" ─────────────────────────────────────────────────────
+  //
+  // true desde la primera posición hasta que se dice "Ubicación lista.".
+  // Antes se decía una sola vez, en el ciclo de la primera posición, con
+  // hablarSinEsperar, que descarta la frase si el motor está ocupado. Y casi
+  // siempre lo estaba: la primera posición llega mientras todavía suena
+  // "Buscando ubicación." (enseguida si se viene del modo automático, que
+  // deja el scan andando; y la primera vez que se abre la app el motor de
+  // voz tarda más en arrancar). El aviso se perdía y no se reintentaba.
+  // Ahora queda pendiente y se reintenta en cada ciclo, como la primera
+  // indicación.
+  bool _anuncioUbicacionPendiente = false;
+
   // ── GIROS ANTICIPADOS ─────────────────────────────────────────────────────
   //
   // El problema: "Girá a la izquierda" recién aparecía cuando la posición
@@ -1875,6 +1888,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           if (_seguirUsuario) _centrarEnUsuario();
         }
 
+        // Anunciar cuando se obtiene la primera ubicacion estable (ver
+        // _anuncioUbicacionPendiente). Va antes de las indicaciones para que,
+        // si las dos esperan al motor, "Ubicación lista." salga primero.
+        if (primeraUbicacion) _anuncioUbicacionPendiente = true;
+        if (_anuncioUbicacionPendiente) _anunciarUbicacionLista();
+
         // Actualizar la instruccion de voz aca (no en build()) para que hablar()
         // no sea un efecto colateral del repintado del widget.
         // Los giros anticipados van primero: si en este ciclo toca anunciar
@@ -1886,12 +1905,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
         // ¿Llegó a la escalera o al destino final?
         _verificarLlegada();
-
-        // Anunciar cuando se obtiene la primera ubicacion estable.
-        // hablarSinEsperar para NO bloquear el loop de posicionamiento BLE.
-        if (primeraUbicacion) {
-          _voz.hablarSinEsperar('Ubicación lista.');
-        }
       }
  
       if (_destinoSeleccionado != null &&
@@ -1910,6 +1923,30 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
   }
  
+  /// Intenta decir "Ubicación lista.". Si el motor de voz está ocupado queda
+  /// pendiente para el próximo ciclo (~0,2 s), o sea apenas termina la frase
+  /// en curso. hablarSinEsperar para NO bloquear el loop de posicionamiento.
+  void _anunciarUbicacionLista() {
+    // Tras un salto de piso con destino, _calcularRuta lo dice junto con
+    // cómo se sigue ("Ubicación lista. Vamos a…"). Decirlo antes por
+    // separado sólo dejaba una frase cortada por la otra.
+    if (_anuncioRetomadoHecho) {
+      _anuncioUbicacionPendiente = false;
+      return;
+    }
+    if (widget.destinoFinalId != null &&
+        _destinoSeleccionado != null &&
+        !_sinEscaleraDisponible) {
+      return;
+    }
+    // Con un pedido de destino en curso se espera: caería encima de las
+    // preguntas o con el micrófono abierto (ver _pedidoDesde).
+    if (_pedidoEnCurso || _escuchando) return;
+    if (_voz.hablarSinEsperar('Ubicación lista.')) {
+      _anuncioUbicacionPendiente = false;
+    }
+  }
+
   /// Factor de movimiento que impone la fase de adquisición en [ahora]:
   /// 1.0 durante [_adquisicionPlena], después baja en rampa hasta 0 al llegar
   /// a [_adquisicionTotal]. 0 si no hay adquisición en curso.
@@ -2074,7 +2111,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         }
         setState(() => _escaleraObjetivo = escalera);
         // Si esta pantalla se abrió por un salto, avisar cómo se sigue.
-        // Incluye "Ubicación lista" porque esta frase la interrumpe.
+        // Incluye "Ubicación lista": en un salto con destino no se dice
+        // aparte (ver _anunciarUbicacionLista).
         if (widget.destinoFinalId != null && !_anuncioRetomadoHecho) {
           _anuncioRetomadoHecho = true;
           _voz.hablar('Ubicación lista. Vamos ${escalera.medioComoDestino}.');

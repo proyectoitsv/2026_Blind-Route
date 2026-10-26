@@ -116,8 +116,9 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 
 ## Estado actual
 
-- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en `54d36f1`.
-- Lo de las sesiones del 2026-10-19 y del 2026-10-21 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`). **Los ajustes de navegación por edificio (2026-10-22) están SIN commitear.** Nada de esas sesiones está probado en el teléfono. Detalle en el Registro.
+- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en `6c3d063`.
+- Lo de las sesiones del 2026-10-19 al 2026-10-22 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`, `01cfe36`, `6c3d063`). Según el Registro, nada de eso está probado en el teléfono.
+- Lo del 2026-10-26 ("Ubicación lista" y textos del admin) está commiteado y el usuario lo probó en el teléfono.
 - `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (48 casos).
 - Varios commits anteriores están marcados como "no probado" (`6d105e6`, `c34654a`, `b5c83df`, `29bc508`).
 - `feedback.md` está vacío. Es el archivo de feedback del proyecto.
@@ -130,7 +131,6 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 4. Probar las zonas con el criterio por centro: que la posición no salte cerca de esquinas chicas, que la ruta pase por pasillos que antes se cortaban y que no atraviese paredes angostas. Si aparece en el log `[Pathfinder] Sin ruta con el margen de borde activo`, revisar si la franja de borde (`margenBordeMetros`) tapa un pasillo real.
 5. Ajustes por edificio: volver a correr `supabase/ajustes_navegacion.sql` en Supabase (la versión sin rol de desarrollador) y probar "Probar navegación" (lista de pisos) con el panel: que los cambios digan "Todo guardado en la nube" y que la app de usuario los reciba al descargar el mapa o al abrir la navegación.
 6. Poner como valores del código (`porDefecto`) los valores que el usuario va a pasar. Hoy son los de la vieja preselección "Equilibrada".
-7. Decidir con el usuario si se commitea lo pendiente (marcado "(no probado)").
 
 **Pendientes conocidos:**
 - Las calibraciones guardadas antes pueden tener valores inflados por lecturas repetidas. Conviene repetir las que se hicieron con beacons que se oían poco.
@@ -139,6 +139,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 - Cuando el usuario pase los valores calibrados, ponerlos en el código (`porDefecto`) y sacar de la app lo que ya no se tiene que poder cambiar: el alcance "General" y, por edificio, todo lo que no dependa del edificio.
 - Las preselecciones viejas quedan guardadas en los teléfonos (`nav_preselecciones`) sin usarse. Se pueden borrar más adelante.
 - El A* no se mueve en diagonal. Las paredes ya están calculadas para las diagonales, pero habilitarlas obliga a revisar `seguidor_ruta.dart` (tramos rectos, giros de 90°, largo de la ruta).
+- **Copia de los filtros en el visualizador de beacons** (`rssi_monitor`, otro proyecto, ver el Registro del 2026-10-22): si cambia un filtro o un valor por defecto de BlindRoute (`procesador_senal.dart`, `filtro_un_euro.dart`, `posicionador.dart`, `detector_movimiento.dart`, `ajustes_navegacion.dart` o las constantes de `pantalla_naveg.dart`), hay que actualizar `rssi_monitor/lib/blindroute_filter.dart`. Cada etapa dice de dónde sale.
 
 ## Registro de cambios entre chats
 
@@ -234,3 +235,45 @@ Al cerrar un chat por la regla del 30%, agregar acá una entrada con fecha, los 
 **Sin tocar:** el agarre de beacons y lugares (usa el marcador tocado y un radio en el plano).
 
 **Pendiente:** probar en el teléfono que se pueda acercar, dibujar una pared de 10 a 20 cm recta y con ancho, y que con poco zoom el imán y el agarre se sientan como antes.
+
+### 2026-10-22: filtros de BlindRoute en el visualizador de beacons
+
+**Documentación modificada:** este `claude.md` (también se corrigió el Estado actual: lo del 2026-10-22 ya estaba commiteado).
+
+**Pedido:** aplicar todos los filtros de BlindRoute en el visualizador de beacons (`rssi_monitor`, otro proyecto Flutter en `C:\Users\Juani\Downloads\rssi_monitor`, sin git) para ver cómo cambian el valor que percibe la app. **El código de BlindRoute no se tocó.**
+
+**Cambios en rssi_monitor (sin probar en el teléfono):**
+- `lib/blindroute_filter.dart` (nuevo): copia de los filtros, con el reloj de la serie. Por beacon: rango −110 a −20 dBm, mediana truncada con ventana de tiempo según el movimiento, decaimiento de 8 dB/s después de 1 s sin lecturas, umbral de −90 dBm y modelo log-distancia. Sobre la distancia a ese beacon, que es una aproximación en 1D de lo que en BlindRoute es 2D: ancla del `Posicionador` (forma cerrada con Huber), One Euro, tope de velocidad, zona muerta y fase de adquisición. El acelerómetro usa `sensors_plus` 6.1.2, como `DetectorMovimiento`. Los ajustes tienen los rangos y los `porDefecto` de `AjustesNavegacion`; al cambiarlos se recalcula todo lo guardado, aun en pausa. Al reanudar una pausa, los filtros arrancan de cero.
+- `lib/filter_view.dart` (nuevo): vista "Filtros" con el valor a la salida de cada etapa y el atraso aproximado, más la hoja de ajustes (también se abre desde la barra superior).
+- `rssi_chart.dart`: línea violeta de BlindRoute, umbral de −90 y modo en metros (eje logarítmico: crudo, medida y percibida). `proximity_view.dart`: círculo de la distancia percibida. `chart_page.dart`: tercera vista, fila de estadísticas de BlindRoute y leyenda que oculta líneas. `rssi_series.dart`: guarda las pausas. `pubspec.yaml`: `sensors_plus`.
+
+**Verificado:** con tests temporales (borrados) contra copias de los archivos de BlindRoute, la mediana truncada y el One Euro dan idénticos. El ancla coincide con `Posicionador.estimar`: 0,3 mm parado y hasta 3,6 cm en un salto de 20 m caminando, porque con un beacon lejano el solver corta a las 12 iteraciones antes de llegar al mínimo. La pantalla se arma sin desbordes en 360×780 dp. `flutter analyze` no da avisos y el APK de debug compila.
+
+**Hallazgos del análisis:**
+- Las ventanas regulables (2,0 y 0,8 s) rigen sólo en la navegación. `pantalla_config.dart` (RSSI en vivo del admin) y `modo_automatico.dart` usan los valores internos del `ProcesadorSenal`: 3,0 s fijos, que nunca se acortan.
+- Atraso aproximado con los valores del código: parado ≈ 3,6 s (1,0 de la mediana, 0,6 del ancla y 2,0 del One Euro); caminando ≈ 0,9 s (0,4 + 0,1 + 0,35), coherente con los 0,8 s del "Atraso de la posición".
+
+**Pendiente:** probar el visualizador en el teléfono, parado y caminando, comparando la línea violeta con el crudo.
+
+### 2026-10-26: "Ubicación lista" y textos del admin
+
+**Documentación modificada:** este `claude.md`.
+
+**Problema 1:** al abrir la navegación se decía "Buscando ubicación" pero nunca "Ubicación lista", aunque la posición aparecía. "Ubicación lista." se mandaba con `hablarSinEsperar`, que descarta la frase si el motor de voz está hablando, y se intentaba una sola vez, en el ciclo de la primera posición. Esa posición llega mientras todavía suena "Buscando ubicación." (enseguida si se viene del modo automático, que deja el scan andando; y la primera vez que se abre la app el motor de voz tarda más en arrancar), así que el aviso se perdía.
+
+**Cambios (commiteados; el usuario lo probó en el teléfono y anduvo):**
+- `pantalla_naveg.dart`: `_anuncioUbicacionPendiente` y `_anunciarUbicacionLista()`. El aviso queda pendiente desde la primera posición y se reintenta en cada ciclo hasta que el motor lo acepta, antes de las indicaciones (si las dos esperan, sale primero "Ubicación lista."). Espera si hay un pedido de destino en curso o el micrófono abierto. Tras un salto de piso con destino no se dice aparte: lo dice `_calcularRuta` en "Ubicación lista. Vamos a…" (antes la frase suelta quedaba cortada por esa); si no hay escalera, se dice suelta.
+
+**Problema 2:** los textos de ayuda del admin eran demasiado explicativos para gente que sabe del tema.
+
+**Cambios (commiteados):** se acortaron los textos sin sacar la explicación, sólo lo que sobraba.
+- `ajustes_navegacion.dart`: la `ayuda` de cada parámetro, con la regla concreta de cuándo subirlo o bajarlo.
+- `panel_ajustes_navegacion.dart`: alcances, errores de la nube, señal, pista de "Seguimiento de la posición", interruptores de prueba (títulos "Freno lateral por brújula" y "Sacar la posición de zonas prohibidas") y origen de cada valor. Se mantuvo el texto del freno lateral que ya había acortado el usuario.
+- `pantalla_config.dart`: pistas de cada modo (beacons, zonas, lugares, escala, calibración, brújula), modo borrar, diálogos de la escala, avisos de calibración y de punto clave, pasos y precisión de la brújula, ayudas del rubro, de las otras palabras y de la entrada de escaleras y ascensores.
+- `pantalla_rubros.dart`: textos de ayuda y avisos.
+
+**Sin tocar:** lo que escucha el usuario por voz, los textos de la app del usuario y los mensajes del log.
+
+**Verificado:** `flutter analyze` con los mismos 4 avisos de antes y `flutter test` con 48 casos en verde.
+
+**Pendiente:** revisar si algún texto del admin quedó demasiado corto.
