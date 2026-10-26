@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'modo_automatico.dart';
+import 'pantalla_ajustes_voz.dart';
 import 'pantalla_mapas_online.dart';
 import 'voz_service.dart';
 import 'tema.dart';
@@ -146,58 +147,75 @@ class _PantallaPrincipalUsuarioState extends State<PantallaPrincipalUsuario> {
 
               const SizedBox(height: 16),
 
-              // Catálogo de mapas publicados. Objetivo táctil grande y ancho
-              // completo (más fácil de acertar para personas con baja visión),
-              // pero visualmente secundario al botón de navegar.
-              Semantics(
-                button: true,
-                label: 'Mapas disponibles para descargar',
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius:
-                        BorderRadius.circular(TemaApp.radiusButton),
-                    onTap: () {
-                      _voz.detener();
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const PantallaMapasOnline(),
-                        ),
-                      );
-                    },
-                    child: Ink(
-                      height: 76,
-                      decoration: BoxDecoration(
-                        color: TemaApp.acento.withValues(alpha: 0.15),
-                        borderRadius:
-                            BorderRadius.circular(TemaApp.radiusButton),
-                        border: Border.all(
-                          color: TemaApp.acento.withValues(alpha: 0.5),
-                          width: 1.5,
-                        ),
-                      ),
-                      child: const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.cloud_download_rounded,
-                              color: TemaApp.acento, size: 30),
-                          SizedBox(width: 14),
-                          Text(
-                            'Mapas disponibles',
-                            style: TextStyle(
-                              color: TemaApp.textoBlanco,
-                              fontSize: 20,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
+              // Catálogo de mapas publicados y ajustes de la voz.
+              _botonSecundario(
+                icono: Icons.cloud_download_rounded,
+                texto: 'Mapas disponibles',
+                etiqueta: 'Mapas disponibles para descargar',
+                pantalla: const PantallaMapasOnline(),
+              ),
+              const SizedBox(height: 12),
+              _botonSecundario(
+                icono: Icons.record_voice_over_rounded,
+                texto: 'Ajustes de voz',
+                etiqueta: 'Ajustes de voz: velocidad, volumen y tono',
+                pantalla: const PantallaAjustesVoz(),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Botón secundario: objetivo táctil grande y ancho completo (más fácil de
+  /// acertar para personas con baja visión), pero visualmente secundario al
+  /// botón de navegar.
+  Widget _botonSecundario({
+    required IconData icono,
+    required String texto,
+    required String etiqueta,
+    required Widget pantalla,
+  }) {
+    return Semantics(
+      button: true,
+      label: etiqueta,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(TemaApp.radiusButton),
+          onTap: () {
+            _voz.detener();
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => pantalla),
+            );
+          },
+          child: Ink(
+            height: 76,
+            decoration: BoxDecoration(
+              color: TemaApp.acento.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(TemaApp.radiusButton),
+              border: Border.all(
+                color: TemaApp.acento.withValues(alpha: 0.5),
+                width: 1.5,
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icono, color: TemaApp.acento, size: 30),
+                const SizedBox(width: 14),
+                Text(
+                  texto,
+                  style: const TextStyle(
+                    color: TemaApp.textoBlanco,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

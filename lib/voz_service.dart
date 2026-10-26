@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
- 
+
+import 'ajustes_voz.dart';
+
 /// Servicio central de voz para BlindRoute.
 /// Centraliza Text-to-Speech (TTS) y Speech-to-Text (STT).
 class VozService {
@@ -35,7 +38,13 @@ class VozService {
   // Control de instrucciones repetidas
   String _ultimaInstruccion = '';
   DateTime? _ultimaVezHablado;
-  static const Duration _intervaloMinimo = Duration(seconds: 15);
+
+  /// Cada cuánto se repite una indicación que no cambió: lo elige el usuario
+  /// (ver [AjustesVoz.repetir]).
+  Duration get _intervaloMinimo => _ajustes.intervaloRepeticion;
+
+  /// Velocidad, volumen, tono y repetición, a gusto de cada persona.
+  final AjustesVoz _ajustes = AjustesVoz.instancia;
  
   // ─── INICIALIZACIÓN ──────────────────────────────────────────────────────────
  
@@ -46,10 +55,22 @@ class VozService {
  
   Future<void> _inicializarTTS() async {
     try {
-      await _tts.setLanguage('es-AR');
-      await _tts.setSpeechRate(0.48);
-      await _tts.setVolume(1.0);
-      await _tts.setPitch(1.0);
+      // El idioma se fija recién con el motor ya arrancado. flutter_tts
+      // (Android) guarda las llamadas que llegan mientras el motor arranca,
+      // las ejecuta al terminar y DESPUÉS le pone el idioma de la voz por
+      // defecto del teléfono, así que el es-AR quedaba pisado. Pasaba en la
+      // primera inicialización (el inicio de la app del usuario): la
+      // navegación vuelve a inicializar con el motor listo y ahí se
+      // escuchaba bien, pero la frase de prueba de los ajustes de voz salía
+      // con la voz del teléfono ("ashi suena la voiz"). Esta consulta entra
+      // en esa cola; cuando vuelve, el motor ya terminó de arrancar.
+      await _tts.isLanguageAvailable('es-AR');
+      final idioma = await _tts.setLanguage('es-AR');
+      if (idioma != 1) {
+        debugPrint('[Voz] El motor de voz no aceptó es-AR ($idioma).');
+      }
+      await _ajustes.cargar();
+      await aplicarAjustes();
       _ttsInicializado = true;
     } catch (e) {
       _ttsInicializado = false;
@@ -76,13 +97,23 @@ class VozService {
           if (status == 'done') _cerrarSesionTrasGracia('sin texto');
         },
       );
+      // Se averigua ya, aparte, para que la primera escucha no lo espere.
+      if (_sttDisponible) _localeEspanol ??= _resolverLocaleEspanol();
     } catch (e) {
       _sttDisponible = false;
     }
   }
  
   // ─── TTS: TEXT TO SPEECH ─────────────────────────────────────────────────────
- 
+
+  /// Pasa al motor la velocidad, el volumen y el tono de [AjustesVoz]. Rige
+  /// desde la próxima frase.
+  Future<void> aplicarAjustes() async {
+    await _tts.setSpeechRate(_ajustes.velocidadMotor);
+    await _tts.setVolume(_ajustes.volumenMotor);
+    await _tts.setPitch(_ajustes.tonoMotor);
+  }
+
   /// Completer de la frase que está sonando por [hablar]. Null si no suena
   /// nada, o si lo que suena lo lanzó [hablarSinEsperar] (nadie la espera).
   Completer<void>? _finFraseActual;
@@ -384,6 +415,16 @@ class VozService {
   bool get sttDisponible => _sttDisponible;
   bool get escuchando => _escuchando;
  
+  /// Locale de español del reconocedor, averiguado UNA vez.
+  ///
+  /// POR QUÉ: antes se averiguaba en cada escucha, con el micrófono todavía
+  /// cerrado y la pantalla ya diciendo "Escuchando". En Android es una
+  /// consulta de ida y vuelta al servicio de voz que puede tardar cientos de
+  /// milisegundos. Quien contestaba enseguida ("sí", "no", "bar") hablaba en
+  /// ese hueco y la palabra se perdía entera; en una frase larga sólo se
+  /// perdía el principio y no se notaba.
+  Future<String?>? _localeEspanol;
+
   /// Devuelve el locale de español disponible en el dispositivo,
   /// probando en orden: es_AR → es-AR → es_ES → es-ES → cualquier "es".
   /// Si no encuentra ninguno, devuelve null (usará el locale del sistema).
@@ -462,10 +503,17 @@ class VozService {
   ///
   /// Si ya había una escucha abierta, se la corta (su dueño recibe
   /// [errorCancelado]) y arranca esta.
+  ///
+  /// [entiende]: el reconocedor devuelve hasta 10 interpretaciones, de la más
+  /// a la menos probable, y con palabras cortas la correcta muchas veces no
+  /// es la primera ("sí" sale "c", "no" sale "nos"). Si se pasa, se entrega
+  /// la primera interpretación que [entiende] da por buena (recibe el texto
+  /// en minúsculas); si ninguna, la más probable, como antes.
   Future<void> escuchar({
     required void Function(String texto) onResultado,
     void Function(String error)? onError,
     void Function(bool activo)? onEscuchando,
+    bool Function(String texto)? entiende,
     Duration timeout = const Duration(seconds: 12),
   }) async {
     if (!_sttDisponible) {
@@ -513,8 +561,8 @@ class VozService {
     _escuchando = true;
     onEscuchando?.call(true);
 
-    // Resolver locale de español disponible en el dispositivo
-    final localeId = await _resolverLocaleEspanol();
+    // Locale de español del dispositivo: ya averiguado (ver _localeEspanol).
+    final localeId = await (_localeEspanol ??= _resolverLocaleEspanol());
     if (cerrada) return;
 
     try {
@@ -537,9 +585,19 @@ class VozService {
           }
           if (texto.isEmpty) {
             cerrar(); // final vacío: vale el parcial si hubo, si no 'sin texto'
-          } else {
-            cerrar(texto: texto);
+            return;
           }
+          final opciones = [
+            for (final a in result.alternates)
+              if (a.recognizedWords.trim().isNotEmpty) a.recognizedWords.trim(),
+          ];
+          final elegido = entiende == null
+              ? texto
+              : opciones.firstWhere((t) => entiende(t.toLowerCase()),
+                  orElse: () => texto);
+          debugPrint('[Voz] Entendido: "$elegido" '
+              '(interpretaciones: ${opciones.join(' | ')})');
+          cerrar(texto: elegido);
         },
       );
 

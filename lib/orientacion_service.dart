@@ -56,7 +56,7 @@ class OrientacionService {
     if (anterior != null && _tUltimaMuestra != null) {
       final dt = ahora.difference(_tUltimaMuestra!).inMicroseconds / 1e6;
       if (dt > 1e-3 && dt < 1.0) {
-        final tasa = _diferenciaAngular(suavizado, anterior) / dt;
+        final tasa = diferenciaAngular(suavizado, anterior) / dt;
         final a = dt / (_tauVelAngularSeg + dt);
         _velocidadAngular += a * (tasa - _velocidadAngular);
       }
@@ -80,7 +80,9 @@ class OrientacionService {
     return r.$1;
   }
 
-  static double _diferenciaAngular(double a, double b) {
+  /// Cuánto hay que girar desde [b] para quedar en [a], en grados, en
+  /// `[-180, 180)`. Positivo = en sentido horario (a la derecha).
+  static double diferenciaAngular(double a, double b) {
     // En Dart, el operador % preserva el signo del dividendo, por lo que
     // (-10) % 360 == -10 y no 350. Usamos ((x) % 360 + 360) % 360 para
     // garantizar un resultado en [0, 360) antes de doblar al rango [-180, 180).
@@ -187,6 +189,30 @@ class OrientacionService {
     return Icons.north_west;
   }
 
+  /// Rumbo real (grados, 0 = Norte, sentido horario) de [desde] hacia
+  /// [hacia], dos posiciones normalizadas del plano. Comparable con el
+  /// heading de la brújula.
+  static double rumboHacia({
+    required Offset desde,
+    required Offset hacia,
+    double rotacionMapa = 0,
+    double metrosX = 50,
+    double metrosY = 50,
+  }) {
+    // Convertir el desplazamiento normalizado a metros reales en cada eje
+    // (la escala puede ser distinta en X e Y), para que el rumbo sea
+    // correcto aunque la grilla sea rectangular.
+    final dxM = (hacia.dx - desde.dx) * metrosX;
+    final dyM = (hacia.dy - desde.dy) * metrosY;
+
+    // El ángulo se calcula en coordenadas del mapa (en metros), donde
+    // "arriba" apunta a rotacionMapa grados del mundo real (0 = Norte, etc.).
+    // Sumando rotacionMapa convertimos el ángulo del mapa a ángulo real-mundo,
+    // para que sea comparable con el heading (que viene de la brújula).
+    final angulo = atan2(dxM, -dyM) * (180 / pi);
+    return ((angulo + rotacionMapa) % 360 + 360) % 360;
+  }
+
   static IndicacionNavegacion calcularIndicacion({
     required double headingUsuario,
     required Offset posicionUsuario,
@@ -195,21 +221,19 @@ class OrientacionService {
     double metrosX = 50,
     double metrosY = 50,
   }) {
-    // Convertir el desplazamiento normalizado a metros reales en cada eje
-    // (la escala puede ser distinta en X e Y), para que la distancia y el
-    // rumbo sean correctos aunque la grilla sea rectangular.
     final dxM = (posicionDestino.dx - posicionUsuario.dx) * metrosX;
     final dyM = (posicionDestino.dy - posicionUsuario.dy) * metrosY;
     final distanciaMetros = sqrt(dxM * dxM + dyM * dyM);
 
-    // anguloDestino se calcula en coordenadas del mapa (en metros), donde
-    // "arriba" apunta a rotacionMapa grados del mundo real (0 = Norte, etc.).
-    // Sumando rotacionMapa convertimos el ángulo del mapa a ángulo real-mundo,
-    // para que sea comparable con headingUsuario (que viene de la brújula).
-    double anguloDestino = atan2(dxM, -dyM) * (180 / pi);
-    anguloDestino = ((anguloDestino + rotacionMapa) % 360 + 360) % 360;
+    final anguloDestino = rumboHacia(
+      desde: posicionUsuario,
+      hacia: posicionDestino,
+      rotacionMapa: rotacionMapa,
+      metrosX: metrosX,
+      metrosY: metrosY,
+    );
 
-    double giro = _diferenciaAngular(anguloDestino, headingUsuario);
+    double giro = diferenciaAngular(anguloDestino, headingUsuario);
 
     final String instruccion;
     if (giro.abs() < 30) {
