@@ -38,7 +38,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `flutter_tts`, `speech_to_text` (voz).
 - `supabase_flutter`, `wakelock_plus`, `permission_handler`, `image_picker`.
 - Lints: `flutter_lints` (`analysis_options.yaml`).
-- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos) `test/ajustes_navegacion_test.dart` (ajustes en capas; 10 casos), `test/asistente_trazo_test.dart` (imán con zoom, paredes finas; 5 casos) `test/orientador_llegada_test.dart` (orientación hacia el lugar al llegar; 12 casos), y `test/ajustes_voz_test.dart` (ajustes de voz del usuario; 3 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
+- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos) `test/ajustes_navegacion_test.dart` (ajustes en capas; 10 casos), `test/asistente_trazo_test.dart` (imán con zoom, paredes finas; 5 casos) `test/orientador_llegada_test.dart` (orientación hacia el lugar al llegar; 12 casos), `test/ajustes_voz_test.dart` (ajustes de voz del usuario; 3 casos), `test/seguidor_ruta_test.dart` (qué recálculos son un cambio de fondo; 6 casos), `test/sin_camino_test.dart` (qué punta quedó encerrada cuando no hay camino; 6 casos) y `test/voz_prioridad_test.dart` (las indicaciones cortan a las frases secundarias, con el motor de voz simulado sobre el canal de flutter_tts; 7 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
 
 ## Estructura de `lib/`
 
@@ -77,8 +77,8 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 
 **Navegación**
 - `grilla_nav.dart`: grilla de navegación. El lado de celda es configurable por piso, entre 0.5 y 1.0 m.
-- `pathfinder.dart`: A* en cruz (sin diagonales) con un heap mínimo propio. Una celda está bloqueada solo si su **centro** cae en una zona. Dos celdas vecinas se conectan si el segmento entre sus centros no atraviesa ninguna zona ("paredes", calculadas una vez por piso, también para las diagonales). Expone `esZonaProhibida`, `conectadas` y `puntoEnZona` para la restricción de zonas.
-- `seguidor_ruta.dart`: dónde está el usuario respecto de la ruta y qué tramo indicarle.
+- `pathfinder.dart`: A* en cruz (sin diagonales) con un heap mínimo propio. Una celda está bloqueada solo si su **centro** cae en una zona. Dos celdas vecinas se conectan si el segmento entre sus centros no atraviesa ninguna zona ("paredes", calculadas una vez por piso, también para las diagonales). Expone `esZonaProhibida`, `conectadas` y `puntoEnZona` para la restricción de zonas. Agrupa las celdas libres en áreas conectadas (una vez por piso): `alcanzable` y `diagnosticarSinCamino` dicen si se puede llegar y, si no, si el encerrado es el destino o el origen.
+- `seguidor_ruta.dart`: dónde está el usuario respecto de la ruta y qué tramo indicarle. Al recalcular, decide si se toma el camino nuevo y si es un **cambio de fondo** (`DecisionRuta.cambioDeFondo`), cuya indicación se dice sin el filtro anti-rebote.
 - `orientador_llegada.dart`: al llegar a un lugar, escalera o ascensor, lo hace girar con la brújula hasta quedar de frente antes de anunciar la llegada. Lógica pura; la alimenta `pantalla_naveg.dart` ciclo a ciclo.
 - `asistente_trazo.dart`: "imán" de ángulos (rectos y 45°) para trazar la escala y las zonas prohibidas. Con `metrosPorPixel`, la alineación y el largo mínimo se miden en píxeles de pantalla (con tope en los valores en metros de siempre): con zoom se dibuja más fino.
 - `ajustes_navegacion.dart`: parámetros de los giros anticipados (atraso, anticipos), del seguimiento de la posición (umbral de caminata, ventanas de señal, filtro One Euro, velocidad máxima) y de los puntos clave (radio, coincidencia mínima en dB, fuerza, ciclos para confirmar, tolerancia de rumbo; todos por edificio). El valor vigente sale de **tres capas**: lo cambiado en el edificio actual, lo cambiado en general y el valor del código. Cada capa guarda solo lo que se cambió en ella. Por edificio solo se cambian los que dependen del edificio (`porEdificio`); el umbral de caminata y los anticipos son solo generales. Se guardan en el teléfono (`shared_preferences`) y en la nube. Los interruptores de prueba (freno lateral por brújula, restringir zonas) viven solo en memoria.
@@ -86,7 +86,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `entorno_app.dart`: `EntornoApp.esAdmin`, que fija `main_admin.dart`. Lo usa la pantalla de navegación para mostrar el panel solo en el admin.
 
 **Voz**
-- `voz_service.dart`: TTS y STT centralizados.
+- `voz_service.dart`: TTS y STT centralizados. Las frases secundarias (`hablarSecundaria`, hoy sólo "Estás en…") arrancan sólo con el motor libre y cualquier otra frase las corta.
 - `ajustes_voz.dart`: velocidad, volumen, tono y repetición de las indicaciones, a gusto de cada persona (porcentaje de la voz de siempre). Sólo en el teléfono (`shared_preferences`, clave `ajustes_voz`). Los aplica `VozService`.
 - `pantalla_ajustes_voz.dart`: pantalla de esos ajustes en la app del usuario (botón "Ajustes de voz" del inicio). Al soltar un control dice una frase de prueba.
 - `buscador_lugares.dart`: búsqueda de lugares por voz, por nombre, rubro o palabras clave.
@@ -119,12 +119,13 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 
 ## Estado actual
 
-- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en `de55a11` (orientación al llegar, puntos clave y ajustes de voz, 2026-10-26).
-- **Sin commitear y sin probar:** "Estás en…" una vez por visita, llegada a 0,5 m y los parámetros de los puntos clave en el panel del admin (Registro del 2026-10-26, las tres últimas entradas; la compuerta de la penúltima se sacó).
+- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en el commit del 2026-10-28 que sigue a `1f69de6` (cambios de ruta, destinos a los que no se llega, categorías y "Estás en…").
+- **Commiteado y sin probar:** indicaciones al cambiar la ruta de fondo, aviso de destino al que no se puede llegar, categorías sólo con lugares alcanzables y "Estás en…" sin pisar indicaciones (Registro del 2026-10-28, las dos entradas).
+- "Estás en…" una vez por visita, llegada a 0,5 m y los parámetros de los puntos clave en el panel del admin están commiteados en `1f69de6`, sin probar (Registro del 2026-10-26, las tres últimas entradas; la compuerta de la penúltima se sacó).
 - Lo de las sesiones del 2026-10-19 al 2026-10-22 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`, `01cfe36`, `6c3d063`). Según el Registro, nada de eso está probado en el teléfono.
 - Lo del 2026-10-26 ("Ubicación lista" y textos del admin) está commiteado en `aee68a8` y el usuario lo probó en el teléfono.
 - Lo demás del 2026-10-26 también está commiteado: orientación al llegar, "Ubicación lista" con la posición asentada, palabras cortas, puntos clave y ajustes de voz del usuario. El usuario probó los puntos clave y los ajustes de voz ("mejoró bastante"). El arreglo del idioma de la voz no está probado; de lo demás no dijo nada. Detalle en el Registro.
-- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (63 casos).
+- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (82 casos).
 - Varios commits anteriores están marcados como "no probado" (`6d105e6`, `c34654a`, `b5c83df`, `29bc508`).
 - `feedback.md` está vacío. Es el archivo de feedback del proyecto.
 - `log.txt` (~8 MB, codificado en UTF-16) es un volcado de logcat en la raíz del repositorio. Es anterior a los cambios de la sesión: no tiene sus líneas de diagnóstico.
@@ -142,6 +143,10 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 10. Puntos clave: tomar uno, pararse ahí mirando para distintos lados y ver que la posición vaya a la celda. El log `[Fingerprint]` (cada ~2 s, sólo con puntos clave en el piso) dice qué dio cada uno en dB, si quedó afuera por el rumbo, por pocos beacons, por ambigüedad o por el radio, y el peso aplicado.
 11. Ajustes de voz en la app del usuario: cambiar velocidad, volumen, tono y repetición con TalkBack prendido; que se escuche la frase de prueba y que los cambios sigan al reabrir la app.
 12. Llegada a 0,5 m: llegar a un destino y ver que se anuncie recién en su celda. Puntos clave: pararse en uno ("Estás en…" se dice una sola vez) y regular en el panel ("Puntos clave", por edificio) el radio y la coincidencia mínima hasta que, caminando hacia la esquina, la posición no se adelante y parado ahí la reconozca. El log `[Fingerprint]` dice cuántos dB dio cada punto clave y a qué distancia coincide ("coincide N ciclos (X m)", "fuera de radio (X m)").
+13. Cambio de ruta de fondo: escuchar "Girá…" en una esquina y seguir derecho. "Date la vuelta" tendría que salir unos 4,5 s después del giro (antes, ~10 s). Tomar a propósito otro pasillo hasta que la ruta cambie y ver que la indicación nueva salga enseguida. En el log: `[Ruta] Camino nuevo: … (cambio de fondo).`
+14. Destino al que no se puede llegar: pedir un lugar encerrado por zonas (por ejemplo, cerrar con zonas una habitación de prueba). Tiene que decir "No se puede llegar a X: no hay un camino libre hasta ahí." y soltar el destino, sin dar indicaciones. Parado adentro de un recinto cerrado y pidiendo un lugar de afuera: "No encuentro un camino desde donde estás. Sigo buscando.", sin indicaciones hasta salir. En el log: `[Ruta] Sin camino hasta el objetivo: …`.
+15. Categorías con lugares encerrados: con un restaurante encerrado y otros no, pedir "quiero comer". No tiene que ofrecer el encerrado. Si se puede ir a uno solo, va directo; si a ninguno, dice "No hay un camino libre hasta ninguno de esos lugares.". Con baños: va al más cercano por camino entre los que se puede ir; si el del género pedido está encerrado, avisa que no se puede llegar (no lleva al del otro género).
+16. "Estás en…": caminar hacia una esquina con punto clave etiquetado. El "Girá…" tiene que salir entero y a tiempo, y "Estás en…" después, sin cortarlo ni demorarlo. Si una indicación llega mientras suena "Estás en…", lo corta.
 
 **Pendientes conocidos:**
 - Las calibraciones guardadas antes pueden tener valores inflados por lecturas repetidas. Conviene repetir las que se hicieron con beacons que se oían poco.
@@ -435,3 +440,59 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 **Qué tan cerca hay que estar:** lo deciden el radio (la posición actual tiene que estar a menos de esa distancia del punto clave) y la coincidencia mínima (más exigente, la señal coincide sólo más cerca). Bajar los dos hace que, caminando, la posición tenga que acercarse sola antes de que el punto clave tire.
 
 **Pendiente:** paso 12 del Estado actual. Cuando se encuentren los valores, pasarlos a `porDefecto`.
+
+### 2026-10-28: indicaciones al cambiar la ruta y destino al que no se puede llegar
+
+**Documentación modificada:** este `claude.md`.
+
+**Problema 1:** cuando la ruta cambiaba mucho (el usuario se pasaba de una esquina, tomaba otro pasillo), la indicación nueva tardaba mucho. El recálculo (1,5 s fuera de ruta y 3 m de ahorro) andaba bien, pero nadie le avisaba a la voz que la ruta había cambiado:
+1. La indicación nueva pasaba por el filtro anti-rebote (4 confirmaciones + 1,8 s), que se reinicia cada vez que la indicación cambia mientras el usuario gira.
+2. Si coincidía con la última dicha, esperaba el intervalo de repetición (15 s por defecto).
+3. El giro ya anunciado de la ruta vieja (`_giroComprometido`, 8 s) seguía valiendo: si la ruta nueva volvía a esa esquina, la indicación se calculaba como si el usuario ya estuviera en ella y seguía siendo "Girá a la izquierda" (ya dicho) en vez de "Date la vuelta". Al pasarse de una esquina, "Date la vuelta" salía ~10 s después del giro, con el usuario 7 u 8 m pasado.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `seguidor_ruta.dart`: `DecisionRuta.cambioDeFondo`. Es true cuando se toma un camino por otro lado, cuando el camino nuevo vuelve a la ruta de antes, cuando cambió el objetivo y en los dos casos de respaldo sin empalme. Es false con la misma ruta corrida, al conservar la ruta anterior y en la primera ruta.
+- `pantalla_naveg.dart`: con un cambio de fondo (`_rutaCambioDeFondo`) se borran el giro comprometido y las maniobras ya anunciadas, y la indicación queda pendiente (`_indicacionRutaNuevaPendiente`). Se dice con `hablarUrgente`, sin filtro, cortando un "Seguí derecho" a medio decir. Los avisos anticipados de la ruta nueva esperan a que se diga. Log: `[Ruta] … (cambio de fondo).`
+
+**Sin tocar:** la espera fuera de ruta (1,5 s), los 3 m de ahorro y el filtro de las indicaciones comunes y de la ruta corrida. No se hizo el extra opcional (recalcular enseguida al pasarse de una esquina en la que se dijo "Girá", ~1,5 s menos).
+
+**Riesgo:** un salto falso de posición que produzca un cambio de fondo dice su indicación sin filtro. Si pasa en el teléfono, pedir ~0,5 s de estabilidad en vez de nada.
+
+**Problema 2:** al pedir un lugar al que no se puede llegar, la app daba indicaciones sin sentido. Si el A* no encontraba camino, la ruta quedaba en null y el guiado apuntaba al destino en línea recta (a través de las paredes), reintentando cada 1,5 s.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `pathfinder.dart`: áreas conectadas por piso (`_marcarComponentes`, en cruz y sin atravesar paredes, como el A* con la franja de borde habilitada). `alcanzable(a, b)` y `diagnosticarSinCamino(a, b)` → `SinCamino.destinoEncerrado` / `origenEncerrado`: si sólo una punta está en el área principal (la más grande), la encerrada es la otra; si ninguna, la de área más chica; una punta sin celda libre cerca está encerrada. La elección de la celda libre más cercana pasó a `_celdaLibreDe`, que usan el A* y `alcanzable`.
+- `pantalla_naveg.dart` (`_manejarSinCamino`):
+  - Destino encerrado: "No se puede llegar a X: no hay un camino libre hasta ahí." (o "hasta la escalera" en un tramo entre pisos) y se suelta el destino (`_soltarDestino`, que sale de `_cancelarNavegacion` sin cortar un pedido de voz).
+  - Origen encerrado: "No encuentro un camino desde donde estás. Sigo buscando." una vez, sin indicaciones, reintentando cada vez que el usuario cambia de celda. Cuando aparece el camino, la primera indicación sale sin filtro.
+  - Si ya había una ruta, se conserva sin decir nada: el destino era alcanzable hace un momento y lo encerrado es la posición.
+  - Al fijar el destino, los dos avisos van en la frase del destino (`_establecerDestino` mira la generación y el aviso pendiente).
+- `pantalla_naveg.dart`: `_tramoDeGuiado` ya no apunta en línea recta sin ruta (null), ni para la voz ni para la tarjeta. `_refinarDestinoEnPiso`, con nombres repetidos, prefiere uno alcanzable antes que el más cercano.
+- `test/seguidor_ruta_test.dart` (6 casos) y `test/sin_camino_test.dart` (6 casos). `flutter test`: 75 casos en verde. `flutter analyze`: los mismos 4 avisos.
+
+**Sin tocar:** la lista de opciones de un rubro seguía pudiendo ofrecer un lugar encerrado (se resolvió en la entrada siguiente).
+
+**Pendiente:** pasos 13 y 14 del Estado actual.
+
+### 2026-10-28: categorías con lugares alcanzables y "Estás en…" sin pisar indicaciones
+
+**Documentación modificada:** este `claude.md`.
+
+**Pedido 1:** con varios lugares de una categoría, priorizar los que se pueden alcanzar caminando y, entre ellos, preguntar a cuál (como con los restaurantes) o llevar al más cercano (como con los baños).
+
+**Cambios (sin commit, sin probar en el teléfono), en `pantalla_naveg.dart`:**
+- `_seLlegaCaminando` (con `ResolvedorCaminos.alcanzable`; en otro piso o sin posición se toma como alcanzable) y `_priorizarAlcanzables` (saca los encerrados, salvo que lo estén todos). `_puntoDeLlegada` reemplaza las tres copias del punto de llegada (entrada en escaleras y ascensores, recortado al plano).
+- `_elegirEntre` prioriza los alcanzables. Lo usan los nombres repetidos, la lista táctil y el representante de cada nombre en una categoría.
+- `_resolverPorNombreOClave`: las opciones se filtran a las alcanzables. Si queda una, va directo. Si no queda ninguna, dice "No hay un camino libre hasta ninguno de esos lugares." y termina el pedido. Si quedan varias, se ofrece la más cercana como antes.
+- Baños: el género se sigue preguntando sobre todos (si el de hombres está encerrado, se avisa en vez de llevar al de mujeres). Después, `_masCercanoCaminando`: el más cercano por metros de camino (`_medirOpciones`) entre los alcanzables. Antes era por línea recta.
+
+**Pedido 2:** "Estás en X" (punto clave) a veces se metía en medio de la indicación de doblar. Las indicaciones tienen que tener prioridad siempre.
+
+**Causa:** se decía con `hablarSinEsperar` apenas coincidía el punto clave, en la parte de posicionamiento del ciclo, antes que las indicaciones. Si tocaba el giro, `hablarUrgente` lo esperaba (si le faltaba poco) o lo cortaba a la mitad. El aviso previo directamente esperaba. Además contaba como "lo último dicho" para el filtro (2 s entre indicaciones distintas, repetición).
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `voz_service.dart`: frases secundarias (`hablarSecundaria`). Arrancan sólo con el motor libre (y no mientras una frase de `hablar` espera el corte de la anterior, `_arrancando`). `hablarSinEsperar`, `hablarUrgente` y `hablar` las cortan siempre. No tocan `_ultimaVezHablado` ni `_ultimaInstruccion`. Nuevos `indicacionCerca(margen)` (una indicación confirmándose o la repetición por salir) y `duracionEstimada(texto)` (con la velocidad elegida).
+- `pantalla_naveg.dart`: el bloque del punto clave sólo deja el anuncio pendiente (`_fpAnuncioPendiente`, vale mientras coincide). `_anunciarPuntoClave` corre al final del ciclo, después de indicaciones y llegada. No habla con un pedido de voz, escuchando ni orientando al llegar. Guiando, tampoco si una indicación toca mientras dura la frase (`_indicacionPorSalir`): la primera, la de un cambio de fondo, la del filtro de voz, el aviso previo, el giro o la llegada (`_maniobraPorAnunciar`). El cálculo de umbrales de `_anunciarManiobras` pasó a `_proximaManiobra` para compartirlo.
+- `test/voz_prioridad_test.dart` (nuevo, 7 casos). `flutter test`: 82 casos en verde. `flutter analyze`: los mismos 4 avisos.
+
+**Pendiente:** pasos 15 y 16 del Estado actual.

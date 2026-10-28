@@ -184,6 +184,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   static const double _fpAlejarseMetros = 3.0;
   static const Duration _fpRepetirAnuncio = Duration(seconds: 15);
 
+  /// Punto clave que toca anunciar en este ciclo ("Estás en X"): coincide y
+  /// todavía no se dijo en esta visita. Lo dice [_anunciarPuntoClave].
+  ({String etiqueta, Offset centro})? _fpAnuncioPendiente;
+
   DateTime? _ultimoLogFingerprint;
  
   // ── Posición ──────────────────────────────────────────────────────────────
@@ -688,6 +692,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // que son un rebote de una celda; en la primera indicación no hay rebote
   // que filtrar y lo que el usuario percibe es silencio.
   bool _primeraInstruccionPendiente = false;
+
+  // ── CAMBIO DE RUTA DE FONDO ───────────────────────────────────────────────
+  //
+  // true desde que un recálculo adopta un camino que cambia lo que hay que
+  // hacer ([DecisionRuta.cambioDeFondo]) hasta que se dice su indicación.
+  // Antes esa indicación pasaba por el filtro anti-rebote (4 confirmaciones
+  // + 1,8 s, que se reinician cada vez que la indicación cambia mientras el
+  // usuario gira) y, si coincidía con la última dicha, esperaba el intervalo
+  // de repetición (15 s por defecto). Además el giro ya anunciado de la ruta
+  // vieja seguía valiendo ([_giroComprometido]): al pasarse de una esquina,
+  // la ruta nueva lo hacía volver a ella pero la indicación se calculaba
+  // como si ya estuviera parado ahí, así que seguía siendo "Girá a la
+  // izquierda" (ya dicho, no se repetía) en vez de "Date la vuelta". El
+  // "Date la vuelta" salía ~10 s después del giro, 7 u 8 m pasada la
+  // esquina. Ahora se dice enseguida, con la prioridad de un giro (ver
+  // VozService.hablarUrgente).
+  bool _indicacionRutaNuevaPendiente = false;
 
   // ── "UBICACIÓN LISTA" ─────────────────────────────────────────────────────
   //
@@ -1673,6 +1694,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // se soltaba sola si la multilateración seguía errada en más del radio.
       Offset? objetivoFp;
       double? distanciaFp;
+      ({String etiqueta, Offset centro})? anuncioFp;
       if (coincidencia != null) {
         final centro = Offset(
           _grilla.centroX(coincidencia.celdaIx),
@@ -1724,22 +1746,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           // Aviso por voz una vez por visita (ver _fpAnunciados): para una
           // persona ciega, saber que llego a la esquina es mas util que
           // cualquier correccion en el mapa. Solo si el operador le puso
-          // etiqueta. Se da por dicho sólo si el motor lo aceptó.
+          // etiqueta. Se dice al final del ciclo, si ninguna indicación está
+          // por salir (ver "ESTÁS EN…").
           final etiqueta = coincidencia.etiqueta;
           final anterior = etiqueta == null ? null : _fpAnunciados[etiqueta];
           final toca = anterior == null ||
               (anterior.seAlejo &&
                   ahoraMuestra.difference(anterior.cuando) >=
                       _fpRepetirAnuncio);
-          if (etiqueta != null &&
-              etiqueta.isNotEmpty &&
-              toca &&
-              _voz.hablarSinEsperar('Estás en $etiqueta.')) {
-            _fpAnunciados[etiqueta] =
-                (centro: objetivoFp, cuando: ahoraMuestra, seAlejo: false);
+          if (etiqueta != null && etiqueta.isNotEmpty && toca) {
+            anuncioFp = (etiqueta: etiqueta, centro: objetivoFp);
           }
         }
       }
+      // Sólo vale mientras el punto clave coincide: si el usuario ya se fue
+      // de ahí, "Estás en…" sería mentira.
+      _fpAnuncioPendiente = anuncioFp;
 
       // ¿Se alejó de los puntos clave ya anunciados? Desde ahí, el próximo
       // paso por ese punto se vuelve a anunciar.
@@ -2005,6 +2027,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           _actualizarAsentamiento(posicionSnap, fAdq, ahoraMuestra);
           if (_ubicacionAsentada) _anunciarUbicacionLista();
         }
+        if (_avisoSinCaminoPendiente) _anunciarSinCamino();
 
         // Actualizar la instruccion de voz aca (no en build()) para que hablar()
         // no sea un efecto colateral del repintado del widget.
@@ -2017,6 +2040,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
         // ¿Llegó a la escalera o al destino final?
         _verificarLlegada();
+
+        // "Estás en…" va último: sólo si ninguna de las de arriba habló ni
+        // está por hablar.
+        _anunciarPuntoClave();
       }
  
       if (_destinoSeleccionado != null &&
@@ -2147,19 +2174,24 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final fueraDeCooldown = _ultimoIntentoRuta == null ||
         ahora.difference(_ultimoIntentoRuta!) >= _cooldownRuta;
 
+    // Mismo origen que usaría el pathfinder: tras un salto de piso, mientras
+    // el usuario siga junto a la escalera por la que llegó, es la salida de
+    // esa escalera y no su posición (que cae sobre un obstáculo).
+    final origen = _origenRuta(_posicionParaRuta());
+
     final ruta = _rutaActual;
     if (ruta == null || ruta.isEmpty) {
-      if (fueraDeCooldown) {
+      // Si desde esta celda ya no hubo camino (ver _manejarSinCamino), se
+      // vuelve a probar recién cuando el usuario cambie de celda: el A*
+      // daría lo mismo.
+      if (fueraDeCooldown &&
+          SeguidorRuta.claveCelda(origen, _grilla) != _celdaUltimoCalculo) {
         _ultimoIntentoRuta = ahora;
         _calcularRuta();
       }
       return;
     }
 
-    // Mismo origen que usaría el pathfinder: tras un salto de piso, mientras
-    // el usuario siga junto a la escalera por la que llegó, es la salida de
-    // esa escalera y no su posición (que cae sobre un obstáculo).
-    final origen = _origenRuta(_posicionParaRuta());
     final ubicacion = SeguidorRuta.ubicar(ruta, origen, _grilla);
 
     if (ubicacion.enRuta) {
@@ -2274,42 +2306,37 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       final nueva = await _resolvedor.encontrarCamino(origen, destino);
       if (!mounted || generacion != _generacionRuta) return;
 
+      if (nueva == null) {
+        _manejarSinCamino(origen, destino, celdaOrigen);
+        return;
+      }
+
       // ── ¿CAMINO NUEVO O EL QUE SE VENÍA SIGUIENDO? ───────────────────────
       // Si ya había una ruta, el camino recién calculado no se adopta a
       // ciegas: SeguidorRuta.decidir lo compara con lo que quedaba de la
       // anterior. Devuelve siempre una ruta que arranca en la celda actual
       // del usuario; lo que cambia es si reusa el recorrido anterior o no.
-      List<Offset>? camino = nueva;
-      if (nueva != null) {
-        final decision = await SeguidorRuta.decidir(
-          nueva: nueva,
-          vieja: _rutaActual,
-          grilla: _grilla,
-          buscarCamino: _resolvedor.encontrarCamino,
-        );
-        if (!mounted || generacion != _generacionRuta) return;
-        camino = decision.ruta;
-        _celdaUltimoCalculo = celdaOrigen;
-        _fueraDeRutaDesde = null;
-        debugPrint('[Ruta] ${decision.esNueva ? "Camino nuevo" : "Ruta anterior"}'
-            ': ${decision.motivo}.');
-      }
+      final decision = await SeguidorRuta.decidir(
+        nueva: nueva,
+        vieja: _rutaActual,
+        grilla: _grilla,
+        buscarCamino: _resolvedor.encontrarCamino,
+      );
+      if (!mounted || generacion != _generacionRuta) return;
+      final camino = decision.ruta;
+      _celdaUltimoCalculo = celdaOrigen;
+      _fueraDeRutaDesde = null;
+      debugPrint('[Ruta] ${decision.esNueva ? "Camino nuevo" : "Ruta anterior"}'
+          ': ${decision.motivo}'
+          '${decision.cambioDeFondo ? ' (cambio de fondo)' : ''}.');
+      if (decision.cambioDeFondo) _rutaCambioDeFondo();
 
-      final rutaFinal = camino;
+      // Hay camino: si después se vuelve a perder, se avisa de nuevo.
+      _avisoSinCaminoPendiente = false;
+      _sinCaminoAvisado = false;
       setState(() {
-        _rutaActual = rutaFinal;
-        if (rutaFinal == null) {
-          _estadoRuta = 'No se encontró ruta disponible';
-          // Sin ruta, _seguirRuta reintenta solo: el cooldown (_cooldownRuta)
-          // evita que cada callback BLE dispare un nuevo compute().
-          //
-          // Sin ruta no hay "primera indicación de la ruta" que esperar: el
-          // guiado sigue como antes (apuntando directo al destino, por el
-          // filtro de estabilidad) en lugar de quedarse callado.
-          _primeraInstruccionPendiente = false;
-        } else {
-          _estadoRuta = _textoEstadoRuta(rutaFinal);
-        }
+        _rutaActual = camino;
+        _estadoRuta = _textoEstadoRuta(camino);
       });
     } catch (e) {
       // BUG ORIGINAL: este catch no hacía nada. Si encontrarCamino() (el A*
@@ -2327,6 +2354,93 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       }
     } finally {
       _calculandoRuta = false;
+    }
+  }
+
+  /// Un recálculo adoptó un camino que cambia lo que hay que hacer (ver
+  /// [_indicacionRutaNuevaPendiente]). Lo anunciado sobre la ruta vieja deja
+  /// de valer, y la indicación de la nueva queda pendiente para decirla ya.
+  void _rutaCambioDeFondo() {
+    _giroComprometido = null;
+    _maniobrasAnunciadas.clear();
+    // Si la primera indicación del destino todavía no se dijo, ésa ya sale
+    // sin filtro: no hace falta otra.
+    if (!_primeraInstruccionPendiente) _indicacionRutaNuevaPendiente = true;
+  }
+
+  // ── SIN CAMINO HASTA EL OBJETIVO ──────────────────────────────────────────
+  //
+  // Antes, si el A* no encontraba camino, la ruta quedaba en null y el
+  // guiado seguía apuntando al destino EN LÍNEA RECTA: indicaciones sin
+  // sentido (a través de paredes) hacia un lugar al que no se puede llegar,
+  // y un reintento cada 1,5 s que daba siempre lo mismo. Ahora se mira cuál
+  // de las dos puntas quedó encerrada
+  // ([ResolvedorCaminos.diagnosticarSinCamino]):
+  //
+  //  • El destino → no se puede llegar. Se dice y se suelta el destino.
+  //  • El origen (la posición cayó en un recinto sin salida, casi siempre
+  //    por un error de la posición) → se avisa una vez y se sigue buscando,
+  //    sin indicaciones, cada vez que el usuario cambia de celda. Cuando
+  //    aparece el camino, su primera indicación sale enseguida.
+  //
+  // Si ya había una ruta, el destino era alcanzable desde donde estaba el
+  // usuario hasta hace un momento: lo que quedó encerrado es la posición. Se
+  // conserva esa ruta, sin decir nada.
+
+  /// Hay que decir [_fraseSinCaminoDesdeAca] en cuanto el motor de voz
+  /// esté libre.
+  bool _avisoSinCaminoPendiente = false;
+
+  /// [_fraseSinCaminoDesdeAca] ya se dijo (o está pendiente) para este
+  /// destino: no se repite en cada reintento. Vuelve a false cuando aparece
+  /// un camino.
+  bool _sinCaminoAvisado = false;
+
+  static const String _fraseSinCaminoDesdeAca =
+      'No encuentro un camino desde donde estás. Sigo buscando.';
+
+  void _manejarSinCamino(Offset origen, Offset destino, int celdaOrigen) {
+    final motivo = _resolvedor.diagnosticarSinCamino(origen, destino);
+    final ruta = _rutaActual;
+    final habiaRuta = ruta != null && ruta.isNotEmpty;
+    debugPrint('[Ruta] Sin camino hasta el objetivo: '
+        '${motivo?.name ?? 'sin diagnóstico'}'
+        '${habiaRuta ? ' (se conserva la ruta anterior)' : ''}.');
+    // Desde esta celda no se vuelve a probar: daría lo mismo.
+    _celdaUltimoCalculo = celdaOrigen;
+    if (habiaRuta) return;
+
+    final d = _destinoSeleccionado!;
+    if (motivo == SinCamino.destinoEncerrado) {
+      final hasta = _esTramoEntrePisos
+          ? (_escaleraObjetivo?.medioConArticulo ?? 'la escalera')
+          : 'ahí';
+      _soltarDestino();
+      _voz.hablar('No se puede llegar a ${d.nombre}: '
+          'no hay un camino libre hasta $hasta.');
+      return;
+    }
+
+    // Sin camino desde donde está: sin indicaciones hasta que haya ruta (ver
+    // _tramoDeGuiado), y la primera se dice sin filtro.
+    _primeraInstruccionPendiente = true;
+    _indicacionRutaNuevaPendiente = false;
+    if (!_sinCaminoAvisado) {
+      _sinCaminoAvisado = true;
+      _avisoSinCaminoPendiente = true;
+    }
+    setState(() {
+      _rutaActual = null;
+      _estadoRuta = 'Sin camino desde tu posición. Buscando...';
+    });
+  }
+
+  /// Intenta decir [_fraseSinCaminoDesdeAca]; si el motor está ocupado
+  /// queda pendiente para el próximo ciclo, como "Ubicación lista.".
+  void _anunciarSinCamino() {
+    if (_pedidoEnCurso || _escuchando) return;
+    if (_voz.hablarSinEsperar(_fraseSinCaminoDesdeAca)) {
+      _avisoSinCaminoPendiente = false;
     }
   }
 
@@ -2492,10 +2606,41 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         .toList());
   }
 
+  /// Punto al que se llega a [l] (la entrada, si es una escalera o un
+  /// ascensor), recortado al interior del plano como lo pide el pathfinder.
+  Offset _puntoDeLlegada(LugarInteres l) {
+    final p = l.esEscalera
+        ? l.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
+        : l.posicion;
+    return Offset(p.dx.clamp(0.001, 0.999), p.dy.clamp(0.001, 0.999));
+  }
+
+  /// false si [l] está en este piso y desde donde está el usuario no se
+  /// llega caminando (está encerrado por zonas; ver
+  /// ResolvedorCaminos.alcanzable). Si está en otro piso, o todavía no hay
+  /// posición, no se sabe: true.
+  bool _seLlegaCaminando(LugarInteres l) {
+    if (l.pisoId != widget.pisoId || _posicionFinal == null) return true;
+    return _resolvedor.alcanzable(_posicionParaRuta(), _puntoDeLlegada(l));
+  }
+
+  /// ═══ PRIMERO, A LOS QUE SE PUEDE IR ═══
+  /// [candidatos] sin los que se sabe que no se puede llegar caminando. Si
+  /// no queda ninguno se devuelven todos: el que se elija va a terminar en
+  /// "No se puede llegar a…" (ver _manejarSinCamino), que es lo que hay que
+  /// decirle al usuario.
+  List<LugarInteres> _priorizarAlcanzables(List<LugarInteres> candidatos) {
+    final alcanzables = candidatos.where(_seLlegaCaminando).toList();
+    return alcanzables.isEmpty ? candidatos : alcanzables;
+  }
+
   /// Elige, entre [candidatos], el del piso más cercano al actual. Si hay
-  /// varios en ese piso y es el piso actual, el más cercano al usuario.
+  /// varios en ese piso y es el piso actual, el más cercano al usuario. Los
+  /// que no se pueden alcanzar caminando quedan para el final (ver
+  /// _priorizarAlcanzables).
   LugarInteres? _elegirEntre(List<LugarInteres> candidatos) {
     if (candidatos.isEmpty) return null;
+    candidatos = _priorizarAlcanzables(candidatos);
 
     final actual = _numeroPisoActual;
     int distanciaPisos(LugarInteres l) {
@@ -2521,10 +2666,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   // ─── BAÑOS: HOMBRES / MUJERES ─────────────────────────────────────────────
   //
-  // "Restaurante" se resuelve solo (el más cercano), pero "baño" no alcanza:
-  // hay que saber cuál. Si el usuario no lo aclaró y el edificio tiene de los
-  // dos, se le pregunta por voz y recién ahí se elige el más cercano del que
-  // pidió.
+  // Con "baño" no se ofrecen opciones: se va al más cercano al que se pueda
+  // ir caminando. Pero "baño" no alcanza: hay que saber de quién. Si el
+  // usuario no lo aclaró y el edificio tiene de los dos, se le pregunta por
+  // voz y recién ahí se elige el más cercano del que pidió.
 
   static const Set<String> _palabrasBano = {
     'bano', 'banos', 'bao', 'baos', 'sanitario', 'sanitarios', 'toilette',
@@ -2598,14 +2743,33 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         banos.map(_generoDe).whereType<_GeneroBano>().toSet();
     final hayDeLosDos = disponibles.length > 1;
 
+    // El género se pregunta sobre TODOS los baños, también los encerrados:
+    // si el de hombres no se puede alcanzar, a un hombre hay que decírselo,
+    // no llevarlo al de mujeres.
     if (genero == null && hayDeLosDos) {
       genero = await _preguntarGeneroBano();
     }
-    if (genero == null) return _elegirEntre(banos); // indistinto o sin datos
+    // Indistinto o sin datos: el más cercano de cualquiera.
+    if (genero == null) return _masCercanoCaminando(banos);
 
     final delGenero = banos.where((l) => _generoDe(l) == genero).toList();
     // Si no hay de ese género (datos incompletos), el más cercano igual.
-    return _elegirEntre(delGenero.isNotEmpty ? delGenero : banos);
+    return _masCercanoCaminando(delGenero.isNotEmpty ? delGenero : banos);
+  }
+
+  /// El más cercano de [candidatos] para ir caminando: primero a los que se
+  /// puede ir (ver _priorizarAlcanzables); entre ellos, el del piso más
+  /// cercano y, en este piso, el de menos metros de CAMINO (ver
+  /// _medirOpciones): un baño pegado pero del otro lado de una pared no es
+  /// el más cercano.
+  Future<LugarInteres?> _masCercanoCaminando(
+      List<LugarInteres> candidatos) async {
+    final opciones = _priorizarAlcanzables(candidatos);
+    if (opciones.length < 2 || _posicionFinal == null) {
+      return _elegirEntre(opciones);
+    }
+    final medidas = await _medirOpciones(opciones);
+    return medidas.first.lugar;
   }
 
   // ─── NOMBRE O PALABRA CLAVE, CON OPCIONES ─────────────────────────────────
@@ -2661,8 +2825,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Busca el pedido por nombre, por rubro y por palabras clave (ver
   /// BuscadorLugares).
   ///  - Un solo lugar posible → ese.
-  ///  - Varios → se le ofrece el más cercano; si dice que no, las otras
-  ///    opciones (ver _ofrecerMasCercano).
+  ///  - Varios → sólo cuentan a los que se puede ir caminando (si no se
+  ///    puede ir a ninguno, se dice). Si queda uno, ese; si quedan varios,
+  ///    se le ofrece el más cercano y, si dice que no, las otras opciones
+  ///    (ver _ofrecerMasCercano).
   ///  - Ninguno → queda la búsqueda aproximada de antes (por pedazos del
   ///    nombre), que rescata lo que el reconocedor de voz escribió mal.
   Future<LugarInteres?> _resolverPorNombreOClave(String textoNorm) async {
@@ -2692,9 +2858,21 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     for (final l in candidatos) {
       porNombre.putIfAbsent(_normalizar(l.nombre), () => []).add(l);
     }
-    final opciones = <LugarInteres>[
+    final todas = <LugarInteres>[
       for (final grupo in porNombre.values) _elegirEntre(grupo)!,
     ];
+    if (todas.length == 1) return todas.first;
+
+    // Primero, a los que se puede ir: los que están encerrados no se ofrecen
+    // (ver _priorizarAlcanzables). Si no se llega a ninguno, se dice acá:
+    // preguntar a cuál, para después decir que no se puede llegar, no sirve.
+    final opciones = todas.where(_seLlegaCaminando).toList();
+    if (opciones.isEmpty) {
+      _pedidoCancelado = true;
+      await _voz.hablar(
+          'No hay un camino libre hasta ninguno de esos lugares.');
+      return null;
+    }
     if (opciones.length == 1) return opciones.first;
 
     // Sin posición todavía no se puede decir cuál es el más cercano: se leen
@@ -2738,14 +2916,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // Respaldo: línea recta (si todavía no hay grilla o no hay camino).
         metros = _distanciaMetros(origen, l.posicion);
         if (_resolvedorListo && conCamino.contains(l)) {
-          final punto = l.esEscalera
-              ? l.puntoEntrada(
-                  metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
-              : l.posicion;
-          final camino = await _resolvedor.encontrarCamino(
-            origen,
-            Offset(punto.dx.clamp(0.001, 0.999), punto.dy.clamp(0.001, 0.999)),
-          );
+          final camino =
+              await _resolvedor.encontrarCamino(origen, _puntoDeLlegada(l));
           if (camino != null) metros = _calcularDistancia(camino);
         }
       }
@@ -3054,8 +3226,17 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         .where((l) => _normalizar(l.nombre) == nombreNorm)
         .toList();
     if (mismos.length < 2) return;
-    mismos.sort((a, b) => _distanciaMetros(origen, a.posicion)
-        .compareTo(_distanciaMetros(origen, b.posicion)));
+    // Primero los que se pueden alcanzar caminando: uno encerrado no sirve
+    // aunque esté más cerca (se diría "No se puede llegar" habiendo otro).
+    final alcanzable = {
+      for (final l in mismos)
+        l: _resolvedor.alcanzable(origen, _puntoDeLlegada(l)),
+    };
+    mismos.sort((a, b) {
+      if (alcanzable[a] != alcanzable[b]) return alcanzable[a]! ? -1 : 1;
+      return _distanciaMetros(origen, a.posicion)
+          .compareTo(_distanciaMetros(origen, b.posicion));
+    });
     if (mismos.first.id != d.id && mounted) {
       setState(() => _destinoSeleccionado = mismos.first);
     }
@@ -3082,11 +3263,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       _anuncioRetomadoHecho = true;
     });
     // Estado del seguimiento de ruta: todo de cero para el destino nuevo.
-    _generacionRuta++;
+    final generacion = ++_generacionRuta;
     _fueraDeRutaDesde = null;
     _celdaUltimoCalculo = null;
     _maniobrasAnunciadas.clear();
     _giroComprometido = null;
+    _indicacionRutaNuevaPendiente = false;
+    _avisoSinCaminoPendiente = false;
+    _sinCaminoAvisado = false;
 
     // Destino nuevo: el filtro de voz arranca de cero y la primera indicación
     // queda marcada como pendiente (ver _primeraInstruccionPendiente).
@@ -3104,12 +3288,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         Future<void>.delayed(_esperaMaxPrimeraRuta),
       ]);
       if (!mounted) return;
+      // No se puede llegar a la escalera (_calcularRuta ya lo dijo y soltó el
+      // destino) o se eligió otro destino mientras tanto.
+      if (generacion != _generacionRuta) return;
       // Sin escalera ni ascensor en el sentido necesario: _calcularRuta ya
       // lo avisó; decir "vamos a…" encima sería contradecirlo.
       if (_sinEscaleraDisponible) return;
       final medio = _escaleraObjetivo;
+      final destinoYPiso =
+          '${destino.nombre}, ${PisoUtil.nombre(pisoDestino).toLowerCase()}.';
+      if (_avisoSinCaminoPendiente) {
+        _avisoSinCaminoPendiente = false;
+        await _voz.hablar('$destinoYPiso $_fraseSinCaminoDesdeAca');
+        return;
+      }
       await _voz.hablar(
-        '${destino.nombre}, ${PisoUtil.nombre(pisoDestino).toLowerCase()}. '
+        '$destinoYPiso '
         '${medio == null ? 'Hay que cambiar de piso.' : 'Vamos ${medio.medioComoDestino}.'}',
       );
       // La indicación hacia la escalera o el ascensor la dice
@@ -3131,6 +3325,18 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       Future<void>.delayed(_esperaMaxPrimeraRuta),
     ]);
     if (!mounted) return;
+    // No se puede llegar (_calcularRuta ya lo dijo y soltó el destino) o se
+    // eligió otro destino mientras tanto.
+    if (generacion != _generacionRuta) return;
+
+    // Sin camino desde donde está: el aviso va pegado al destino, en una
+    // sola frase (si no, "<destino>. Calculando ruta." lo pisaría).
+    if (_avisoSinCaminoPendiente) {
+      _avisoSinCaminoPendiente = false;
+      final nombre = _destinoSeleccionado?.nombre ?? destino.nombre;
+      await _voz.hablar('$nombre. $_fraseSinCaminoDesdeAca');
+      return;
+    }
 
     final primera = _rutaActual != null ? _indicacionParaVoz() : null;
     if (primera != null && _primeraInstruccionPendiente) {
@@ -3654,28 +3860,38 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
  
   void _cancelarNavegacion() {
     if (mounted) {
-      setState(() {
-        _destinoSeleccionado = null;
-        _escaleraObjetivo = null;
-        _llegoAEscalera = false;
-        _llegoADestino = false;
-        _orientador = null;
-        _sinEscaleraDisponible = false;
-        _ciclosEnLlegada = 0;
-        _rutaActual = null;
-        _estadoRuta = '';
-      });
-      _generacionRuta++;
+      _soltarDestino();
       _turnoVoz++; // si había un pedido a medio conversar, se retira
       _pedidoDesde = null;
-      _maniobrasAnunciadas.clear();
-      _giroComprometido = null;
-      _fueraDeRutaDesde = null;
-      _celdaUltimoCalculo = null;
-      _primeraInstruccionPendiente = false;
-      _voz.reiniciarFiltroInstrucciones();
       _voz.hablar('Navegación cancelada.');
     }
+  }
+
+  /// Deja la pantalla sin destino y sin nada pendiente de la navegación. Lo
+  /// usan la cancelación y el destino al que no se puede llegar (ver
+  /// _manejarSinCamino), que no tiene que cortar un pedido de voz en curso.
+  void _soltarDestino() {
+    setState(() {
+      _destinoSeleccionado = null;
+      _escaleraObjetivo = null;
+      _llegoAEscalera = false;
+      _llegoADestino = false;
+      _orientador = null;
+      _sinEscaleraDisponible = false;
+      _ciclosEnLlegada = 0;
+      _rutaActual = null;
+      _estadoRuta = '';
+    });
+    _generacionRuta++;
+    _maniobrasAnunciadas.clear();
+    _giroComprometido = null;
+    _fueraDeRutaDesde = null;
+    _celdaUltimoCalculo = null;
+    _primeraInstruccionPendiente = false;
+    _indicacionRutaNuevaPendiente = false;
+    _avisoSinCaminoPendiente = false;
+    _sinCaminoAvisado = false;
+    _voz.reiniciarFiltroInstrucciones();
   }
 
   /// Punto de entrada accesible: tocar CUALQUIER parte de la pantalla inicia la
@@ -3715,8 +3931,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Indicación de guiado de ESTE instante, lista para decir: el texto
   /// completo y la clave (la indicación sin la distancia) con la que el
   /// filtro de voz decide si es "la misma" que la anterior. Null si todavía
-  /// no hay con qué calcularla (sin brújula, sin posición, sin destino) o si
-  /// ya se llegó.
+  /// no hay con qué calcularla (sin brújula, sin posición, sin destino, sin
+  /// ruta) o si ya se llegó.
   ({String texto, String clave})? _indicacionParaVoz() {
     final heading = _orientacion.heading;
     if (heading == null || _posicionFinal == null || _destinoSeleccionado == null) {
@@ -3761,12 +3977,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
     if (_primeraInstruccionPendiente) {
       // Primera indicación del destino: se espera a que exista la ruta (sin
-      // ella el objetivo es el destino en línea recta, y se diría un giro que
-      // puede cambiar medio segundo después) y se dice sin filtro. Si el
-      // motor está ocupado con otra frase, se reintenta en el próximo ciclo.
+      // ella no hay indicación, ver _tramoDeGuiado) y se dice sin filtro. Si
+      // el motor está ocupado con otra frase, se reintenta en el próximo
+      // ciclo.
       if (_rutaActual == null) return;
       if (_voz.hablarInstruccionYa(ind.texto, clave: ind.clave)) {
         _primeraInstruccionPendiente = false;
+        _indicacionRutaNuevaPendiente = false;
+      }
+      return;
+    }
+
+    if (_indicacionRutaNuevaPendiente) {
+      // La ruta cambió de fondo: sin filtro y con la prioridad de un giro
+      // (corta un "Seguí derecho" a medio decir). Si el motor está con una
+      // frase que no se corta, se reintenta en el próximo ciclo.
+      if (_voz.hablarUrgente(ind.texto, clave: ind.clave)) {
+        _indicacionRutaNuevaPendiente = false;
       }
       return;
     }
@@ -3777,10 +4004,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Tramo que hay que indicar: hacia la próxima esquina del camino pintado
   /// (sigue las cuadrículas) y medido desde el camino mientras el usuario
   /// esté a menos de [SeguidorRuta.toleranciaProyeccionMetros] de él (ver
-  /// [SeguidorRuta.guia] para el porqué). Si todavía no hay ruta, desde la
-  /// posición directo al destino. En un tramo entre pisos el objetivo es la
-  /// entrada de la escalera; null si todavía no se eligió (no hay a dónde
-  /// apuntar).
+  /// [SeguidorRuta.guia] para el porqué). Null sin ruta.
+  ///
+  /// SIN RUTA NO HAY INDICACIÓN: antes se apuntaba desde la posición
+  /// directo al destino. Con un destino al que no se llega caminando eso
+  /// daba indicaciones sin sentido, a través de las paredes (ver "SIN CAMINO
+  /// HASTA EL OBJETIVO"). Y antes de la primera ruta no hace falta: se
+  /// calcula en milisegundos y su primera indicación sale sin filtro.
   TramoGuiado? _tramoDeGuiado() {
     final pos = _posicionFinal;
     if (pos == null) return null;
@@ -3803,8 +4033,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         comprometida: comprometido?.esquina,
       );
     }
-    final objetivo = _puntoObjetivoTramo();
-    return objetivo == null ? null : TramoGuiado(pos, objetivo);
+    return null;
   }
 
   /// ¿Esta maniobra ya se anunció (a ese nivel o más) hace poco?
@@ -3884,6 +4113,77 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     return min(v, _acercamientoMaxMs);
   }
 
+  /// Lo próximo que hay que hacer sobre la ruta y desde qué distancia se
+  /// anuncia (ver "GIROS ANTICIPADOS" arriba). Null sin ruta o lejos de ella.
+  ///  - [falta]: distancia REAL estimada a la esquina: la medida, menos lo
+  ///    que el usuario ya avanzó y la posición todavía no muestra (el atraso).
+  ///  - [umbralGiro] / [umbralAviso]: caminando, cada aviso sale cuando al
+  ///    usuario le falta su anticipo en segundos para llegar a la esquina, al
+  ///    ritmo al que viene. Quieto no hay ritmo: se usa la distancia. Las dos
+  ///    cosas no se mezclan (antes la distancia era un piso también
+  ///    caminando, y con anticipos cortos tapaba al tiempo).
+  ///  - [piso]: el aviso previo sólo se da desde acá. Para un giro, si
+  ///    todavía falta un trecho hasta el punto donde se va a decir el giro;
+  ///    para el final de la ruta, hasta que quede a tiro del anuncio de
+  ///    llegada, que tiene su propia lógica.
+  ({
+    Maniobra maniobra,
+    double falta,
+    double umbralGiro,
+    double umbralAviso,
+    double piso,
+  })? _proximaManiobra() {
+    final ruta = _rutaActual;
+    final pos = _posicionFinal;
+    if (ruta == null || ruta.length < 2 || pos == null) return null;
+    final maniobra = SeguidorRuta.proximaManiobra(
+      ruta,
+      pos,
+      _grilla,
+      posicionFina: _posicionPermitida,
+    );
+    if (maniobra == null) return null;
+
+    final v = _velocidadAcercamientoMs;
+    final caminando = v > 0;
+    final umbralGiro = caminando
+        ? v * _ajustes.anticipoGiro.valor
+        : _ajustes.distanciaGiroQuieto.valor;
+    return (
+      maniobra: maniobra,
+      falta: max(0.0, maniobra.metros - _avancePorAtrasoMetros),
+      umbralGiro: umbralGiro,
+      umbralAviso: caminando
+          ? v * _ajustes.anticipoAviso.valor
+          : _distAvisoQuietoMetros,
+      piso: maniobra.esFinal
+          ? _radioLlegadaMetros + 0.5
+          : umbralGiro + _separacionAvisoGiroMetros,
+    );
+  }
+
+  /// true si el aviso previo o el giro de la próxima esquina, o la llegada,
+  /// tocan dentro de [segundos] al ritmo al que viene el usuario y todavía
+  /// no se dijeron. Ver "ESTÁS EN…".
+  bool _maniobraPorAnunciar(double segundos) {
+    final p = _proximaManiobra();
+    if (p == null) return false;
+    final ahora = DateTime.now();
+    final faltaLuego =
+        max(0.0, p.falta - _velocidadAcercamientoMs * segundos);
+    if (!p.maniobra.esFinal &&
+        faltaLuego <= p.umbralGiro &&
+        !_maniobraYaAnunciada(p.maniobra, 2, ahora)) {
+      return true;
+    }
+    if (faltaLuego <= p.umbralAviso &&
+        p.falta >= p.piso &&
+        !_maniobraYaAnunciada(p.maniobra, 1, ahora)) {
+      return true;
+    }
+    return p.maniobra.esFinal && faltaLuego <= p.piso;
+  }
+
   /// Anuncia, ANTES de llegar, lo próximo que hay que hacer sobre la ruta
   /// (ver "GIROS ANTICIPADOS" arriba). Se llama en cada ciclo de posición.
   void _anunciarManiobras() {
@@ -3891,20 +4191,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (_destinoSeleccionado == null || _llegoADestino || _llegoAEscalera) {
       return;
     }
-    // Primero va la primera indicación de la ruta (que necesita brújula; sin
-    // brújula no va a salir nunca, así que no se la espera).
-    if (_primeraInstruccionPendiente && _orientacion.heading != null) return;
-    final ruta = _rutaActual;
-    final pos = _posicionFinal;
-    if (ruta == null || ruta.length < 2 || pos == null) return;
-
-    final maniobra = SeguidorRuta.proximaManiobra(
-      ruta,
-      pos,
-      _grilla,
-      posicionFina: _posicionPermitida,
-    );
-    if (maniobra == null) return;
+    // Primero va la primera indicación de la ruta, o la de una ruta que
+    // cambió de fondo (necesitan brújula; sin brújula no van a salir nunca,
+    // así que no se las espera).
+    if ((_primeraInstruccionPendiente || _indicacionRutaNuevaPendiente) &&
+        _orientacion.heading != null) {
+      return;
+    }
+    final proxima = _proximaManiobra();
+    if (proxima == null) return;
+    final (:maniobra, :falta, :umbralGiro, :umbralAviso, :piso) = proxima;
 
     // Sólo si el usuario viene caminando PARA ESE LADO. Si está mirando para
     // otro (recién dobló y todavía no se acomodó, o se dio vuelta), primero
@@ -3912,7 +4208,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     // brújula no se puede saber: se anuncia igual.
     final heading = _orientacion.heading;
     if (heading != null) {
-      final tramo = SeguidorRuta.guia(ruta, pos, _grilla);
+      final tramo = SeguidorRuta.guia(_rutaActual!, _posicionFinal!, _grilla);
       final ind = OrientacionService.calcularIndicacion(
         headingUsuario: heading,
         posicionUsuario: tramo.desde,
@@ -3925,22 +4221,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
 
     final ahora = DateTime.now();
-    final v = _velocidadAcercamientoMs;
-    // Distancia REAL estimada a la esquina: la medida, menos lo que el
-    // usuario ya avanzó y la posición todavía no muestra (el atraso).
-    final falta = max(0.0, maniobra.metros - _avancePorAtrasoMetros);
-    // Caminando, cada aviso sale cuando al usuario le falta su anticipo en
-    // segundos para llegar a la esquina, al ritmo al que viene. Quieto no hay
-    // ritmo: se usa la distancia. Las dos cosas no se mezclan (antes la
-    // distancia era un piso también caminando, y con anticipos cortos tapaba
-    // al tiempo).
-    final caminando = v > 0;
-    final umbralGiro = caminando
-        ? v * _ajustes.anticipoGiro.valor
-        : _ajustes.distanciaGiroQuieto.valor;
-    final umbralAviso = caminando
-        ? v * _ajustes.anticipoAviso.valor
-        : _distAvisoQuietoMetros;
 
     // ── 2) El giro ──────────────────────────────────────────────────────────
     if (!maniobra.esFinal && falta <= umbralGiro) {
@@ -3962,12 +4242,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
 
     // ── 1) El aviso previo ──────────────────────────────────────────────────
-    // Para un giro: sólo si todavía falta un trecho hasta el punto donde se
-    // va a decir el giro. Para el final de la ruta: hasta que quede a tiro
-    // del anuncio de llegada, que tiene su propia lógica.
-    final piso = maniobra.esFinal
-        ? _radioLlegadaMetros + 0.5
-        : umbralGiro + _separacionAvisoGiroMetros;
+    // Entre [piso] y [umbralAviso] (ver _proximaManiobra).
     if (falta <= umbralAviso && falta >= piso) {
       if (_maniobraYaAnunciada(maniobra, 1, ahora)) return;
       final distancia = _distanciaParaVoz(falta);
@@ -3988,7 +4263,53 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       }
     }
   }
- 
+
+  // ── ESTÁS EN… ─────────────────────────────────────────────────────────────
+  //
+  // "Estás en <punto clave>" chocaba con las indicaciones: los puntos clave
+  // suelen estar en las esquinas, y el anuncio salía justo cuando tocaba el
+  // "Girá a la izquierda", que tenía que esperarlo o lo cortaba a la mitad.
+  // Ahora las indicaciones tienen prioridad siempre:
+  //  • Se dice al final del ciclo, después de las indicaciones: si alguna
+  //    habló en el mismo ciclo, el motor está ocupado y espera.
+  //  • Guiando, tampoco arranca si una indicación toca mientras dura la
+  //    frase: la primera de la ruta, la de un cambio de fondo, una del
+  //    filtro de voz (nueva o la repetición), el aviso previo o el giro de
+  //    la próxima esquina, o la llegada. Ni mientras se orienta al llegar.
+  //  • Es una frase secundaria (VozService.hablarSecundaria): si igual llega
+  //    una indicación mientras suena, la corta enseguida.
+  // Se reintenta en cada ciclo mientras el punto clave siga coincidiendo; si
+  // el usuario ya se fue, no se dice.
+
+  void _anunciarPuntoClave() {
+    final p = _fpAnuncioPendiente;
+    if (p == null) return;
+    if (_pedidoEnCurso || _escuchando || _orientador != null) return;
+    final texto = 'Estás en ${p.etiqueta}.';
+    final guiando =
+        _destinoSeleccionado != null && !_llegoADestino && !_llegoAEscalera;
+    if (guiando && _indicacionPorSalir(_voz.duracionEstimada(texto))) return;
+    if (_voz.hablarSecundaria(texto)) {
+      _fpAnunciados[p.etiqueta] =
+          (centro: p.centro, cuando: DateTime.now(), seAlejo: false);
+      _fpAnuncioPendiente = null;
+    }
+  }
+
+  /// true si alguna indicación de guiado toca dentro de [margen] (ver
+  /// "ESTÁS EN…").
+  bool _indicacionPorSalir(Duration margen) {
+    // La primera indicación y la de un cambio de fondo necesitan brújula y
+    // ruta: sin eso no van a salir, y no se las espera.
+    if ((_primeraInstruccionPendiente || _indicacionRutaNuevaPendiente) &&
+        _orientacion.heading != null &&
+        _rutaActual != null) {
+      return true;
+    }
+    if (_voz.indicacionCerca(margen)) return true;
+    return _maniobraPorAnunciar(margen.inMilliseconds / 1000);
+  }
+
   // ─── WIDGETS ──────────────────────────────────────────────────────────────
  
   Widget _buildOrientacion() {

@@ -163,7 +163,16 @@ class VozService {
   /// Si había otra frase sonando, la corta.
   Future<void> hablar(String texto) async {
     if (!_ttsInicializado || texto.trim().isEmpty) return;
-    await _cortarFraseEnCurso();
+    // Ya en este instante (antes de la espera del corte) la frase en curso
+    // deja de ser secundaria: nadie más tiene que cortarla. Y mientras se
+    // espera el corte no arranca ninguna secundaria (ver [hablarSecundaria]).
+    _sonandoSecundaria = false;
+    _arrancando++;
+    try {
+      await _cortarFraseEnCurso();
+    } finally {
+      _arrancando--;
+    }
     _hablando = true;
 
     final completer = Completer<void>();
@@ -202,7 +211,8 @@ class VozService {
   /// Habla sin esperar — para instrucciones de navegación que se actualizan
   /// continuamente y no deben bloquear el widget tree.
   /// Si el motor ya está reproduciendo audio, descarta el nuevo texto para no
-  /// interrumpir la locución en curso.
+  /// interrumpir la locución en curso, salvo que sea una frase secundaria
+  /// (ver [hablarSecundaria]): a ésa la corta.
   ///
   /// Devuelve `true` si el texto se mandó al motor y `false` si se descartó.
   /// El que llama TIENE que mirar ese resultado si necesita saber si la frase
@@ -211,17 +221,85 @@ class VozService {
   /// ahí), que es lo que demoraba ~15 s la primera indicación de cada ruta.
   bool hablarSinEsperar(String texto) {
     if (!_ttsInicializado || texto.trim().isEmpty) return false;
-    // No interrumpir si ya se está hablando
-    if (_hablando) return false;
-    _hablando = true;
-    _tts.setCompletionHandler(() => _hablando = false);
-    _tts.setCancelHandler(() => _hablando = false);
-    _tts.setErrorHandler((_) => _hablando = false);
-    _tts.speak(texto);
+    if (_hablando) {
+      // No interrumpir si ya se está hablando, salvo una frase secundaria:
+      // ésa nunca demora a otra (ver [hablarSecundaria]).
+      if (!_sonandoSecundaria) return false;
+      hablar(texto);
+    } else {
+      _decirSinEsperar(texto);
+    }
     _ultimaVezHablado = DateTime.now();
     _ultimaInstruccion = texto;
     return true;
   }
+
+  /// Manda [texto] al motor con el motor libre, sin que nadie lo espere.
+  void _decirSinEsperar(String texto) {
+    _hablando = true;
+    void libre() {
+      _hablando = false;
+      _sonandoSecundaria = false;
+    }
+
+    _tts.setCompletionHandler(libre);
+    _tts.setCancelHandler(libre);
+    _tts.setErrorHandler((_) => libre());
+    _tts.speak(texto);
+  }
+
+  // ═══ FRASES SECUNDARIAS ═══
+  //
+  // "Estás en <punto clave>" es un dato útil, pero menos que cualquier
+  // indicación. Antes se decía con hablarSinEsperar como una indicación
+  // más: si caía justo antes del "Girá a la izquierda", el giro esperaba a
+  // que terminara o lo cortaba a la mitad, y el aviso previo ("En 5 metros…")
+  // directamente esperaba. Ahora es una frase SECUNDARIA: sólo arranca con
+  // el motor libre, y cualquier otra frase que llegue mientras suena la
+  // corta enseguida. Tampoco cuenta como "lo último que se dijo" para el
+  // filtro de las indicaciones (separación entre indicaciones, repetición).
+
+  /// true mientras suena una frase de [hablarSecundaria].
+  bool _sonandoSecundaria = false;
+
+  /// Frases de [hablar] que todavía están esperando el corte de la anterior
+  /// (con `_hablando` todavía sin marcar). Una secundaria que arrancara en
+  /// ese hueco se mezclaría con ellas.
+  int _arrancando = 0;
+
+  /// Dice [texto] como frase secundaria (ver arriba), sólo si el motor está
+  /// libre. Devuelve `true` si lo mandó al motor.
+  bool hablarSecundaria(String texto) {
+    if (!_ttsInicializado || texto.trim().isEmpty) return false;
+    if (_hablando || _arrancando > 0) return false;
+    _decirSinEsperar(texto);
+    _sonandoSecundaria = true;
+    return true;
+  }
+
+  /// true si el filtro de [hablarSiCambio] tiene una indicación por decir
+  /// dentro de [margen]: una nueva que se está confirmando, o la repetición
+  /// de la última. Sirve para no empezar una frase secundaria que esa
+  /// indicación cortaría a la mitad.
+  bool indicacionCerca(Duration margen) {
+    if (_instruccionCandidata.isNotEmpty &&
+        _instruccionCandidata != _ultimaClaveHablada) {
+      return true;
+    }
+    final desde = _ultimaVezHablado;
+    return _ultimaClaveHablada.isNotEmpty &&
+        desde != null &&
+        DateTime.now().difference(desde) + margen > _intervaloMinimo;
+  }
+
+  /// Cuánto tarda en decirse [texto], aproximado, con la velocidad elegida.
+  Duration duracionEstimada(String texto) => Duration(
+        milliseconds: (texto.length *
+                _msPorCaracterEstimado *
+                100 /
+                _ajustes.velocidad.valor)
+            .round(),
+      );
  
   // Filtro de estabilidad: la instrucción debe repetirse N veces
   // consecutivas antes de hablarse, descartando flickers de heading/posición.
@@ -347,12 +425,15 @@ class VozService {
     if (!_ttsInicializado || texto.trim().isEmpty) return false;
     if (_hablando) {
       if (_finFraseActual != null) return false;
-      final desde = _ultimaVezHablado;
-      final restanteMs = desde == null
-          ? 0
-          : _ultimaInstruccion.length * _msPorCaracterEstimado -
-              DateTime.now().difference(desde).inMilliseconds;
-      if (restanteMs <= _esperaMaxUrgenteMs) return false;
+      // Una frase secundaria se corta siempre, le falte lo que le falte.
+      if (!_sonandoSecundaria) {
+        final desde = _ultimaVezHablado;
+        final restanteMs = desde == null
+            ? 0
+            : _ultimaInstruccion.length * _msPorCaracterEstimado -
+                DateTime.now().difference(desde).inMilliseconds;
+        if (restanteMs <= _esperaMaxUrgenteMs) return false;
+      }
       // Cortar y decir. hablar() espera el aviso de corte del motor antes
       // de arrancar la frase nueva; acá no hace falta esperarla a ella.
       hablar(texto);
@@ -405,6 +486,7 @@ class VozService {
   Future<void> detener() async {
     await _tts.stop();
     _hablando = false;
+    _sonandoSecundaria = false;
     _liberarEspera();
   }
  
@@ -630,6 +712,7 @@ class VozService {
     _dueno = null;
     _tts.stop();
     _hablando = false;
+    _sonandoSecundaria = false;
     _liberarEspera();
     // La pantalla se va: la escucha en curso termina como cancelada, para
     // que nadie diga "no te escuché" sobre una pantalla que ya no está.
