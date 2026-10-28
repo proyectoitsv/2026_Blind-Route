@@ -58,7 +58,25 @@ class DecisionRuta {
   /// Por qué se decidió así. Sólo para el log de diagnóstico.
   final String motivo;
 
-  const DecisionRuta(this.ruta, this.esNueva, this.motivo);
+  /// true si lo que el usuario tiene que hacer cambió de verdad: se tomó un
+  /// camino por otro lado, o el camino nuevo lo hace volver a la ruta de
+  /// antes (por ejemplo, se pasó de la esquina). false en el caso de todos
+  /// los días (la misma ruta corrida una o dos celdas), al conservar la ruta
+  /// anterior y en la primera ruta (ahí ya hay una primera indicación).
+  ///
+  /// POR QUÉ: la pantalla dice la indicación de un cambio de fondo enseguida,
+  /// sin el filtro anti-rebote de la voz. Ese filtro está para descartar
+  /// indicaciones que salen de un error de una celda; un cambio de fondo ya
+  /// pasó por la espera fuera de ruta y por [ahorroMinimoMetros], y
+  /// filtrarlo otra vez sólo demoraba "Date la vuelta" varios segundos.
+  final bool cambioDeFondo;
+
+  const DecisionRuta(
+    this.ruta,
+    this.esNueva,
+    this.motivo, {
+    this.cambioDeFondo = false,
+  });
 }
 
 /// ═══════════════════════════════════════════════════════════════════════════
@@ -366,7 +384,8 @@ class SeguidorRuta {
       return DecisionRuta(nueva, true, 'no había ruta');
     }
     if (claveCelda(vieja.last, grilla) != claveCelda(nueva.last, grilla)) {
-      return DecisionRuta(nueva, true, 'cambió el objetivo');
+      return DecisionRuta(nueva, true, 'cambió el objetivo',
+          cambioDeFondo: true);
     }
 
     // 2) ¿Es la misma ruta, corrida?
@@ -420,7 +439,8 @@ class SeguidorRuta {
           }
         }
         if (igual) {
-          return DecisionRuta(nueva, true, 'vuelve a la ruta anterior');
+          return DecisionRuta(nueva, true, 'vuelve a la ruta anterior',
+              cambioDeFondo: true);
         }
       }
       break; // sólo interesa el primer punto de contacto
@@ -429,7 +449,8 @@ class SeguidorRuta {
     // 4) Va por otro lado: ¿cuánto cuesta volver a la vieja?
     final empalme = await buscarCamino(origen, vieja[cercana]);
     if (empalme == null || empalme.isEmpty) {
-      return DecisionRuta(nueva, true, 'no se puede volver a la ruta anterior');
+      return DecisionRuta(nueva, true, 'no se puede volver a la ruta anterior',
+          cambioDeFondo: true);
     }
 
     // El empalme se corta en la PRIMERA celda de la ruta vieja que toque
@@ -446,7 +467,8 @@ class SeguidorRuta {
       }
     }
     if (contacto == null) {
-      return DecisionRuta(nueva, true, 'el empalme no llega a la ruta anterior');
+      return DecisionRuta(nueva, true, 'el empalme no llega a la ruta anterior',
+          cambioDeFondo: true);
     }
     mantenida.addAll(vieja.sublist(contacto + 1));
 
@@ -457,6 +479,7 @@ class SeguidorRuta {
         nueva,
         true,
         'camino distinto, ahorra ${ahorro.toStringAsFixed(1)} m',
+        cambioDeFondo: true,
       );
     }
     return DecisionRuta(
