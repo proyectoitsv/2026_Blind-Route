@@ -77,6 +77,20 @@ class _Nodo {
   int get hashCode => Object.hash(x, y);
 }
 
+// ─── SIN CAMINO ──────────────────────────────────────────────────────────────
+
+/// Cuál de las dos puntas quedó encerrada cuando no hay camino entre ellas
+/// (ver [ResolvedorCaminos.diagnosticarSinCamino]).
+enum SinCamino {
+  /// El destino está en un área sin salida hacia el resto del piso, o
+  /// adentro de una zona sin ninguna celda libre cerca: no se puede llegar.
+  destinoEncerrado,
+
+  /// La encerrada es el origen. Con la posición del usuario suele ser un
+  /// error de la posición, que se corrige sola al moverse.
+  origenEncerrado,
+}
+
 // ─── RESOLVEDOR DE CAMINOS ────────────────────────────────────────────────────
 
 /// Resuelve caminos en un plano 2D evitando zonas poligonales no transitables.
@@ -257,12 +271,113 @@ class ResolvedorCaminos {
     _aplicarAnchoPasillo();
     _marcarBordes();
     _calcularCampoDeCostos();
+    _marcarComponentes();
 
     debugPrint(
       '[Pathfinder] Grilla ${_resX}x$_resY (${_grillaNav.tamCeldaMetros} m/celda) — '
       'zonas: ${_zonas.length}, escaleras: ${_obstaculosRect.length}, '
-      'margen de borde: $_margenCeldas celda(s).',
+      'margen de borde: $_margenCeldas celda(s), '
+      'áreas transitables separadas: ${_tamComponente.length}.',
     );
+  }
+
+  // ── Áreas conectadas (componentes) ─────────────────────────────────────────
+  //
+  // ═══ ¿SE PUEDE LLEGAR? ═══
+  // Cuando el A* no encuentra camino, la pantalla tiene que saber POR QUÉ:
+  // si el destino está encerrado (no se puede llegar, hay que decirlo) o si
+  // lo encerrado es el origen, o sea la posición del usuario (casi siempre
+  // un error de la posición, que se corrige sola al moverse). El A* sólo dice
+  // "no hay camino". Para eso se agrupan las celdas libres en áreas: dos
+  // celdas están en la misma si se puede ir de una a la otra caminando en
+  // cruz sin pisar celdas bloqueadas ni atravesar paredes, que es justo por
+  // donde se mueve el A* (con la franja de borde habilitada, como en su
+  // segundo intento). Se calcula una vez por piso.
+
+  /// Área de cada celda (índice en [_tamComponente]); -1 en las bloqueadas.
+  /// Vacía hasta [inicializar].
+  Int32List _componente = Int32List(0);
+
+  /// Cantidad de celdas de cada área.
+  List<int> _tamComponente = const [];
+
+  /// El área más grande: la parte principal del piso.
+  int _componentePrincipal = -1;
+
+  void _marcarComponentes() {
+    final total = _resX * _resY;
+    _componente = Int32List(total)..fillRange(0, total, -1);
+    final tamanos = <int>[];
+    const vecinos = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    final pila = <int>[];
+    for (int inicio = 0; inicio < total; inicio++) {
+      if (_obsZona[inicio] || _componente[inicio] >= 0) continue;
+      final id = tamanos.length;
+      int tam = 0;
+      _componente[inicio] = id;
+      pila.add(inicio);
+      while (pila.isNotEmpty) {
+        final i = pila.removeLast();
+        tam++;
+        final x = i ~/ _resY, y = i % _resY;
+        for (final (dx, dy) in vecinos) {
+          final nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= _resX || ny < 0 || ny >= _resY) continue;
+          final j = _idx(nx, ny);
+          if (_obsZona[j] || _componente[j] >= 0) continue;
+          if (_hayPared(_paredes, _resY, x, y, dx, dy)) continue;
+          _componente[j] = id;
+          pila.add(j);
+        }
+      }
+      tamanos.add(tam);
+    }
+    _tamComponente = tamanos;
+    _componentePrincipal = -1;
+    for (int c = 0; c < tamanos.length; c++) {
+      if (_componentePrincipal < 0 || tamanos[c] > tamanos[_componentePrincipal]) {
+        _componentePrincipal = c;
+      }
+    }
+  }
+
+  /// Área de la celda donde el A* arrancaría (o terminaría) desde [p]: la de
+  /// [p], o la libre más cercana si [p] cae en una bloqueada. -1 si no hay
+  /// ninguna libre cerca. -2 si todavía no se inicializó.
+  int _componenteDe(Offset p) {
+    if (_componente.length != _resX * _resY || _componente.isEmpty) return -2;
+    final i = _celdaLibreDe(p, _obsZona, _esBorde, _resX, _resY, _pasoX, _pasoY);
+    return i < 0 ? -1 : _componente[i];
+  }
+
+  /// true si se puede llegar caminando de [inicio] a [destino] (puntos
+  /// normalizados): sus celdas, corridas a la libre más cercana como hace el
+  /// A*, están en la misma área. true también si todavía no se sabe (sin
+  /// [inicializar]).
+  bool alcanzable(Offset inicio, Offset destino) {
+    final a = _componenteDe(inicio);
+    if (a == -2) return true;
+    return a >= 0 && a == _componenteDe(destino);
+  }
+
+  /// Cuál de las dos puntas quedó encerrada cuando no hay camino de [inicio]
+  /// a [destino]. Null si se puede llegar o todavía no se sabe.
+  ///
+  /// Si sólo una de las dos está en el área principal del piso, la encerrada
+  /// es la otra. Si ninguna lo está, la de área más chica. Una punta sin
+  /// ninguna celda libre cerca (adentro de una zona grande) está encerrada.
+  SinCamino? diagnosticarSinCamino(Offset inicio, Offset destino) {
+    final a = _componenteDe(inicio);
+    final b = _componenteDe(destino);
+    if (a == -2 || b == -2) return null;
+    if (b < 0) return SinCamino.destinoEncerrado;
+    if (a < 0) return SinCamino.origenEncerrado;
+    if (a == b) return null;
+    if (b == _componentePrincipal) return SinCamino.origenEncerrado;
+    if (a == _componentePrincipal) return SinCamino.destinoEncerrado;
+    return _tamComponente[b] <= _tamComponente[a]
+        ? SinCamino.destinoEncerrado
+        : SinCamino.origenEncerrado;
   }
 
   // ── Centros de celda (recortados al plano) ─────────────────────────────────
@@ -834,31 +949,14 @@ List<Offset>? _aStarIsolate(_PathArgs args) {
   final costoExtra = args.costoExtra;
   final paredes = args.paredes;
 
-  int clampX(int v) => v < 0 ? 0 : (v >= resX ? resX - 1 : v);
-  int clampY(int v) => v < 0 ? 0 : (v >= resY ? resY - 1 : v);
-
-  // Índice de celda a partir del paso normalizado, igual que GrillaNav.indiceX.
-  // OJO: NO es (n * resX): la última celda de cada eje puede ser parcial, así
-  // que resX != 1 / pasoX y usar resX corría todas las celdas del camino.
-  final ix0 = clampX((args.inicio.dx / pasoX).floor());
-  final iy0 = clampY((args.inicio.dy / pasoY).floor());
-  final gx0 = clampX((args.destino.dx / pasoX).floor());
-  final gy0 = clampY((args.destino.dy / pasoY).floor());
-
-  // Si el origen o destino caen en un obstáculo, buscar la celda libre más
-  // cercana (BFS en anillos). Evita el null inmediato cuando la posición
-  // trilaterada cae en el borde de una zona marcada.
-  int ixLinear = ix0 * resY + iy0;
-  int gxLinear = gx0 * resY + gy0;
-
-  if (obs[ixLinear]) {
-    ixLinear = _celdaLibreCercana(ix0, iy0, obs, borde, resX, resY);
-    if (ixLinear < 0) return null;
-  }
-  if (obs[gxLinear]) {
-    gxLinear = _celdaLibreCercana(gx0, gy0, obs, borde, resX, resY);
-    if (gxLinear < 0) return null;
-  }
+  // Celdas de origen y destino; si caen en un obstáculo, la libre más
+  // cercana (ver _celdaLibreDe).
+  final ixLinear =
+      _celdaLibreDe(args.inicio, obs, borde, resX, resY, pasoX, pasoY);
+  if (ixLinear < 0) return null;
+  final gxLinear =
+      _celdaLibreDe(args.destino, obs, borde, resX, resY, pasoX, pasoY);
+  if (gxLinear < 0) return null;
 
   final ix = ixLinear ~/ resY;
   final iy = ixLinear % resY;
@@ -970,6 +1068,29 @@ List<Offset>? _aStarIsolate(_PathArgs args) {
   }
 
   return null;
+}
+
+/// Índice lineal (x*resY+y) de la celda desde la que el A* sale (o a la que
+/// llega) para el punto normalizado [p]: la suya o, si es un obstáculo, la
+/// libre más cercana. Evita el null inmediato cuando la posición trilaterada
+/// cae en el borde de una zona marcada. -1 si no hay ninguna libre cerca.
+///
+/// Es de nivel superior porque la usan el A* (en el isolate) y
+/// [ResolvedorCaminos.alcanzable]: los dos tienen que partir de la misma
+/// celda.
+int _celdaLibreDe(Offset p, List<bool> obs, List<bool> borde, int resX,
+    int resY, double pasoX, double pasoY) {
+  int clampX(int v) => v < 0 ? 0 : (v >= resX ? resX - 1 : v);
+  int clampY(int v) => v < 0 ? 0 : (v >= resY ? resY - 1 : v);
+
+  // Índice de celda a partir del paso normalizado, igual que GrillaNav.indiceX.
+  // OJO: NO es (n * resX): la última celda de cada eje puede ser parcial, así
+  // que resX != 1 / pasoX y usar resX corría todas las celdas del camino.
+  final x0 = clampX((p.dx / pasoX).floor());
+  final y0 = clampY((p.dy / pasoY).floor());
+  final i = x0 * resY + y0;
+  if (!obs[i]) return i;
+  return _celdaLibreCercana(x0, y0, obs, borde, resX, resY);
 }
 
 /// Devuelve el índice lineal (x*resY+y) de la celda libre más cercana a
