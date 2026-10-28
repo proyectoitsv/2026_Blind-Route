@@ -38,7 +38,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `flutter_tts`, `speech_to_text` (voz).
 - `supabase_flutter`, `wakelock_plus`, `permission_handler`, `image_picker`.
 - Lints: `flutter_lints` (`analysis_options.yaml`).
-- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos) `test/ajustes_navegacion_test.dart` (ajustes en capas; 10 casos), `test/asistente_trazo_test.dart` (imán con zoom, paredes finas; 5 casos) `test/orientador_llegada_test.dart` (orientación hacia el lugar al llegar; 12 casos) y `test/ajustes_voz_test.dart` (ajustes de voz del usuario; 3 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
+- Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos) `test/ajustes_navegacion_test.dart` (ajustes en capas; 10 casos), `test/asistente_trazo_test.dart` (imán con zoom, paredes finas; 5 casos) `test/orientador_llegada_test.dart` (orientación hacia el lugar al llegar; 12 casos), y `test/ajustes_voz_test.dart` (ajustes de voz del usuario; 3 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
 
 ## Estructura de `lib/`
 
@@ -81,7 +81,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `seguidor_ruta.dart`: dónde está el usuario respecto de la ruta y qué tramo indicarle.
 - `orientador_llegada.dart`: al llegar a un lugar, escalera o ascensor, lo hace girar con la brújula hasta quedar de frente antes de anunciar la llegada. Lógica pura; la alimenta `pantalla_naveg.dart` ciclo a ciclo.
 - `asistente_trazo.dart`: "imán" de ángulos (rectos y 45°) para trazar la escala y las zonas prohibidas. Con `metrosPorPixel`, la alineación y el largo mínimo se miden en píxeles de pantalla (con tope en los valores en metros de siempre): con zoom se dibuja más fino.
-- `ajustes_navegacion.dart`: parámetros de los giros anticipados (atraso, anticipos) y del seguimiento de la posición (umbral de caminata, ventanas de señal, filtro One Euro, velocidad máxima). El valor vigente sale de **tres capas**: lo cambiado en el edificio actual, lo cambiado en general y el valor del código. Cada capa guarda solo lo que se cambió en ella. Por edificio solo se cambian los que dependen del edificio (`porEdificio`); el umbral de caminata y los anticipos son solo generales. Se guardan en el teléfono (`shared_preferences`) y en la nube. Los interruptores de prueba (freno lateral por brújula, restringir zonas) viven solo en memoria.
+- `ajustes_navegacion.dart`: parámetros de los giros anticipados (atraso, anticipos), del seguimiento de la posición (umbral de caminata, ventanas de señal, filtro One Euro, velocidad máxima) y de los puntos clave (radio, coincidencia mínima en dB, fuerza, ciclos para confirmar, tolerancia de rumbo; todos por edificio). El valor vigente sale de **tres capas**: lo cambiado en el edificio actual, lo cambiado en general y el valor del código. Cada capa guarda solo lo que se cambió en ella. Por edificio solo se cambian los que dependen del edificio (`porEdificio`); el umbral de caminata y los anticipos son solo generales. Se guardan en el teléfono (`shared_preferences`) y en la nube. Los interruptores de prueba (freno lateral por brújula, restringir zonas) viven solo en memoria.
 - `panel_ajustes_navegacion.dart`: panel de ajustes, **solo en la app del admin**, en la pantalla de navegación. Alcances "Este edificio" y "General", los dos para cualquier admin mientras se calibra. Cada cambio rige al instante y se sube a la nube al soltar el control. Muestra el diagnóstico "Señal ahora".
 - `entorno_app.dart`: `EntornoApp.esAdmin`, que fija `main_admin.dart`. Lo usa la pantalla de navegación para mostrar el panel solo en el admin.
 
@@ -119,7 +119,8 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 
 ## Estado actual
 
-- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en el commit de la orientación al llegar, los puntos clave y los ajustes de voz (2026-10-26), sobre `aee68a8`.
+- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en `de55a11` (orientación al llegar, puntos clave y ajustes de voz, 2026-10-26).
+- **Sin commitear y sin probar:** "Estás en…" una vez por visita, llegada a 0,5 m y los parámetros de los puntos clave en el panel del admin (Registro del 2026-10-26, las tres últimas entradas; la compuerta de la penúltima se sacó).
 - Lo de las sesiones del 2026-10-19 al 2026-10-22 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`, `01cfe36`, `6c3d063`). Según el Registro, nada de eso está probado en el teléfono.
 - Lo del 2026-10-26 ("Ubicación lista" y textos del admin) está commiteado en `aee68a8` y el usuario lo probó en el teléfono.
 - Lo demás del 2026-10-26 también está commiteado: orientación al llegar, "Ubicación lista" con la posición asentada, palabras cortas, puntos clave y ajustes de voz del usuario. El usuario probó los puntos clave y los ajustes de voz ("mejoró bastante"). El arreglo del idioma de la voz no está probado; de lo demás no dijo nada. Detalle en el Registro.
@@ -140,6 +141,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 9. Palabras cortas: contestar "sí" / "no" enseguida después de la pregunta y pedir destinos de una palabra. En el log, `[Voz] Entendido: "…" (interpretaciones: …)` muestra qué oyó el reconocedor y cuál se eligió.
 10. Puntos clave: tomar uno, pararse ahí mirando para distintos lados y ver que la posición vaya a la celda. El log `[Fingerprint]` (cada ~2 s, sólo con puntos clave en el piso) dice qué dio cada uno en dB, si quedó afuera por el rumbo, por pocos beacons, por ambigüedad o por el radio, y el peso aplicado.
 11. Ajustes de voz en la app del usuario: cambiar velocidad, volumen, tono y repetición con TalkBack prendido; que se escuche la frase de prueba y que los cambios sigan al reabrir la app.
+12. Llegada a 0,5 m: llegar a un destino y ver que se anuncie recién en su celda. Puntos clave: pararse en uno ("Estás en…" se dice una sola vez) y regular en el panel ("Puntos clave", por edificio) el radio y la coincidencia mínima hasta que, caminando hacia la esquina, la posición no se adelante y parado ahí la reconozca. El log `[Fingerprint]` dice cuántos dB dio cada punto clave y a qué distancia coincide ("coincide N ciclos (X m)", "fuera de radio (X m)").
 
 **Pendientes conocidos:**
 - Las calibraciones guardadas antes pueden tener valores inflados por lecturas repetidas. Conviene repetir las que se hicieron con beacons que se oían poco.
@@ -379,3 +381,57 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 **Arreglo, la frase de prueba salía en otro idioma** ("ashi suena la voiz"): `VozService._inicializarTTS` fijaba es-AR con el motor de voz todavía arrancando. flutter_tts (Android) guarda esas llamadas, las ejecuta al terminar de arrancar y después pone el idioma de la voz por defecto del teléfono, así que el es-AR quedaba pisado. Pasaba con la inicialización del inicio de la app del usuario; la navegación vuelve a inicializar con el motor listo, y por eso ahí se escuchaba bien (el modo automático, que habla antes que la navegación, probablemente también salía con la voz del teléfono). Ahora primero se hace una consulta que entra en esa cola (`isLanguageAvailable`) y recién cuando vuelve se fija el idioma; si el motor no lo acepta queda en el log (`[Voz] El motor de voz no aceptó es-AR`). Commiteado, sin probar.
 
 **Pendiente:** pasos 10 y 11 del Estado actual, y escuchar la frase de prueba de los ajustes de voz recién abierta la app.
+
+### 2026-10-26: "Estás en…" una vez, llegada a 0,5 m y puntos clave sólo parado
+
+**Documentación modificada:** este `claude.md`.
+
+**Pedidos del usuario y causas:**
+1. Parado en un punto clave, "Estás en X" se repetía mucho: la marca de "ya dicho" (`_fpUltimoAnunciado`) se borraba cada vez que la coincidencia se cortaba más de 4 ciclos, y con el ruido eso pasa seguido.
+2. Que el destino se dé por alcanzado a 0,5 m, no a 1,5 m.
+3. Caminando hacia una esquina con punto clave, a ~2 m la posición saltaba a la esquina y el "Girá" salía antes. La señal no distingue estar en el punto clave de estar a un par de metros, y con el peso acumulado del cambio anterior la corrección pasó a tirar fuerte desde hasta 4 m.
+
+**Cambios (sin commit, sin probar en el teléfono), todos en `pantalla_naveg.dart`:**
+- `_fpAnunciados`: por etiqueta, dónde está, cuándo se dijo y si el usuario se alejó. Se repite recién después de alejarse 3 m (`_fpAlejarseMetros`) y con 15 s de por medio (`_fpRepetirAnuncio`).
+- `_radioLlegadaMetros` de 1,5 a 0,5, y `_enObjetivo`: cuenta estar a 0,5 m o en la misma celda del objetivo (la posición confirmada es el centro de una celda: con celdas de 1 m, un lugar cerca del borde de su celda nunca quedaría a 0,5 m). Vale para el destino y para la escalera del tramo. Se sacaron las comparaciones con el centro de la escalera (es obstáculo, nunca se pisa).
+- (Se sacó después, ver las dos entradas siguientes.) `_fpUmbralCaminando` (0,5, el mismo corte de "caminando" de la histéresis): caminando, el punto clave no se aplica y su peso baja; parado se aplica como antes. Sin acelerómetro (factor fijo 0,45) se aplica siempre. El log `[Fingerprint]` dice "coincide, pero caminando no se aplica".
+
+**Efecto secundario:** con la llegada a 0,5 m, en los lugares comunes en celdas libres la orientación al llegar casi nunca corre (el lugar queda a menos de `_distanciaMinOrientacionMetros` = 0,5 m) y se dice "Llegaste a X." directo. Sigue corriendo en escaleras y ascensores con entrada cargada y en lugares adentro de una zona (la ruta termina al costado).
+
+**Riesgo:** con ruido, la posición puede quedar en la celda de al lado del destino y la llegada demorarse. Si pasa, volver a 1 m o pedir la celda o una vecina.
+
+**Pendiente:** paso 12 del Estado actual.
+
+### 2026-10-26: punto clave caminando, esperando a que el usuario llegue (SE SACÓ)
+
+**Nota:** todo lo de esta entrada se sacó a pedido del usuario (ver la entrada siguiente); queda como registro de lo que se probó en el diseño.
+
+**Documentación modificada:** este `claude.md`.
+
+**Pedido:** el usuario descartó aplicar el punto clave sólo parado (entrada anterior: así casi no tiene sentido) y propuso que, yendo hacia el punto clave, espere un rato a que llegue de verdad.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `puerta_punto_clave.dart` (nuevo): `PuertaPuntoClave`. Parado se aplica enseguida. Caminando con el punto clave adelante (a menos de 90° de hacia donde mira, por la brújula; sin brújula se toma como adelante) se arma y espera distancia / velocidad: la distancia es la estimada real (posición filtrada menos lo que avanzó durante el atraso), con tope en 2 m (`alcanceMetros`, hasta donde coincide caminando); la velocidad, la de acercamiento medida o 0,8 m/s, con piso de 0,4. Si la posición llega sola a 0,75 m, se dispara antes. Disparado, sigue aplicando mientras el punto esté adelante o al costado; atrás (lo pasó o dobló en la esquina) no se aplica y se desarma, para no tirar de la posición hacia atrás.
+- `pantalla_naveg.dart`: reemplaza el "sólo parado" (`_fpUmbralCaminando` quedó como corte de caminando). Se reinicia al cambiar de punto clave o al perder la coincidencia. "Estás en…" sale cuando se aplica, o sea al llegar. El log `[Fingerprint]` dice "caminando hacia él: falta X s", "aplicando (caminando)" o "quedó atrás".
+- `test/puerta_punto_clave_test.dart` (nuevo): 8 casos.
+
+**Límite que queda:** parado a un par de metros del punto clave (sin llegar), se aplica enseguida igual que antes, porque la señal no distingue esa distancia.
+
+**Para afinar en el teléfono:** si el punto clave se aplica tarde, bajar `alcanceMetros`; si todavía se adelanta, subirlo. `llegadaMetros` (0,75) decide cuándo alcanza con la posición sola.
+
+### 2026-10-26: parámetros de los puntos clave en el panel del admin
+
+**Documentación modificada:** este `claude.md`.
+
+**Pedido:** sacar la compuerta (`PuertaPuntoClave`) y el "sólo parado", y que el admin pueda regular desde el panel los parámetros de los puntos clave, en especial qué tan cerca hay que estar para que se reconozcan, para probar qué anda mejor. Se mantienen "Estás en…" una vez por visita y la llegada a 0,5 m (o en la celda) con la orientación de frente.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- Se borraron `puerta_punto_clave.dart` y `test/puerta_punto_clave_test.dart`. En `pantalla_naveg.dart` se sacaron `_fpUmbralCaminando`, `_puertaPuntoClave` y su uso: el punto clave se aplica como en `de55a11` (peso acumulado, 4 ciclos de gracia, radio medido desde la posición filtrada), parado o caminando.
+- `ajustes_navegacion.dart`: grupo `parametrosPuntoClave` (en `todos`), todos `porEdificio`, con los valores que tenía el código: radio (0,5-5 m, 4), coincidencia mínima (5-14 dB, 10), fuerza de la corrección (0,05-1, 0,35), ciclos para confirmar (1-10, 3) y tolerancia de rumbo (30-180°, 90).
+- `pantalla_naveg.dart`: usa esos valores en lugar de `_fpRadioMaxMetros`, `_fpGananciaMax` y `_fpCiclosParaAplicar` (se quitaron). El log `[Fingerprint]` muestra a qué distancia coincide.
+- `procesador_senal.dart`: `compararFingerprints` recibe `dbMalo` y `toleranciaRumbo`, y `confianzaFingerprint` recibe `dbMalo` (por defecto, los valores de siempre).
+- `panel_ajustes_navegacion.dart`: sección "Puntos clave" con una pista de cuál mover.
+
+**Qué tan cerca hay que estar:** lo deciden el radio (la posición actual tiene que estar a menos de esa distancia del punto clave) y la coincidencia mínima (más exigente, la señal coincide sólo más cerca). Bajar los dos hace que, caminando, la posición tenga que acercarse sola antes de que el punto clave tire.
+
+**Pendiente:** paso 12 del Estado actual. Cuando se encuentren los valores, pasarlos a `porDefecto`.

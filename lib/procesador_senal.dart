@@ -346,8 +346,10 @@ class ProcesadorSenal {
   /// Expuesto para que el consumidor pueda suavizar el rms en el tiempo antes
   /// de convertirlo: promediar la distancia y despues mapear es mas estable que
   /// promediar confianzas ya saturadas en 0 o en 1.
-  static double confianzaFingerprint(double rms) =>
-      ((_fpDbMalo - rms) / (_fpDbMalo - _fpDbBueno)).clamp(0.0, 1.0);
+  ///
+  /// [dbMalo]: la coincidencia mínima (ver [_fpDbMalo]); la regula el admin.
+  static double confianzaFingerprint(double rms, {double dbMalo = _fpDbMalo}) =>
+      ((dbMalo - rms) / max(dbMalo - _fpDbBueno, 0.5)).clamp(0.0, 1.0);
 
   /// Compara las [lecturasVivas] (mac -> RSSI filtrado) contra los
   /// fingerprints guardados y devuelve la mejor coincidencia, o `null`.
@@ -410,12 +412,18 @@ class ProcesadorSenal {
   /// espacial alrededor de la posicion que ya calculo la multilateracion: el
   /// fingerprint refina el ultimo metro, no ubica desde cero.
   ///
+  /// [dbMalo] y [toleranciaRumbo]: la coincidencia mínima y la tolerancia de
+  /// rumbo, que el admin regula desde el panel de ajustes (por defecto,
+  /// [_fpDbMalo] y [_fpToleranciaRumbo]).
+  ///
   /// [diagnostico]: si se pasa, se le agrega una línea por punto clave con lo
   /// que dio la comparación o por qué quedó afuera (para el log).
   static CoincidenciaFingerprint? compararFingerprints({
     required Map<String, double> lecturasVivas,
     required List<CalibracionRegistro> calibraciones,
     double? rumboVivo,
+    double dbMalo = _fpDbMalo,
+    double toleranciaRumbo = _fpToleranciaRumbo,
     List<String>? diagnostico,
   }) {
     CoincidenciaFingerprint? mejor;
@@ -435,7 +443,7 @@ class ProcesadorSenal {
       final rumboGuardado = cal.rumboCaptura;
       if (rumboVivo != null && rumboGuardado != null) {
         final dif = _difRumbo(rumboVivo, rumboGuardado).abs();
-        if (dif > _fpToleranciaRumbo) {
+        if (dif > toleranciaRumbo) {
           diagnostico?.add('$nombre mirando a ${dif.round()}° del patrón');
           continue;
         }
@@ -494,7 +502,7 @@ class ProcesadorSenal {
           celdaIy: cal.celdaIy,
           etiqueta: cal.etiqueta,
           distanciaDb: rms,
-          confianza: confianzaFingerprint(rms),
+          confianza: confianzaFingerprint(rms, dbMalo: dbMalo),
           beaconsComunes: comunes,
         );
       } else if (mejor != null &&
@@ -506,7 +514,7 @@ class ProcesadorSenal {
 
     if (mejor == null) return null;
     if (mejor.confianza <= 0) {
-      diagnostico?.add('ninguno por debajo de $_fpDbMalo dB');
+      diagnostico?.add('ninguno por debajo de ${dbMalo.toStringAsFixed(1)} dB');
       return null;
     }
     if (mejorOtraCeldaDb.isFinite &&
