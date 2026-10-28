@@ -129,26 +129,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // asi pasa por las mismas defensas anti-salto que todo lo demas y un match
   // espurio no puede teletransportar el icono.
 
-  /// Ciclos seguidos que el mismo punto clave tiene que ganar antes de que se
-  /// empiece a corregir. A ~5.5 Hz, 3 ciclos ~ 0.55 s. Evita que un unico
-  /// frame ruidoso mueva la posicion.
-  static const int _fpCiclosParaAplicar = 3;
-
-  /// Cuánto sube por ciclo el peso de la corrección ([_fpPeso]) hacia la
-  /// confianza del punto clave: a 0.35, ~90 % en 6 ciclos (~1.1 s). Rápido
-  /// para el usuario, lento para no ser un salto. También es lo que baja por
-  /// ciclo cuando se pierde la coincidencia.
-  ///
-  /// ANTES era la fracción que se corría la posición en cada ciclo, y eso no
-  /// alcanzaba: el ciclo siguiente la multilateración vuelve a calcular
-  /// desde las lecturas (con el ancla a la posición anterior), así que la
-  /// posición se quedaba a mitad de camino. En una cuenta aproximada (el
-  /// ancla pesa 3 veces los rangos parado y 0,25 caminando), parado llegaba
-  /// al 55-70 % de la distancia al punto clave y caminando al 27-40 %: con la
-  /// multilateración errada en 3 m, el punto clave dejaba al usuario a 1 o 2
-  /// m del lugar donde estaba parado. Con el peso acumulado, parado llega al
-  /// 90 % o más.
-  static const double _fpGananciaMax = 0.35;
+  // Los parámetros que deciden cuándo y cuánto se aplica un punto clave
+  // (ciclos para confirmarlo, fuerza de la corrección, radio, coincidencia
+  // en dB y tolerancia de rumbo) son regulables desde el panel del admin:
+  // ver "Puntos clave" en [AjustesNavegacion].
 
   /// Ciclos sin coincidencia que se toleran sin soltar el punto clave. Con
   /// el ruido de los beacons (en una toma parado a 45 cm de un beacon el
@@ -156,18 +140,6 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// del umbral, y antes eso reiniciaba todo: la corrección casi nunca
   /// llegaba a juntar los ciclos para aplicarse.
   static const int _fpCiclosGracia = 4;
-
-  /// Radio maximo (m) entre la celda del punto clave y la posicion que ya
-  /// calculo la multilateracion, para que la correccion se aplique.
-  ///
-  /// ESTE ES EL FILTRO QUE DE VERDAD ACOTA EL ERROR. Medido, con el fading
-  /// tipico de 2.4 GHz (5 dB por beacon) la distancia en dB apenas separa la
-  /// celda correcta de una a 6 m: ningun umbral absoluto en dB puede resolver
-  /// metros. Entonces el fingerprint NO se usa para ubicar desde cero, sino
-  /// para refinar el ultimo tramo de una posicion que la multilateracion ya
-  /// dejo cerca. Con 4 m, el peor error que puede introducir un match
-  /// equivocado esta acotado por el propio radio.
-  static const double _fpRadioMaxMetros = 4.0;
 
   /// Constante de suavizado (ciclos) de la distancia en dB del candidato.
   /// Promediar la distancia y despues mapear a confianza es mas estable que
@@ -185,14 +157,32 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   /// Peso con el que se corre la posición medida hacia [_fpObjetivo]: sube
   /// hacia la confianza mientras el punto clave sigue coincidiendo y baja
-  /// cuando deja de coincidir (ver [_fpGananciaMax]).
+  /// cuando deja de coincidir, en los dos casos a razón de la "fuerza de la
+  /// corrección" de [AjustesNavegacion] por ciclo.
+  ///
+  /// POR QUÉ UN PESO ACUMULADO: antes la fuerza era la fracción que se corría
+  /// la posición en cada ciclo, y eso no alcanzaba: el ciclo siguiente la
+  /// multilateración vuelve a calcular desde las lecturas (con el ancla a la
+  /// posición anterior), así que la posición se quedaba a mitad de camino. En
+  /// una cuenta aproximada (el ancla pesa 3 veces los rangos parado y 0,25
+  /// caminando), parado llegaba al 55-70 % de la distancia al punto clave y
+  /// caminando al 27-40 %. Con el peso acumulado, parado llega al 90 % o más.
   double _fpPeso = 0.0;
 
   /// Centro de la celda del punto clave que se está aplicando.
   Offset? _fpObjetivo;
 
-  /// Etiqueta del ultimo punto clave anunciado por voz, para no repetirlo.
-  String? _fpUltimoAnunciado;
+  /// Puntos clave ya anunciados ("Estás en X"), por etiqueta: dónde están,
+  /// cuándo se dijo y si el usuario ya se alejó de ahí. Antes se guardaba
+  /// sólo el último y se olvidaba cada vez que la coincidencia se cortaba
+  /// unos ciclos, cosa que con el ruido de los beacons pasa todo el tiempo:
+  /// parado en el punto clave, "Estás en X" se repetía cada pocos segundos.
+  /// Ahora se dice una vez por visita: se repite recién después de alejarse
+  /// [_fpAlejarseMetros] y con [_fpRepetirAnuncio] de por medio.
+  final Map<String, ({Offset centro, DateTime cuando, bool seAlejo})>
+      _fpAnunciados = {};
+  static const double _fpAlejarseMetros = 3.0;
+  static const Duration _fpRepetirAnuncio = Duration(seconds: 15);
 
   DateTime? _ultimoLogFingerprint;
  
@@ -397,8 +387,19 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   static const int _ciclosParaLlegada = 3;
 
   /// Distancia (m) al objetivo a la que se considera que el usuario llegó.
-  /// Con celdas de ~1 m y el ruido BLE, 1.5 m es lo mínimo razonable.
-  static const double _radioLlegadaMetros = 1.5;
+  /// Antes era 1,5 m, y la llegada se anunciaba con el lugar todavía lejos
+  /// (pedido del usuario: que la tome a 0,5 m). Como la posición confirmada
+  /// es siempre el centro de una celda, también cuenta estar en la MISMA
+  /// celda del objetivo (ver [_enObjetivo]): con celdas de 1 m, un lugar
+  /// cerca del borde de su celda queda a más de 0,5 m de cualquier centro y
+  /// la llegada no saltaría nunca.
+  static const double _radioLlegadaMetros = 0.5;
+
+  /// ¿[pos] ya está en [objetivo]? A [_radioLlegadaMetros] o en su celda.
+  bool _enObjetivo(Offset pos, Offset objetivo) =>
+      _distanciaMetros(pos, objetivo) <= _radioLlegadaMetros ||
+      (_grilla.indiceX(pos.dx) == _grilla.indiceX(objetivo.dx) &&
+          _grilla.indiceY(pos.dy) == _grilla.indiceY(objetivo.dy));
 
   /// Orientación en curso hacia el destino o la escalera del tramo, antes de
   /// anunciar la llegada (ver [OrientadorLlegada]). Null si no hay.
@@ -1642,11 +1643,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // Se compara el vector de RSSI vivo contra los puntos clave guardados.
       // Si uno gana con confianza y sin ambiguedad durante varios ciclos
       // seguidos, la posicion se corre hacia su celda con un peso que se va
-      // acumulando (ver _fpGananciaMax).
+      // acumulando (ver _fpPeso). Los parámetros salen del panel del admin.
       final logFp = _ultimoLogFingerprint == null ||
           ahoraMuestra.difference(_ultimoLogFingerprint!).inMilliseconds >
               2000;
       final diagnosticoFp = logFp ? <String>[] : null;
+      final fuerzaFp = _ajustes.fpFuerza.valor;
+      final coincidenciaDbFp = _ajustes.fpCoincidenciaDb.valor;
       final coincidencia = ProcesadorSenal.compararFingerprints(
         lecturasVivas: {
           for (final b in _beaconsEnElMapa.values)
@@ -1657,6 +1660,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // Solo se pasa si la brujula esta siendo confiable: con _rumboActivo en
         // false, mandar el rumbo filtraria patrones por un dato malo.
         rumboVivo: _rumboActivo ? _orientacion.heading : null,
+        dbMalo: coincidenciaDbFp,
+        toleranciaRumbo: _ajustes.fpToleranciaRumbo.valor,
         diagnostico: diagnosticoFp,
       );
 
@@ -1675,19 +1680,18 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         );
         final referencia = _posicionFiltrada ?? nuevaPosicionRaw;
         distanciaFp = _distanciaMetros(centro, referencia);
-        if (distanciaFp <= _fpRadioMaxMetros) objetivoFp = centro;
+        if (distanciaFp <= _ajustes.fpRadio.valor) objetivoFp = centro;
       }
 
       if (coincidencia == null || objetivoFp == null) {
         // Un ciclo suelto sin coincidencia no suelta el punto clave (ver
         // _fpCiclosGracia); el peso va bajando mientras tanto.
         _fpCiclosSinCoincidencia++;
-        _fpPeso *= 1 - _fpGananciaMax;
+        _fpPeso *= 1 - fuerzaFp;
         if (_fpCiclosSinCoincidencia > _fpCiclosGracia) {
           _fpCeldaCandidata = null;
           _fpCiclosConsistentes = 0;
           _fpRmsSuavizado = null;
-          _fpUltimoAnunciado = null;
         }
       } else {
         _fpCiclosSinCoincidencia = 0;
@@ -1708,26 +1712,42 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           _fpPeso = 0.0;
         }
 
-        if (_fpCiclosConsistentes >= _fpCiclosParaAplicar) {
+        if (_fpCiclosConsistentes >= _ajustes.fpCiclos.valor.round()) {
           // La confianza sale del rms SUAVIZADO, no del instantaneo.
-          final confianza =
-              ProcesadorSenal.confianzaFingerprint(_fpRmsSuavizado!);
-          _fpPeso += _fpGananciaMax * (confianza - _fpPeso);
+          final confianza = ProcesadorSenal.confianzaFingerprint(
+            _fpRmsSuavizado!,
+            dbMalo: coincidenciaDbFp,
+          );
+          _fpPeso += fuerzaFp * (confianza - _fpPeso);
           _fpObjetivo = objetivoFp;
 
-          // Aviso por voz una sola vez por punto clave: para una persona ciega,
-          // saber que llego a la esquina es mas util que cualquier correccion
-          // en el mapa. Solo si el operador le puso etiqueta. Se da por dicho
-          // sólo si el motor lo aceptó.
+          // Aviso por voz una vez por visita (ver _fpAnunciados): para una
+          // persona ciega, saber que llego a la esquina es mas util que
+          // cualquier correccion en el mapa. Solo si el operador le puso
+          // etiqueta. Se da por dicho sólo si el motor lo aceptó.
           final etiqueta = coincidencia.etiqueta;
+          final anterior = etiqueta == null ? null : _fpAnunciados[etiqueta];
+          final toca = anterior == null ||
+              (anterior.seAlejo &&
+                  ahoraMuestra.difference(anterior.cuando) >=
+                      _fpRepetirAnuncio);
           if (etiqueta != null &&
               etiqueta.isNotEmpty &&
-              etiqueta != _fpUltimoAnunciado &&
+              toca &&
               _voz.hablarSinEsperar('Estás en $etiqueta.')) {
-            _fpUltimoAnunciado = etiqueta;
+            _fpAnunciados[etiqueta] =
+                (centro: objetivoFp, cuando: ahoraMuestra, seAlejo: false);
           }
         }
       }
+
+      // ¿Se alejó de los puntos clave ya anunciados? Desde ahí, el próximo
+      // paso por ese punto se vuelve a anunciar.
+      final aca = _posicionFiltrada ?? nuevaPosicionRaw;
+      _fpAnunciados.updateAll((_, a) => !a.seAlejo &&
+              _distanciaMetros(aca, a.centro) > _fpAlejarseMetros
+          ? (centro: a.centro, cuando: a.cuando, seAlejo: true)
+          : a);
 
       final objetivoAplicado = _fpObjetivo;
       if (_fpPeso > 0.01 && objetivoAplicado != null) {
@@ -1749,7 +1769,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
             ? 'sin coincidencia'
             : objetivoFp == null
                 ? 'fuera de radio (${distanciaFp!.toStringAsFixed(1)} m)'
-                : 'coincide $_fpCiclosConsistentes ciclos';
+                : 'coincide $_fpCiclosConsistentes ciclos'
+                    ' (${distanciaFp!.toStringAsFixed(1)} m)';
         debugPrint('[Fingerprint] $estado · peso '
             '${_fpPeso.toStringAsFixed(2)} · ${diagnosticoFp.join(' · ')}');
       }
@@ -3152,10 +3173,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         metrosY: _grilla.metrosY,
       );
       final finDeRuta = _finDeRutaSiObjetivoEnZona(entrada);
-      final cerca = _distanciaMetros(pos, entrada) <= _radioLlegadaMetros ||
-          _distanciaMetros(pos, esc.posicion) <= _radioLlegadaMetros ||
-          (finDeRuta != null &&
-              _distanciaMetros(pos, finDeRuta) <= _radioLlegadaMetros);
+      final cerca = _enObjetivo(pos, entrada) ||
+          (finDeRuta != null && _enObjetivo(pos, finDeRuta));
       _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
       if (_ciclosEnLlegada >= _ciclosParaLlegada) {
         _ciclosEnLlegada = 0;
@@ -3181,10 +3200,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         ? d.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
         : d.posicion;
     final finDeRuta = _finDeRutaSiObjetivoEnZona(objetivoLlegada);
-    final cerca = _distanciaMetros(pos, objetivoLlegada) <= _radioLlegadaMetros ||
-        _distanciaMetros(pos, d.posicion) <= _radioLlegadaMetros ||
-        (finDeRuta != null &&
-            _distanciaMetros(pos, finDeRuta) <= _radioLlegadaMetros);
+    final cerca = _enObjetivo(pos, objetivoLlegada) ||
+        (finDeRuta != null && _enObjetivo(pos, finDeRuta));
     _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
     if (_ciclosEnLlegada >= _ciclosParaLlegada) {
       _ciclosEnLlegada = 0;
@@ -3328,8 +3345,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// el punto, porque es lo mismo que mira el pathfinder para decidir dónde
   /// termina la ruta. Si el lugar está adentro de la zona pero el centro de
   /// su celda no, la celda es transitable y la ruta termina en ella; la
-  /// posición del usuario ahí es ese centro, a menos de media diagonal de
-  /// celda (0,71 m con celdas de 1 m) del lugar, dentro del radio de llegada.
+  /// posición del usuario ahí es ese centro, en la misma celda del lugar:
+  /// cuenta como llegada (ver [_enObjetivo]).
   Offset? _finDeRutaSiObjetivoEnZona(Offset objetivo) {
     if (!_ajustes.restringirZonas) return null;
     final ruta = _rutaActual;

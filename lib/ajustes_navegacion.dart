@@ -340,6 +340,104 @@ class AjustesNavegacion {
         velocidadMaxima,
       ];
 
+  // ── Puntos clave (ver "CORRECCION POR PUNTO CLAVE" en la navegación) ──────
+  //
+  // La señal no distingue estar EN el punto clave de estar a un par de
+  // metros: caminando hacia una esquina con punto clave, la posición podía
+  // saltar a la esquina ~2 m antes y adelantar el "Girá". Qué tan cerca hay
+  // que estar para que se reconozca lo deciden el radio y la coincidencia
+  // mínima, y se regulan probando en cada edificio. Los valores por defecto
+  // son los que tenía el código.
+
+  /// Distancia máxima (m) entre la posición actual y el punto clave para
+  /// aplicarlo. Antes: 4 m fijos.
+  final ParametroAjuste fpRadio = ParametroAjuste(
+    clave: 'nav_fp_radio_m',
+    nombre: 'Radio del punto clave',
+    ayuda: 'Se aplica sólo con la posición a menos de esto. Menos: hay que '
+        'acercarse más y caminando se adelanta menos.',
+    unidad: 'm',
+    unidadHablada: 'metros',
+    minimo: 0.5,
+    maximo: 5,
+    paso: 0.25,
+    decimales: 2,
+    porDefecto: 4.0,
+    porEdificio: true,
+  );
+
+  /// Diferencia robusta máxima (dB) con el patrón guardado para que cuente
+  /// como coincidencia ([ProcesadorSenal.compararFingerprints], `dbMalo`).
+  /// Antes: 10 dB fijos.
+  final ParametroAjuste fpCoincidenciaDb = ParametroAjuste(
+    clave: 'nav_fp_coincidencia_db',
+    nombre: 'Coincidencia mínima',
+    ayuda: 'Hasta cuántos dB de diferencia con el patrón vale. Menos: más '
+        'exigente, lo reconoce sólo más cerca.',
+    unidad: 'dB',
+    unidadHablada: 'decibeles',
+    minimo: 5,
+    maximo: 14,
+    paso: 0.5,
+    porDefecto: 10.0,
+    porEdificio: true,
+  );
+
+  /// Cuánto sube por ciclo el peso de la corrección hacia el punto clave (y
+  /// cuánto baja al perder la coincidencia). Antes: 0,35 fijo.
+  final ParametroAjuste fpFuerza = ParametroAjuste(
+    clave: 'nav_fp_fuerza',
+    nombre: 'Fuerza de la corrección',
+    ayuda: 'Cuánto se acerca la posición al punto clave por ciclo. Más: '
+        'llega antes, pero salta más.',
+    unidad: '',
+    unidadHablada: '',
+    minimo: 0.05,
+    maximo: 1,
+    paso: 0.05,
+    decimales: 2,
+    porDefecto: 0.35,
+    porEdificio: true,
+  );
+
+  /// Ciclos seguidos que tiene que coincidir antes de aplicarse. Antes: 3
+  /// fijos.
+  final ParametroAjuste fpCiclos = ParametroAjuste(
+    clave: 'nav_fp_ciclos',
+    nombre: 'Ciclos para confirmar',
+    ayuda: 'Ciclos seguidos (~0,2 s cada uno) que tiene que coincidir. Más: '
+        'menos falsos, pero tarda más.',
+    unidad: 'ciclos',
+    unidadHablada: 'ciclos',
+    minimo: 1,
+    maximo: 10,
+    paso: 1,
+    decimales: 0,
+    porDefecto: 3,
+    porEdificio: true,
+  );
+
+  /// Cuánto puede mirar para otro lado (grados) respecto del rumbo con que
+  /// se tomó el punto clave ([ProcesadorSenal.compararFingerprints],
+  /// `toleranciaRumbo`). Antes: 90° fijos.
+  final ParametroAjuste fpToleranciaRumbo = ParametroAjuste(
+    clave: 'nav_fp_rumbo_grados',
+    nombre: 'Tolerancia de rumbo',
+    ayuda: 'Cuánto puede mirar para otro lado respecto de la toma. Menos: '
+        'más preciso, pero hace falta un punto clave por sentido.',
+    unidad: '°',
+    unidadHablada: 'grados',
+    minimo: 30,
+    maximo: 180,
+    paso: 15,
+    decimales: 0,
+    porDefecto: 90,
+    porEdificio: true,
+  );
+
+  List<ParametroAjuste> get parametrosPuntoClave =>
+      [fpRadio, fpCoincidenciaDb, fpFuerza, fpCiclos, fpToleranciaRumbo];
+
   // ── Interruptores de prueba (no se guardan ni se publican) ────────────────
   //
   // Sirven para comparar en el campo, no son configuración: viven sólo en
@@ -357,7 +455,8 @@ class AjustesNavegacion {
   /// transitable (ver [RestriccionZonas]).
   bool restringirZonas = true;
 
-  List<ParametroAjuste> get todos => [...parametrosGiro, ...parametrosPosicion];
+  List<ParametroAjuste> get todos =>
+      [...parametrosGiro, ...parametrosPosicion, ...parametrosPuntoClave];
 
   List<ParametroAjuste> get _porEdificio =>
       [for (final p in todos) if (p.porEdificio) p];

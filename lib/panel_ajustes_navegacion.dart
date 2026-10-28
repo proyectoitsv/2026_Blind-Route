@@ -191,6 +191,19 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
               ),
               for (final p in _ajustes.parametrosPosicion) _control(p),
               const SizedBox(height: 4),
+              _titulo('Puntos clave'),
+              const Padding(
+                padding: EdgeInsets.only(bottom: 12),
+                child: Text(
+                  'Se adelanta caminando hacia una esquina: bajar el radio o '
+                  'la coincidencia mínima. Parado ahí no lo reconoce: '
+                  'subirlos. El log [Fingerprint] dice qué dio cada uno.',
+                  style:
+                      TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
+                ),
+              ),
+              for (final p in _ajustes.parametrosPuntoClave) _control(p),
+              const SizedBox(height: 4),
               _titulo('Pruebas (no se guardan)'),
               const Padding(
                 padding: EdgeInsets.only(bottom: 4),
