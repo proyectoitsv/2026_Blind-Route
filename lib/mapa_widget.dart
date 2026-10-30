@@ -502,12 +502,14 @@ class _CapaUsuario extends StatefulWidget {
   final Size tamanoImagen;
   final GrillaNav grilla;
   final double? heading;
+  final double escalaVista;
 
   const _CapaUsuario({
     required this.posicionUsuario,
     required this.tamanoImagen,
     required this.grilla,
     this.heading,
+    this.escalaVista = 1.0,
   });
 
   @override
@@ -583,6 +585,7 @@ class _CapaUsuarioState extends State<_CapaUsuario>
           tamanoImagen: widget.tamanoImagen,
           grilla: widget.grilla,
           heading: widget.heading,
+          escalaVista: widget.escalaVista,
         ),
       );
 }
@@ -598,15 +601,21 @@ class _UsuarioPainter extends CustomPainter {
   final GrillaNav grilla;
   final double? heading;         // grados; 0 = Norte (arriba)
 
+  /// Zoom del contenedor (ver [MapaWidget.escalaVista]): el borde y la flecha
+  /// miden lo mismo en pantalla con cualquier zoom. La celda sigue a escala.
+  final double escalaVista;
+
   _UsuarioPainter({
     required this.posicion,
     required this.tamanoImagen,
     required this.grilla,
     this.heading,
+    this.escalaVista = 1.0,
   }) : super(repaint: posicion);
 
   @override
   void paint(Canvas canvas, Size size) {
+    final k = 1 / max(1.0, escalaVista);
     final rect = _rectCelda(posicion.value, grilla, tamanoImagen);
     final paintUsuario = Paint()
       ..color = TemaApp.posicionUsuario.withValues(alpha: 0.85)
@@ -615,20 +624,22 @@ class _UsuarioPainter extends CustomPainter {
     final paintBordeUsuario = Paint()
       ..color = Colors.white
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0;
+      ..strokeWidth = 2.0 * k;
     canvas.drawRect(rect, paintBordeUsuario);
-    if (heading != null) _dibujarFlecha(canvas, rect.center, heading!);
+    if (heading != null) _dibujarFlecha(canvas, rect.center, heading!, k);
   }
 
   /// Flecha blanca centrada en la celda del usuario que indica su orientación.
-  /// heading 0° = Norte = arriba.
-  void _dibujarFlecha(Canvas canvas, Offset centro, double headingGrados) {
+  /// heading 0° = Norte = arriba. [k]: escala por el zoom del contenedor.
+  void _dibujarFlecha(
+      Canvas canvas, Offset centro, double headingGrados, double k) {
     final paint = Paint()
       ..color = Colors.white
       ..style = PaintingStyle.fill;
     canvas.save();
     canvas.translate(centro.dx, centro.dy);
     canvas.rotate(headingGrados * pi / 180);
+    canvas.scale(k);
     final path = Path()
       ..moveTo(0, -9)
       ..lineTo(6, 6)
@@ -644,7 +655,8 @@ class _UsuarioPainter extends CustomPainter {
       old.posicion != posicion ||
       old.tamanoImagen != tamanoImagen ||
       old.grilla != grilla ||
-      old.heading != heading;
+      old.heading != heading ||
+      old.escalaVista != escalaVista;
 }
 
 /// Widget del mapa reutilizable para configuración y navegación.
@@ -1085,6 +1097,7 @@ class MapaWidget extends StatelessWidget {
                           tamanoImagen: tamanoRenderizado,
                           grilla: grilla,
                           heading: headingUsuario,
+                          escalaVista: escalaVista,
                         ),
                       ),
                     ),

@@ -120,7 +120,8 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 ## Estado actual
 
 - Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en el commit del 2026-10-28 que sigue a `1f69de6` (cambios de ruta, destinos a los que no se llega, categorías y "Estás en…").
-- **Sin commit y sin probar:** la celda del usuario se desliza en el mapa al cambiar de celda (Registro del 2026-10-30).
+- **Sin commit, probado por el usuario ("anda bien"):** la celda del usuario se desliza en el mapa al cambiar de celda (Registro del 2026-10-30).
+- **Sin commit y sin probar:** flecha de orientación en el mapa del admin, en Calibración y Brújula (Registro del 2026-10-30).
 - **Commiteado y sin probar:** indicaciones al cambiar la ruta de fondo, aviso de destino al que no se puede llegar, categorías sólo con lugares alcanzables y "Estás en…" sin pisar indicaciones (Registro del 2026-10-28, las dos entradas).
 - "Estás en…" una vez por visita, llegada a 0,5 m y los parámetros de los puntos clave en el panel del admin están commiteados en `1f69de6`, sin probar (Registro del 2026-10-26, las tres últimas entradas; la compuerta de la penúltima se sacó).
 - Lo de las sesiones del 2026-10-19 al 2026-10-22 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`, `01cfe36`, `6c3d063`). Según el Registro, nada de eso está probado en el teléfono.
@@ -148,7 +149,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 14. Destino al que no se puede llegar: pedir un lugar encerrado por zonas (por ejemplo, cerrar con zonas una habitación de prueba). Tiene que decir "No se puede llegar a X: no hay un camino libre hasta ahí." y soltar el destino, sin dar indicaciones. Parado adentro de un recinto cerrado y pidiendo un lugar de afuera: "No encuentro un camino desde donde estás. Sigo buscando.", sin indicaciones hasta salir. En el log: `[Ruta] Sin camino hasta el objetivo: …`.
 15. Categorías con lugares encerrados: con un restaurante encerrado y otros no, pedir "quiero comer". No tiene que ofrecer el encerrado. Si se puede ir a uno solo, va directo; si a ninguno, dice "No hay un camino libre hasta ninguno de esos lugares.". Con baños: va al más cercano por camino entre los que se puede ir; si el del género pedido está encerrado, avisa que no se puede llegar (no lleva al del otro género).
 16. "Estás en…": caminar hacia una esquina con punto clave etiquetado. El "Girá…" tiene que salir entero y a tiempo, y "Estás en…" después, sin cortarlo ni demorarlo. Si una indicación llega mientras suena "Estás en…", lo corta.
-17. Celda del usuario en el mapa: caminando, el cuadrado tiene que deslizarse de una celda a la otra sin saltos y sin quedar atrás de la posición.
+17. Flecha en el admin: en Calibración, con la posición en el mapa, girar el teléfono y ver que la flecha apunte hacia donde se mira sobre el plano (como en la navegación) y que mida lo mismo con cualquier zoom.
 
 **Pendientes conocidos:**
 - Las calibraciones guardadas antes pueden tener valores inflados por lecturas repetidas. Conviene repetir las que se hicieron con beacons que se oían poco.
@@ -514,4 +515,13 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 
 **Verificado:** con un test temporal (borrado): quieto no corre ningún frame, al cambiar de celda arranca y se apaga solo, y dentro de la misma celda no se mueve. `flutter analyze`: los mismos 4 avisos. `flutter test`: 82 casos en verde.
 
-**Pendiente:** paso 17 del Estado actual. Si se siente atrasado, bajar `_tauSeg`; si todavía se ve brusco, subirlo.
+**Probado por el usuario:** "anda bien". Si alguna vez se siente atrasado, bajar `_tauSeg`; si se ve brusco, subirlo.
+
+**Consulta (sin cambios de código): el rumbo en los puntos clave.** En la configuración del admin el mapa no dibuja la flecha (no se le pasa `headingUsuario`), pero la brújula sí corre en el modo Calibración (`_iniciarCompass`) y en la toma de un punto clave se guarda la media circular del rumbo crudo (`_rumboMedioToma` → `rumboCaptura`). El texto del interruptor "Punto clave" muestra los grados actuales. En la navegación, `compararFingerprints` descarta un punto clave si el rumbo crudo actual (`_orientacion.heading`, sólo con `_rumboActivo`) difiere más que la tolerancia (90° por defecto, panel del admin). Sin brújula de un lado o del otro, no se filtra por rumbo.
+
+**Flecha de orientación en el admin (pedido del usuario; sin commit, sin probar en el teléfono):**
+- `pantalla_config.dart`: el mapa recibe `headingUsuario` = rumbo crudo − `_rotacionMapa`, la misma cuenta que la navegación y que la flecha del panel de la brújula. Sale sólo mientras la brújula corre (modos Calibración y Brújula) y hay posición en el mapa. Es el rumbo crudo sin suavizar, el mismo que se promedia en la toma.
+- `mapa_widget.dart`: `_CapaUsuario` y `_UsuarioPainter` reciben `escalaVista`. La flecha y el borde blanco de la celda se dibujan del mismo tamaño en pantalla con cualquier zoom, como los demás marcadores. Antes, a zoom 20, la flecha habría medido unos 360 px. En la navegación `escalaVista` es 1 y no cambia nada.
+- `flutter analyze`: los mismos 4 avisos. `flutter test`: 82 casos en verde.
+
+**Pendiente:** paso 17 del Estado actual.
