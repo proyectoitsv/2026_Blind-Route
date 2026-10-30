@@ -52,7 +52,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `lista_edificios.dart`, `lista_pisos.dart`: listas locales de edificios y pisos.
 - `pantalla_rubros.dart`: rubros (categorías de lugares) editables.
 - `modo_automatico.dart`: detección automática del piso y del mapa.
-- `mapa_widget.dart` (~1300 líneas): painters y dibujo del plano, ruta, beacons y zonas.
+- `mapa_widget.dart` (~1400 líneas): painters y dibujo del plano, ruta, beacons y zonas. La celda del usuario se desliza entre celdas (`_CapaUsuario`, sólo dibujo).
 - `tema.dart`: tokens de diseño. Fondo `#0D1117`, acento cian `#00C8E0`, ruta `#2979FF`. Contraste WCAG AA.
 
 **Datos locales y modelos**
@@ -120,6 +120,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 ## Estado actual
 
 - Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en el commit del 2026-10-28 que sigue a `1f69de6` (cambios de ruta, destinos a los que no se llega, categorías y "Estás en…").
+- **Sin commit y sin probar:** la celda del usuario se desliza en el mapa al cambiar de celda (Registro del 2026-10-30).
 - **Commiteado y sin probar:** indicaciones al cambiar la ruta de fondo, aviso de destino al que no se puede llegar, categorías sólo con lugares alcanzables y "Estás en…" sin pisar indicaciones (Registro del 2026-10-28, las dos entradas).
 - "Estás en…" una vez por visita, llegada a 0,5 m y los parámetros de los puntos clave en el panel del admin están commiteados en `1f69de6`, sin probar (Registro del 2026-10-26, las tres últimas entradas; la compuerta de la penúltima se sacó).
 - Lo de las sesiones del 2026-10-19 al 2026-10-22 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`, `01cfe36`, `6c3d063`). Según el Registro, nada de eso está probado en el teléfono.
@@ -147,6 +148,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 14. Destino al que no se puede llegar: pedir un lugar encerrado por zonas (por ejemplo, cerrar con zonas una habitación de prueba). Tiene que decir "No se puede llegar a X: no hay un camino libre hasta ahí." y soltar el destino, sin dar indicaciones. Parado adentro de un recinto cerrado y pidiendo un lugar de afuera: "No encuentro un camino desde donde estás. Sigo buscando.", sin indicaciones hasta salir. En el log: `[Ruta] Sin camino hasta el objetivo: …`.
 15. Categorías con lugares encerrados: con un restaurante encerrado y otros no, pedir "quiero comer". No tiene que ofrecer el encerrado. Si se puede ir a uno solo, va directo; si a ninguno, dice "No hay un camino libre hasta ninguno de esos lugares.". Con baños: va al más cercano por camino entre los que se puede ir; si el del género pedido está encerrado, avisa que no se puede llegar (no lleva al del otro género).
 16. "Estás en…": caminar hacia una esquina con punto clave etiquetado. El "Girá…" tiene que salir entero y a tiempo, y "Estás en…" después, sin cortarlo ni demorarlo. Si una indicación llega mientras suena "Estás en…", lo corta.
+17. Celda del usuario en el mapa: caminando, el cuadrado tiene que deslizarse de una celda a la otra sin saltos y sin quedar atrás de la posición.
 
 **Pendientes conocidos:**
 - Las calibraciones guardadas antes pueden tener valores inflados por lecturas repetidas. Conviene repetir las que se hicieron con beacons que se oían poco.
@@ -496,3 +498,20 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 - `test/voz_prioridad_test.dart` (nuevo, 7 casos). `flutter test`: 82 casos en verde. `flutter analyze`: los mismos 4 avisos.
 
 **Pendiente:** pasos 15 y 16 del Estado actual.
+
+### 2026-10-30: la celda del usuario se desliza en el mapa
+
+**Documentación modificada:** este `claude.md`.
+
+**Pedido:** que al pasar de una celda a otra el cuadrado del usuario se mueva de forma fluida, sin tocar el filtrado ni el posicionamiento, y sin que afecte la localización ni la velocidad.
+
+**Cambios (sin commit, sin probar en el teléfono), sólo en `mapa_widget.dart`:**
+- `_CapaUsuario` (nuevo, privado): la capa de la celda del usuario pasó a ser un widget con estado y su propio ticker. Cuando `posicionUsuario` cae en otra celda, el cuadrado va hasta el centro de la nueva con el mismo resorte que la cámara (`1 − e^(−dt/τ)` por frame), con τ = 0,08 s: 70 % del camino a los 0,1 s, llega a los ~0,25 s. La cámara usa 0,22 s. La primera posición aparece directo. Si llega otra celda a mitad de camino, sigue hacia la nueva sin cortes.
+- `_UsuarioPainter` lee la posición dibujada de un `ValueNotifier` (`repaint:`): cada frame repinta sólo esa capa, sin reconstruir. El ticker corre sólo mientras se desliza.
+- El `Positioned` de la capa tiene clave (`capaUsuario`), para que no pierda el estado si cambia la cantidad de beacons o lugares del `Stack`.
+
+**Sin tocar:** `_posicionFinal` y todo lo que la usa (ruta, voz, llegada, cámara). La posición que se dibuja al terminar es la misma de antes. También rige en el admin (RSSI en vivo y la celda elegida para calibrar, que ahora se desliza en vez de saltar).
+
+**Verificado:** con un test temporal (borrado): quieto no corre ningún frame, al cambiar de celda arranca y se apaga solo, y dentro de la misma celda no se mueve. `flutter analyze`: los mismos 4 avisos. `flutter test`: 82 casos en verde.
+
+**Pendiente:** paso 17 del Estado actual. Si se siente atrasado, bajar `_tauSeg`; si todavía se ve brusco, subirlo.
