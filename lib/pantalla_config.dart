@@ -2476,6 +2476,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     zonas: _zonas,
                     lugares: _lugares,
                     posicionUsuario: _posicionUsuario,
+                    // Flecha de hacia dónde mira el operador, compensada con la
+                    // rotación del mapa como en la navegación. La brújula sólo
+                    // corre en Calibración y Brújula: en el resto no hay flecha.
+                    // En Calibración sirve para ver, antes de tomar un punto
+                    // clave, hacia dónde va a quedar guardado su rumbo.
+                    headingUsuario: _headingEnVivo == null
+                        ? null
+                        : ((_headingEnVivo! - _rotacionMapa) % 360 + 360) % 360,
                     modoEdicion: true,
                     mostrarGrilla: true,
                     grilla: _grilla,
