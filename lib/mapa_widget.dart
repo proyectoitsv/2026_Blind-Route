@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:math';
@@ -481,16 +482,28 @@ class _MapaPainter extends CustomPainter {
       old.escalaVista != escalaVista;
 }
 
-/// Painter liviano de la posición del usuario: pinta solo la celda actual y la
-/// flecha de orientación. Está en su propia capa para repintarse en cada tick
-/// de posición sin redibujar la grilla, zonas ni el camino.
-class _UsuarioPainter extends CustomPainter {
-  final Offset? posicionUsuario; // posición normalizada
+/// Capa de la celda del usuario. Cuando la posición pasa a otra celda, el
+/// cuadrado se desliza hasta la nueva en vez de saltar.
+///
+/// Es SÓLO dibujo: la posición que usan la ruta, la voz y la cámara sigue
+/// siendo [MapaWidget.posicionUsuario], que llega ya resuelta. Esta capa no
+/// la cambia ni la demora; sólo decide por dónde pasa el cuadrado mientras
+/// cambia de celda. Al terminar queda exactamente donde quedaba antes.
+///
+/// Se mueve con el mismo "resorte" que la cámara de la navegación (ver
+/// `_tauCamaraSeg` en pantalla_naveg.dart): una posición nueva sólo cambia
+/// el objetivo y el cuadrado sigue sin cortes, aunque llegue a mitad de
+/// camino. Con una animación de duración fija, cada posición nueva la
+/// reiniciaba y el movimiento salía a los tirones.
+///
+/// El ticker corre sólo durante el deslizamiento y repinta sólo esta capa.
+class _CapaUsuario extends StatefulWidget {
+  final Offset posicionUsuario; // posición normalizada
   final Size tamanoImagen;
   final GrillaNav grilla;
-  final double? heading;         // grados; 0 = Norte (arriba)
+  final double? heading;
 
-  _UsuarioPainter({
+  const _CapaUsuario({
     required this.posicionUsuario,
     required this.tamanoImagen,
     required this.grilla,
@@ -498,9 +511,103 @@ class _UsuarioPainter extends CustomPainter {
   });
 
   @override
+  State<_CapaUsuario> createState() => _CapaUsuarioState();
+}
+
+class _CapaUsuarioState extends State<_CapaUsuario>
+    with SingleTickerProviderStateMixin {
+  /// Constante de tiempo del deslizamiento (s): a los 0,1 s recorrió el 70 %
+  /// del camino y a los ~0,25 s llegó. Mucho más corta que la de la cámara
+  /// (0,22 s) para que el cuadrado no se atrase respecto de la posición.
+  static const double _tauSeg = 0.08;
+
+  late final Ticker _ticker;
+  Duration? _ultimoTick;
+
+  /// Centro (normalizado) del cuadrado tal como se dibuja ahora. Lo escucha
+  /// el painter: cada frame del deslizamiento repinta sin reconstruir nada.
+  late final ValueNotifier<Offset> _mostrada;
+
+  Offset get _objetivo => widget.grilla.centroDeCelda(widget.posicionUsuario);
+
+  @override
+  void initState() {
+    super.initState();
+    // La primera posición aparece directo en su celda, sin deslizarse.
+    _mostrada = ValueNotifier(_objetivo);
+    _ticker = createTicker(_onTick);
+  }
+
+  @override
+  void didUpdateWidget(_CapaUsuario old) {
+    super.didUpdateWidget(old);
+    if (_mostrada.value != _objetivo && !_ticker.isActive) {
+      _ultimoTick = null;
+      _ticker.start();
+    }
+  }
+
+  /// Un frame: recorre la fracción 1 − e^(−dt/τ) de lo que falta, con el dt
+  /// real del frame (igual a 60 Hz que a 120 Hz).
+  void _onTick(Duration transcurrido) {
+    final previo = _ultimoTick;
+    _ultimoTick = transcurrido;
+    final dt = previo == null
+        ? 1 / 60
+        : ((transcurrido - previo).inMicroseconds / 1e6)
+            .clamp(0.0, 0.1)
+            .toDouble();
+    final k = 1 - exp(-dt / _tauSeg);
+    final objetivo = _objetivo;
+    final nueva = Offset.lerp(_mostrada.value, objetivo, k)!;
+    // ¿Llegó? (menos de una décima de píxel del plano)
+    if (_desnormalizar(objetivo - nueva, widget.tamanoImagen).distance < 0.1) {
+      _mostrada.value = objetivo;
+      _ticker.stop();
+      return;
+    }
+    _mostrada.value = nueva;
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    _mostrada.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+        painter: _UsuarioPainter(
+          posicion: _mostrada,
+          tamanoImagen: widget.tamanoImagen,
+          grilla: widget.grilla,
+          heading: widget.heading,
+        ),
+      );
+}
+
+/// Painter liviano de la posición del usuario: pinta solo la celda actual y la
+/// flecha de orientación. Está en su propia capa para repintarse en cada tick
+/// de posición sin redibujar la grilla, zonas ni el camino.
+class _UsuarioPainter extends CustomPainter {
+  /// Centro normalizado del cuadrado a dibujar (ver [_CapaUsuario]). Durante
+  /// el deslizamiento cae entre dos celdas.
+  final ValueNotifier<Offset> posicion;
+  final Size tamanoImagen;
+  final GrillaNav grilla;
+  final double? heading;         // grados; 0 = Norte (arriba)
+
+  _UsuarioPainter({
+    required this.posicion,
+    required this.tamanoImagen,
+    required this.grilla,
+    this.heading,
+  }) : super(repaint: posicion);
+
+  @override
   void paint(Canvas canvas, Size size) {
-    if (posicionUsuario == null) return;
-    final rect = _rectCelda(grilla.centroDeCelda(posicionUsuario!), grilla, tamanoImagen);
+    final rect = _rectCelda(posicion.value, grilla, tamanoImagen);
     final paintUsuario = Paint()
       ..color = TemaApp.posicionUsuario.withValues(alpha: 0.85)
       ..style = PaintingStyle.fill;
@@ -534,7 +641,7 @@ class _UsuarioPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_UsuarioPainter old) =>
-      old.posicionUsuario != posicionUsuario ||
+      old.posicion != posicion ||
       old.tamanoImagen != tamanoImagen ||
       old.grilla != grilla ||
       old.heading != heading;
@@ -962,19 +1069,22 @@ class MapaWidget extends StatelessWidget {
                 // tick de posición sin redibujar grilla/zonas/camino).
                 if (posicionUsuario != null)
                   Positioned(
+                    // Con clave: la capa recuerda dónde está dibujado el
+                    // cuadrado, y si cambia la cantidad de beacons o lugares
+                    // de arriba no se tiene que confundir con otro hijo del
+                    // Stack y arrancar de cero.
+                    key: const ValueKey('capaUsuario'),
                     left: offsetX,
                     top: offsetY,
                     width: tamanoRenderizado.width,
                     height: tamanoRenderizado.height,
                     child: IgnorePointer(
                       child: RepaintBoundary(
-                        child: CustomPaint(
-                          painter: _UsuarioPainter(
-                            posicionUsuario: posicionUsuario,
-                            tamanoImagen: tamanoRenderizado,
-                            grilla: grilla,
-                            heading: headingUsuario,
-                          ),
+                        child: _CapaUsuario(
+                          posicionUsuario: posicionUsuario!,
+                          tamanoImagen: tamanoRenderizado,
+                          grilla: grilla,
+                          heading: headingUsuario,
                         ),
                       ),
                     ),
