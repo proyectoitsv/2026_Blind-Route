@@ -119,8 +119,8 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 
 ## Estado actual
 
-- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en `814d011` (flecha de orientación en el admin).
-- **Sin commit y sin probar:** la lista de dispositivos del admin (modo Beacons) sale de más fuerte a más débil, con filtro de potencia mínima (Registro del 2026-11-02).
+- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en el commit que sigue a `f78d09e` (sólo actualiza este archivo).
+- **Commiteado en `f78d09e` y sin probar:** la lista de dispositivos del admin (modo Beacons) sale de más fuerte a más débil, con filtro de potencia mínima (Registro del 2026-11-02).
 - La celda del usuario que se desliza está commiteada en `245d345` (probada: "anda bien") y la flecha de orientación del admin en `814d011` (Registro del 2026-10-30).
 - **Commiteado y sin probar:** indicaciones al cambiar la ruta de fondo, aviso de destino al que no se puede llegar, categorías sólo con lugares alcanzables y "Estás en…" sin pisar indicaciones (Registro del 2026-10-28, las dos entradas).
 - "Estás en…" una vez por visita, llegada a 0,5 m y los parámetros de los puntos clave en el panel del admin están commiteados en `1f69de6`, sin probar (Registro del 2026-10-26, las tres últimas entradas; la compuerta de la penúltima se sacó).
@@ -533,7 +533,7 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 
 **Pedido:** en la lista de dispositivos del modo Beacons (admin), ver primero los más fuertes y poder filtrar por potencia.
 
-**Cambios (sin commit, sin probar en el teléfono), sólo en `pantalla_config.dart`:**
+**Cambios (commiteados en `f78d09e`, sin probar en el teléfono), sólo en `pantalla_config.dart`:**
 - La lista se ordena de más fuerte a más débil. No por la última lectura (salta 5 a 10 dB y la lista se reacomodaría a cada rato), sino por la mediana de las lecturas nuevas de los últimos 2 s de cada dispositivo (`_lecturasLista`, `_actualizarPotenciaLista`, `_potenciaDe`; con menos de 3 lecturas, la última). El RSSI que muestra cada fila es ese mismo valor.
 - El diálogo del filtro (`_pedirFiltro`, antes `_pedirFiltroNombre`) suma un control de potencia mínima (de −100 a −40 dBm, de a 5). La fila del filtro dice qué está activo y cuántos dispositivos pasan. El dispositivo elegido no se oculta por potencia (sube y baja sola); sí por nombre, como antes.
 
