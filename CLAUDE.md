@@ -120,6 +120,8 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 ## Estado actual
 
 - Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en el commit que sigue a `f78d09e` (sólo actualiza este archivo).
+- **Sin commitear y sin probar:** botón "Borrar todas" (calibraciones y puntos clave del piso) en el admin (Registro del 2026-11-02, segunda entrada).
+- Explicación completa del funcionamiento, para el usuario: documento de Claude Docs "Cómo funciona BlindRoute" (https://claude.ai/artifact/W2itBEXnsCHPF5gRVbkFmA). Si cambia algo de fondo, conviene actualizarlo.
 - **Commiteado en `f78d09e` y sin probar:** la lista de dispositivos del admin (modo Beacons) sale de más fuerte a más débil, con filtro de potencia mínima (Registro del 2026-11-02).
 - La celda del usuario que se desliza está commiteada en `245d345` (probada: "anda bien") y la flecha de orientación del admin en `814d011` (Registro del 2026-10-30).
 - **Commiteado y sin probar:** indicaciones al cambiar la ruta de fondo, aviso de destino al que no se puede llegar, categorías sólo con lugares alcanzables y "Estás en…" sin pisar indicaciones (Registro del 2026-10-28, las dos entradas).
@@ -151,6 +153,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 16. "Estás en…": caminar hacia una esquina con punto clave etiquetado. El "Girá…" tiene que salir entero y a tiempo, y "Estás en…" después, sin cortarlo ni demorarlo. Si una indicación llega mientras suena "Estás en…", lo corta.
 17. Flecha en el admin: en Calibración, con la posición en el mapa, girar el teléfono y ver que la flecha apunte hacia donde se mira sobre el plano (como en la navegación) y que mida lo mismo con cualquier zoom.
 18. Lista de dispositivos por potencia (admin, modo Beacons): escanear parado al lado de un beacon y ver que quede primero sin que la lista se reacomode a cada rato. Probar el filtro de potencia mínima y que el dispositivo elegido no desaparezca si su potencia baja del mínimo.
+19. "Borrar todas" (admin, modo Calibración, lista "Calibraciones guardadas"): que la confirmación diga cuántas calibraciones y puntos clave hay, que después la lista quede vacía y que durante una toma avise y no borre. Con el piso publicado, volver a publicar y ver en la app del usuario que ya no estén.
 
 **Pendientes conocidos:**
 - Las calibraciones guardadas antes pueden tener valores inflados por lecturas repetidas. Conviene repetir las que se hicieron con beacons que se oían poco.
@@ -540,3 +543,19 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 **Verificado:** `flutter analyze` con los mismos 4 avisos de antes y `flutter test` con 82 casos en verde.
 
 **Pendiente:** paso 18 del Estado actual.
+
+### 2026-11-02: borrar todas las calibraciones y explicación del funcionamiento
+
+**Documentación modificada:** este `claude.md`. Además, documento de Claude Docs "Cómo funciona BlindRoute" (https://claude.ai/artifact/W2itBEXnsCHPF5gRVbkFmA): explicación de todo el sistema con analogías (BLE, mediana y modelo log-distancia, calibración, multilateración y puerta direccional, filtros, puntos clave, grilla y zonas, A*, seguimiento de la ruta y giros anticipados, brújula, voz, pisos, datos, admin, un viaje de ejemplo y glosario).
+
+**Pedido 1:** poder borrar de un botón todas las calibraciones y puntos clave guardados, por si se mueve un beacon.
+
+**Cambios (sin commit, sin probar en el teléfono):**
+- `database.dart`: `eliminarCalibracionesDelPiso(pisoId)` borra todas las filas de `calibraciones` del piso (comunes y puntos clave) y devuelve cuántas.
+- `pantalla_config.dart`: `_eliminarTodasLasCalibraciones` y la fila "Borrar todas" en "Calibraciones guardadas", debajo de "Quitar duplicados". Pide confirmación con la cantidad de calibraciones y de puntos clave; si el piso está publicado, avisa que la copia de la nube no cambia hasta volver a publicar. Con una toma en curso (`_tomandoMuestras` o `_guardandoCalibracion`) no borra y avisa.
+
+**Por qué borrar las dos:** `ajustarModelosRango` usa todas las calibraciones, también los puntos clave, para ajustar txPower y n de cada beacon. Con el beacon movido, la distancia real que se calcula para cada toma vieja ya no vale.
+
+**Verificado:** `flutter analyze` con los mismos 4 avisos de antes y `flutter test` con 82 casos en verde.
+
+**Pendiente:** paso 19 del Estado actual.
