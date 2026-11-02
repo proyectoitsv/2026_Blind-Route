@@ -1025,6 +1025,16 @@ class DatabaseHelper {
     await db.delete('calibraciones', where: 'id = ?', whereArgs: [id]);
   }
 
+  /// Borra TODAS las calibraciones de un piso, comunes y puntos clave, y
+  /// devuelve cuántas eliminó. Es para cuando se mueve, se cambia o se
+  /// reconfigura un beacon: las tomas viejas describen una señal que ya no
+  /// existe y siguen pesando en el modelo de rango y en los puntos clave.
+  Future<int> eliminarCalibracionesDelPiso(int pisoId) async {
+    final db = await instance.database;
+    return await db.delete('calibraciones',
+        where: 'piso_id = ?', whereArgs: [pisoId]);
+  }
+
   // --- Borrado en cascada ---
   Future<void> eliminarEdificioCompleto(int edificioId) async {
     final db = await instance.database;

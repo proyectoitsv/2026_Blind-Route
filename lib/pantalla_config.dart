@@ -1883,6 +1883,66 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
+  /// Borra de una vez todas las calibraciones y puntos clave del piso.
+  ///
+  /// Para cuando se mueve o se cambia un beacon: cada toma guarda lo que se
+  /// oía de cada beacon desde una celda, así que con el beacon en otro lugar
+  /// las calibraciones ajustan mal su modelo de rango y los puntos clave
+  /// esperan un patrón de señal que ya no aparece. Borrarlas una por una con
+  /// decenas guardadas era tedioso. Con una toma en curso no se borra: su
+  /// guardado llegaría después y quedaría sola, sin que el admin lo note.
+  Future<void> _eliminarTodasLasCalibraciones() async {
+    if (_tomandoMuestras || _guardandoCalibracion) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Esperá a que termine la toma en curso.')),
+      );
+      return;
+    }
+    final puntosClave = _calibraciones.where((c) => c.esFingerprint).length;
+    final comunes = _calibraciones.length - puntosClave;
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Borrar todas las calibraciones?'),
+        content: Text(
+          'Se borran $comunes '
+          '${comunes == 1 ? "calibración" : "calibraciones"} y $puntosClave '
+          '${puntosClave == 1 ? "punto clave" : "puntos clave"} de este piso. '
+          'No se puede deshacer.'
+          '${_remoteIdPublicado != null ? '\n\nLa copia publicada no cambia hasta que vuelvas a publicar el piso.' : ''}',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Borrar todo'),
+          ),
+        ],
+      ),
+    );
+    if (confirmar != true) return;
+    try {
+      final borradas = await DatabaseHelper.instance
+          .eliminarCalibracionesDelPiso(widget.pisoId);
+      final nuevas = await DatabaseHelper.instance
+          .obtenerCalibracionesPorPiso(widget.pisoId);
+      if (!mounted) return;
+      setState(() => _calibraciones = nuevas);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(borradas == 1
+            ? 'Se borró 1 calibración.'
+            : 'Se borraron $borradas calibraciones.')),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error borrando calibraciones: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _eliminarCalibracion(CalibracionRegistro c) async {
     final confirmar = await showDialog<bool>(
       context: context,
@@ -3206,6 +3266,19 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                   style: TextStyle(fontSize: 11),
                                 ),
                                 onTap: _limpiarCalibracionesDuplicadas,
+                              ),
+                              ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.delete_sweep,
+                                    color: Colors.red),
+                                title: const Text('Borrar todas',
+                                    style: TextStyle(fontSize: 14)),
+                                subtitle: const Text(
+                                  'Calibraciones y puntos clave del piso. '
+                                  'Si se movió o cambió un beacon.',
+                                  style: TextStyle(fontSize: 11),
+                                ),
+                                onTap: _eliminarTodasLasCalibraciones,
                               ),
                               const Divider(height: 1),
                             ] + _calibraciones.map((c) {
