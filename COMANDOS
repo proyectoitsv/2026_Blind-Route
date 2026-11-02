@@ -1,0 +1,2 @@
+flutter run --release --flavor user -t lib/main_user.dart
+flutter run --release --flavor admin -t lib/main_admin.dart
