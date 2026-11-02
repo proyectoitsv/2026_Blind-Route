@@ -58,6 +58,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// sin filtro. Sirve para ver solo los beacons propios entre todo el tráfico
   /// Bluetooth del lugar (celulares, auriculares, relojes, etc.).
   String _filtroNombre = '';
+
+  /// Potencia mínima (dBm) para que un dispositivo aparezca en la lista. Con
+  /// [_sinPotenciaMinima] aparecen todos.
+  int _potenciaMinima = _sinPotenciaMinima;
+  static const int _sinPotenciaMinima = -100;
   bool _publicando = false;
   String? _remoteIdPublicado;
   Offset? _posicionUsuario;
@@ -775,6 +780,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       dueno: this,
       onResultados: (resultados) {
         if (!mounted) return;
+        _actualizarPotenciaLista(resultados);
         setState(() => _dispositivosCercanos = resultados);
         _actualizarSenales(resultados);
       },
@@ -792,20 +798,69 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
-  // -- Filtro de dispositivos por nombre --------------------------------------
+  // -- Potencia de la lista de dispositivos -----------------------------------
+  //
+  // La lista se muestra de más fuerte a más débil: el beacon que el operador
+  // tiene al lado queda arriba y no hay que buscarlo entre todo el tráfico
+  // Bluetooth del lugar. Ordenar por la última lectura no sirve: el RSSI salta
+  // 5 a 10 dB de una lectura a la otra, la lista se reacomodaría a cada rato y
+  // es fácil tocar otro dispositivo justo cuando cambia de lugar. Por eso se
+  // ordena por la mediana de las lecturas de los últimos
+  // [_ventanaPotenciaLista], contando sólo las nuevas (ver
+  // [_ultimaLecturaBeacon]: el plugin repite la última lectura de cada
+  // dispositivo en todos los callbacks).
 
-  /// `true` si el nombre anunciado de [r] contiene el filtro (sin distinguir
-  /// mayúsculas). Se compara contra `advName`, que es el mismo nombre que se
-  /// muestra en la lista.
-  bool _coincideFiltro(ScanResult r) {
-    if (_filtroNombre.isEmpty) return true;
-    return r.device.advName.toLowerCase().contains(_filtroNombre.toLowerCase());
+  static const Duration _ventanaPotenciaLista = Duration(seconds: 2);
+  final Map<String, List<({DateTime t, int rssi})>> _lecturasLista = {};
+
+  void _actualizarPotenciaLista(List<ScanResult> resultados) {
+    final limite = DateTime.now().subtract(_ventanaPotenciaLista);
+    for (final r in resultados) {
+      final lecturas =
+          _lecturasLista.putIfAbsent(r.device.remoteId.str, () => []);
+      if (lecturas.isEmpty || r.timeStamp.isAfter(lecturas.last.t)) {
+        lecturas.add((t: r.timeStamp, rssi: r.rssi));
+      }
+      lecturas.removeWhere((l) => l.t.isBefore(limite));
+    }
   }
 
-  void _aplicarFiltroNombre(String filtro) {
+  /// Potencia con la que se ordena y se filtra [r] en la lista: la mediana de
+  /// sus lecturas recientes, o la última si todavía tiene menos de 3.
+  int _potenciaDe(ScanResult r) {
+    final lecturas = _lecturasLista[r.device.remoteId.str];
+    if (lecturas == null || lecturas.length < 3) return r.rssi;
+    final ordenadas = [for (final l in lecturas) l.rssi]..sort();
+    return ordenadas[ordenadas.length ~/ 2];
+  }
+
+  // -- Filtro de dispositivos por nombre y potencia ---------------------------
+
+  bool get _filtroActivo =>
+      _filtroNombre.isNotEmpty || _potenciaMinima > _sinPotenciaMinima;
+
+  /// `true` si el nombre anunciado de [r] contiene el filtro (sin distinguir
+  /// mayúsculas) y llega a la potencia mínima. Se compara contra `advName`,
+  /// que es el mismo nombre que se muestra en la lista.
+  ///
+  /// El dispositivo elegido no se oculta por potencia: la potencia sube y baja
+  /// sola, y si desapareciera de la lista justo antes de tocar el mapa se
+  /// ubicaría un beacon que no se ve.
+  bool _coincideFiltro(ScanResult r) {
+    if (_filtroNombre.isNotEmpty &&
+        !r.device.advName.toLowerCase().contains(_filtroNombre.toLowerCase())) {
+      return false;
+    }
+    return _potenciaMinima <= _sinPotenciaMinima ||
+        r == _seleccionado ||
+        _potenciaDe(r) >= _potenciaMinima;
+  }
+
+  void _aplicarFiltro(String nombre, int potenciaMinima) {
     if (!mounted) return;
     setState(() {
-      _filtroNombre = filtro;
+      _filtroNombre = nombre;
+      _potenciaMinima = potenciaMinima;
       // Si el dispositivo elegido quedó oculto se descarta la selección: si no,
       // un toque en el mapa ubicaría un beacon que ya no se ve en la lista.
       if (_seleccionado != null && !_coincideFiltro(_seleccionado!)) {
@@ -814,44 +869,69 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     });
   }
 
-  /// Pide el texto del filtro en un diálogo. No se usa un campo fijo bajo el
-  /// mapa porque el body es un Column con el mapa de 380 px: al abrirse el
-  /// teclado ese campo quedaría tapado y el Column desbordaría.
-  Future<void> _pedirFiltroNombre() async {
+  /// Pide el filtro en un diálogo. No se usa un campo fijo bajo el mapa
+  /// porque el body es un Column con el mapa de 380 px: al abrirse el teclado
+  /// ese campo quedaría tapado y el Column desbordaría.
+  Future<void> _pedirFiltro() async {
     final controller = TextEditingController(text: _filtroNombre);
-    final filtro = await showDialog<String>(
+    var minima = _potenciaMinima.toDouble();
+    final aplicar = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Filtrar dispositivos por nombre'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            hintText: 'Ej: BlindRoute (vacío: todos)',
-            border: OutlineInputBorder(),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogo) => AlertDialog(
+          title: const Text('Filtrar dispositivos'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: controller,
+                decoration: const InputDecoration(
+                  labelText: 'Nombre',
+                  hintText: 'Ej: BlindRoute (vacío: todos)',
+                  border: OutlineInputBorder(),
+                ),
+                textInputAction: TextInputAction.search,
+                onSubmitted: (_) => Navigator.pop(ctx, true),
+              ),
+              const SizedBox(height: 16),
+              Text(minima <= _sinPotenciaMinima
+                  ? 'Potencia: todas'
+                  : 'Más fuertes que ${minima.round()} dBm'),
+              Slider(
+                value: minima,
+                min: _sinPotenciaMinima.toDouble(),
+                max: -40,
+                divisions: 12,
+                label: '${minima.round()} dBm',
+                onChanged: (v) => setDialogo(() => minima = v),
+              ),
+            ],
           ),
-          autofocus: true,
-          textInputAction: TextInputAction.search,
-          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
-        ),
-        actions: [
-          if (_filtroNombre.isNotEmpty)
+          actions: [
+            if (_filtroActivo)
+              TextButton(
+                onPressed: () {
+                  controller.clear();
+                  minima = _sinPotenciaMinima.toDouble();
+                  Navigator.pop(ctx, true);
+                },
+                child: const Text('Quitar filtro'),
+              ),
             TextButton(
-              onPressed: () => Navigator.pop(ctx, ''),
-              child: const Text('Quitar filtro'),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancelar'),
             ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, null),
-            child: const Text('Cancelar'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Filtrar'),
-          ),
-        ],
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Filtrar'),
+            ),
+          ],
+        ),
       ),
     );
-    if (filtro == null) return;
-    _aplicarFiltroNombre(filtro);
+    if (aplicar != true) return;
+    _aplicarFiltro(controller.text.trim(), minima.round());
   }
 
   /// Hora de la última lectura NUEVA procesada de cada beacon del piso.
@@ -1495,6 +1575,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       dueno: this,
       onResultados: (resultados) {
         if (!mounted) return;
+        _actualizarPotenciaLista(resultados);
         setState(() => _dispositivosCercanos = resultados);
         _actualizarSenales(resultados);
       },
@@ -2237,9 +2318,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   @override
   Widget build(BuildContext context) {
-    final dispositivosVisibles =
-        _dispositivosCercanos.where(_coincideFiltro).toList();
-    final filtroActivo = _filtroNombre.isNotEmpty;
+    // Los más fuertes primero (ver _potenciaDe).
+    final dispositivosVisibles = _dispositivosCercanos
+        .where(_coincideFiltro)
+        .toList()
+      ..sort((a, b) => _potenciaDe(b).compareTo(_potenciaDe(a)));
+    final filtroActivo = _filtroActivo;
 
     return Theme(
       data: TemaApp.tema,
@@ -2751,13 +2835,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                       ),
                     ),
                   ),
-                  // Filtro por nombre. Mismo alto acotado que la fila del
-                  // asistente de trazo (que no aparece en este modo), para no
-                  // sumar altura al Column en pantallas chicas.
+                  // Filtro por nombre y potencia. Mismo alto acotado que la
+                  // fila del asistente de trazo (que no aparece en este
+                  // modo), para no sumar altura al Column en pantallas chicas.
                   SizedBox(
                     height: 36,
                     child: InkWell(
-                      onTap: _pedirFiltroNombre,
+                      onTap: _pedirFiltro,
                       child: Padding(
                         padding: const EdgeInsets.only(left: 16, right: 4),
                         child: Row(
@@ -2771,9 +2855,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                             Expanded(
                               child: Text(
                                 filtroActivo
-                                    ? 'Nombre contiene "$_filtroNombre" · '
-                                        '${dispositivosVisibles.length} de ${_dispositivosCercanos.length}'
-                                    : 'Filtrar por nombre',
+                                    ? [
+                                        if (_filtroNombre.isNotEmpty)
+                                          'Nombre contiene "$_filtroNombre"',
+                                        if (_potenciaMinima > _sinPotenciaMinima)
+                                          'desde $_potenciaMinima dBm',
+                                        '${dispositivosVisibles.length} de ${_dispositivosCercanos.length}',
+                                      ].join(' · ')
+                                    : 'Filtrar por nombre o potencia · más fuertes primero',
                                 style: const TextStyle(fontSize: 12),
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -2783,7 +2872,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                                 icon: const Icon(Icons.close, size: 18),
                                 tooltip: 'Quitar filtro',
                                 visualDensity: VisualDensity.compact,
-                                onPressed: () => _aplicarFiltroNombre(''),
+                                onPressed: () =>
+                                    _aplicarFiltro('', _sinPotenciaMinima),
                               ),
                           ],
                         ),
@@ -2794,10 +2884,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     child: filtroActivo &&
                             dispositivosVisibles.isEmpty &&
                             _dispositivosCercanos.isNotEmpty
-                        ? Center(
+                        ? const Center(
                             child: Text(
-                              'Ningún dispositivo coincide con "$_filtroNombre"',
-                              style: const TextStyle(color: TemaApp.textoSecundario),
+                              'Ningún dispositivo pasa el filtro',
+                              style: TextStyle(color: TemaApp.textoSecundario),
                             ),
                           )
                         : ListView.builder(
@@ -2814,7 +2904,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                             color: yaUbicado ? Colors.green : (seleccionado ? Colors.teal : Colors.grey),
                           ),
                           title: Text(d.device.advName.isEmpty ? 'Dispositivo desconocido' : d.device.advName),
-                          subtitle: Text('MAC: $mac  |  RSSI: ${d.rssi} dBm'),
+                          subtitle: Text('MAC: $mac  |  RSSI: ${_potenciaDe(d)} dBm'),
                           trailing: seleccionado
                               ? const Icon(Icons.touch_app, color: Colors.teal)
                               : null,
