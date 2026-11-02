@@ -119,9 +119,9 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 
 ## Estado actual
 
-- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en el commit del 2026-10-28 que sigue a `1f69de6` (cambios de ruta, destinos a los que no se llega, categorías y "Estás en…").
-- **Sin commit, probado por el usuario ("anda bien"):** la celda del usuario se desliza en el mapa al cambiar de celda (Registro del 2026-10-30).
-- **Sin commit y sin probar:** flecha de orientación en el mapa del admin, en Calibración y Brújula (Registro del 2026-10-30).
+- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en `814d011` (flecha de orientación en el admin).
+- **Sin commit y sin probar:** la lista de dispositivos del admin (modo Beacons) sale de más fuerte a más débil, con filtro de potencia mínima (Registro del 2026-11-02).
+- La celda del usuario que se desliza está commiteada en `245d345` (probada: "anda bien") y la flecha de orientación del admin en `814d011` (Registro del 2026-10-30).
 - **Commiteado y sin probar:** indicaciones al cambiar la ruta de fondo, aviso de destino al que no se puede llegar, categorías sólo con lugares alcanzables y "Estás en…" sin pisar indicaciones (Registro del 2026-10-28, las dos entradas).
 - "Estás en…" una vez por visita, llegada a 0,5 m y los parámetros de los puntos clave en el panel del admin están commiteados en `1f69de6`, sin probar (Registro del 2026-10-26, las tres últimas entradas; la compuerta de la penúltima se sacó).
 - Lo de las sesiones del 2026-10-19 al 2026-10-22 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`, `01cfe36`, `6c3d063`). Según el Registro, nada de eso está probado en el teléfono.
@@ -150,6 +150,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 15. Categorías con lugares encerrados: con un restaurante encerrado y otros no, pedir "quiero comer". No tiene que ofrecer el encerrado. Si se puede ir a uno solo, va directo; si a ninguno, dice "No hay un camino libre hasta ninguno de esos lugares.". Con baños: va al más cercano por camino entre los que se puede ir; si el del género pedido está encerrado, avisa que no se puede llegar (no lleva al del otro género).
 16. "Estás en…": caminar hacia una esquina con punto clave etiquetado. El "Girá…" tiene que salir entero y a tiempo, y "Estás en…" después, sin cortarlo ni demorarlo. Si una indicación llega mientras suena "Estás en…", lo corta.
 17. Flecha en el admin: en Calibración, con la posición en el mapa, girar el teléfono y ver que la flecha apunte hacia donde se mira sobre el plano (como en la navegación) y que mida lo mismo con cualquier zoom.
+18. Lista de dispositivos por potencia (admin, modo Beacons): escanear parado al lado de un beacon y ver que quede primero sin que la lista se reacomode a cada rato. Probar el filtro de potencia mínima y que el dispositivo elegido no desaparezca si su potencia baja del mínimo.
 
 **Pendientes conocidos:**
 - Las calibraciones guardadas antes pueden tener valores inflados por lecturas repetidas. Conviene repetir las que se hicieron con beacons que se oían poco.
@@ -525,3 +526,17 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 - `flutter analyze`: los mismos 4 avisos. `flutter test`: 82 casos en verde.
 
 **Pendiente:** paso 17 del Estado actual.
+
+### 2026-11-02: lista de dispositivos del admin por potencia
+
+**Documentación modificada:** este `claude.md` (también se corrigió el Estado actual: la celda que se desliza y la flecha del admin ya estaban commiteadas en `245d345` y `814d011`).
+
+**Pedido:** en la lista de dispositivos del modo Beacons (admin), ver primero los más fuertes y poder filtrar por potencia.
+
+**Cambios (sin commit, sin probar en el teléfono), sólo en `pantalla_config.dart`:**
+- La lista se ordena de más fuerte a más débil. No por la última lectura (salta 5 a 10 dB y la lista se reacomodaría a cada rato), sino por la mediana de las lecturas nuevas de los últimos 2 s de cada dispositivo (`_lecturasLista`, `_actualizarPotenciaLista`, `_potenciaDe`; con menos de 3 lecturas, la última). El RSSI que muestra cada fila es ese mismo valor.
+- El diálogo del filtro (`_pedirFiltro`, antes `_pedirFiltroNombre`) suma un control de potencia mínima (de −100 a −40 dBm, de a 5). La fila del filtro dice qué está activo y cuántos dispositivos pasan. El dispositivo elegido no se oculta por potencia (sube y baja sola); sí por nombre, como antes.
+
+**Verificado:** `flutter analyze` con los mismos 4 avisos de antes y `flutter test` con 82 casos en verde.
+
+**Pendiente:** paso 18 del Estado actual.
