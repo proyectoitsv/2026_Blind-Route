@@ -17,43 +17,49 @@ import 'colores.dart';
 class EstiloApp extends ThemeExtension<EstiloApp> {
   const EstiloApp({
     required this.fondo,
-    required this.tarjeta,
-    required this.panel,
     required this.superficie,
+    required this.hundido,
+    required this.sombraOscura,
+    required this.sombraClara,
     required this.separador,
     required this.borde,
     required this.textoPrincipal,
     required this.textoSecundario,
     required this.textoSobreAcento,
     required this.acento,
-    required this.acentoSuave,
-    required this.exito,
-    required this.exitoSuave,
+    required this.hecho,
+    required this.siguiente,
     required this.advertencia,
-    required this.advertenciaSuave,
     required this.error,
-    required this.degradadoAcento,
+    required this.planoCorredor,
+    required this.planoHabitacion,
+    required this.planoMuro,
+    required this.planoTexto,
+    required this.rutaRanura,
   });
 
   /// El tema oscuro, el principal.
   static const EstiloApp oscuro = EstiloApp(
     fondo: ColoresApp.fondo,
-    tarjeta: ColoresApp.tarjeta,
-    panel: ColoresApp.panel,
     superficie: ColoresApp.superficie,
+    hundido: ColoresApp.hundido,
+    sombraOscura: ColoresApp.sombraOscura,
+    sombraClara: ColoresApp.sombraClara,
     separador: ColoresApp.separador,
     borde: ColoresApp.borde,
     textoPrincipal: ColoresApp.textoPrincipal,
     textoSecundario: ColoresApp.textoSecundario,
     textoSobreAcento: ColoresApp.textoSobreAcento,
     acento: ColoresApp.acento,
-    acentoSuave: ColoresApp.acentoSuave,
-    exito: ColoresApp.exito,
-    exitoSuave: ColoresApp.exitoSuave,
+    hecho: ColoresApp.hecho,
+    siguiente: ColoresApp.siguiente,
     advertencia: ColoresApp.advertencia,
-    advertenciaSuave: ColoresApp.advertenciaSuave,
     error: ColoresApp.error,
-    degradadoAcento: ColoresApp.degradadoAcento,
+    planoCorredor: ColoresApp.planoCorredor,
+    planoHabitacion: ColoresApp.planoHabitacion,
+    planoMuro: ColoresApp.planoMuro,
+    planoTexto: ColoresApp.planoTexto,
+    rutaRanura: ColoresApp.rutaRanura,
   );
 
   /// Los colores del tema vigente. Debajo de un tema sin esta extensión (el
@@ -63,61 +69,86 @@ class EstiloApp extends ThemeExtension<EstiloApp> {
       Theme.of(context).extension<EstiloApp>() ?? oscuro;
 
   final Color fondo;
-  final Color tarjeta;
-  final Color panel;
+
+  /// Superficie elevada: tarjetas, botones, barras y hojas.
   final Color superficie;
+
+  /// Relleno de lo hundido: plano, campos, pistas y cuadros de ícono.
+  final Color hundido;
+
+  /// Las dos sombras del relieve.
+  final Color sombraOscura;
+  final Color sombraClara;
   final Color separador;
+
+  /// Borde de 1 px de todo control interactivo.
   final Color borde;
   final Color textoPrincipal;
   final Color textoSecundario;
   final Color textoSobreAcento;
   final Color acento;
-  final Color acentoSuave;
-  final Color exito;
-  final Color exitoSuave;
+
+  /// Tramo recorrido y destino (sólo en la ruta).
+  final Color hecho;
+
+  /// Tramo que falta (sólo en la ruta).
+  final Color siguiente;
   final Color advertencia;
-  final Color advertenciaSuave;
   final Color error;
-  final LinearGradient degradadoAcento;
+
+  /// Colores del plano.
+  final Color planoCorredor;
+  final Color planoHabitacion;
+  final Color planoMuro;
+  final Color planoTexto;
+
+  /// Sombra debajo del trazo de la ruta.
+  final Color rutaRanura;
 
   @override
   EstiloApp copyWith({
     Color? fondo,
-    Color? tarjeta,
-    Color? panel,
     Color? superficie,
+    Color? hundido,
+    Color? sombraOscura,
+    Color? sombraClara,
     Color? separador,
     Color? borde,
     Color? textoPrincipal,
     Color? textoSecundario,
     Color? textoSobreAcento,
     Color? acento,
-    Color? acentoSuave,
-    Color? exito,
-    Color? exitoSuave,
+    Color? hecho,
+    Color? siguiente,
     Color? advertencia,
-    Color? advertenciaSuave,
     Color? error,
-    LinearGradient? degradadoAcento,
+    Color? planoCorredor,
+    Color? planoHabitacion,
+    Color? planoMuro,
+    Color? planoTexto,
+    Color? rutaRanura,
   }) {
     return EstiloApp(
       fondo: fondo ?? this.fondo,
-      tarjeta: tarjeta ?? this.tarjeta,
-      panel: panel ?? this.panel,
       superficie: superficie ?? this.superficie,
+      hundido: hundido ?? this.hundido,
+      sombraOscura: sombraOscura ?? this.sombraOscura,
+      sombraClara: sombraClara ?? this.sombraClara,
       separador: separador ?? this.separador,
       borde: borde ?? this.borde,
       textoPrincipal: textoPrincipal ?? this.textoPrincipal,
       textoSecundario: textoSecundario ?? this.textoSecundario,
       textoSobreAcento: textoSobreAcento ?? this.textoSobreAcento,
       acento: acento ?? this.acento,
-      acentoSuave: acentoSuave ?? this.acentoSuave,
-      exito: exito ?? this.exito,
-      exitoSuave: exitoSuave ?? this.exitoSuave,
+      hecho: hecho ?? this.hecho,
+      siguiente: siguiente ?? this.siguiente,
       advertencia: advertencia ?? this.advertencia,
-      advertenciaSuave: advertenciaSuave ?? this.advertenciaSuave,
       error: error ?? this.error,
-      degradadoAcento: degradadoAcento ?? this.degradadoAcento,
+      planoCorredor: planoCorredor ?? this.planoCorredor,
+      planoHabitacion: planoHabitacion ?? this.planoHabitacion,
+      planoMuro: planoMuro ?? this.planoMuro,
+      planoTexto: planoTexto ?? this.planoTexto,
+      rutaRanura: rutaRanura ?? this.rutaRanura,
     );
   }
 
@@ -126,36 +157,28 @@ class EstiloApp extends ThemeExtension<EstiloApp> {
   @override
   EstiloApp lerp(covariant ThemeExtension<EstiloApp>? other, double t) {
     if (other is! EstiloApp) return this;
+    Color l(Color a, Color b) => Color.lerp(a, b, t)!;
     return EstiloApp(
-      fondo: Color.lerp(fondo, other.fondo, t)!,
-      tarjeta: Color.lerp(tarjeta, other.tarjeta, t)!,
-      panel: Color.lerp(panel, other.panel, t)!,
-      superficie: Color.lerp(superficie, other.superficie, t)!,
-      separador: Color.lerp(separador, other.separador, t)!,
-      borde: Color.lerp(borde, other.borde, t)!,
-      textoPrincipal: Color.lerp(textoPrincipal, other.textoPrincipal, t)!,
-      textoSecundario: Color.lerp(textoSecundario, other.textoSecundario, t)!,
-      textoSobreAcento: Color.lerp(
-        textoSobreAcento,
-        other.textoSobreAcento,
-        t,
-      )!,
-      acento: Color.lerp(acento, other.acento, t)!,
-      acentoSuave: Color.lerp(acentoSuave, other.acentoSuave, t)!,
-      exito: Color.lerp(exito, other.exito, t)!,
-      exitoSuave: Color.lerp(exitoSuave, other.exitoSuave, t)!,
-      advertencia: Color.lerp(advertencia, other.advertencia, t)!,
-      advertenciaSuave: Color.lerp(
-        advertenciaSuave,
-        other.advertenciaSuave,
-        t,
-      )!,
-      error: Color.lerp(error, other.error, t)!,
-      degradadoAcento: LinearGradient.lerp(
-        degradadoAcento,
-        other.degradadoAcento,
-        t,
-      )!,
+      fondo: l(fondo, other.fondo),
+      superficie: l(superficie, other.superficie),
+      hundido: l(hundido, other.hundido),
+      sombraOscura: l(sombraOscura, other.sombraOscura),
+      sombraClara: l(sombraClara, other.sombraClara),
+      separador: l(separador, other.separador),
+      borde: l(borde, other.borde),
+      textoPrincipal: l(textoPrincipal, other.textoPrincipal),
+      textoSecundario: l(textoSecundario, other.textoSecundario),
+      textoSobreAcento: l(textoSobreAcento, other.textoSobreAcento),
+      acento: l(acento, other.acento),
+      hecho: l(hecho, other.hecho),
+      siguiente: l(siguiente, other.siguiente),
+      advertencia: l(advertencia, other.advertencia),
+      error: l(error, other.error),
+      planoCorredor: l(planoCorredor, other.planoCorredor),
+      planoHabitacion: l(planoHabitacion, other.planoHabitacion),
+      planoMuro: l(planoMuro, other.planoMuro),
+      planoTexto: l(planoTexto, other.planoTexto),
+      rutaRanura: l(rutaRanura, other.rutaRanura),
     );
   }
 }
