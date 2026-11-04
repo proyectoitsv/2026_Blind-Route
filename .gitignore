@@ -87,3 +87,5 @@ log.txt
 *.swp
 *.bak
 *~
+# Contexto de Claude Code: es local, cada uno tiene el suyo
+CLAUDE.md
