@@ -74,6 +74,21 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # Inter (licencia OFL: assets/fonts/Inter/OFL.txt), empaquetada para que la
+  # app se vea igual sin internet. Pesos estáticos: la versión variable da
+  # problemas con los pesos en Flutter. La usa lib/design/tipografia.dart.
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter/Inter-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Inter/Inter-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Inter/Inter-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Inter/Inter-Bold.ttf
+          weight: 700
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

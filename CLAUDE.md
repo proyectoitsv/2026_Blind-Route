@@ -37,6 +37,7 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `flutter_compass`, `sensors_plus` (orientación y movimiento).
 - `flutter_tts`, `speech_to_text` (voz).
 - `supabase_flutter`, `wakelock_plus`, `permission_handler`, `image_picker`.
+- Fuente Inter 4.1 (licencia OFL), empaquetada en `assets/fonts/Inter/` con pesos estáticos 400, 500, 600 y 700 (declarada en `pubspec.yaml`, sección `fonts:`).
 - Lints: `flutter_lints` (`analysis_options.yaml`).
 - Tests: `test/zonas_test.dart` (bloqueo por centro, paredes, snap y rutas que no cruzan zonas; 21 casos) `test/histeresis_celda_test.dart` (histéresis frente a paredes angostas; 12 casos) `test/ajustes_navegacion_test.dart` (ajustes en capas; 10 casos), `test/asistente_trazo_test.dart` (imán con zoom, paredes finas; 5 casos) `test/orientador_llegada_test.dart` (orientación hacia el lugar al llegar; 12 casos), `test/ajustes_voz_test.dart` (ajustes de voz del usuario; 3 casos), `test/seguidor_ruta_test.dart` (qué recálculos son un cambio de fondo; 6 casos), `test/sin_camino_test.dart` (qué punta quedó encerrada cuando no hay camino; 6 casos) y `test/voz_prioridad_test.dart` (las indicaciones cortan a las frases secundarias, con el motor de voz simulado sobre el canal de flutter_tts; 7 casos). Se corren con `flutter test`. Fuera de eso, los tests de verificación de cada sesión se hacen en archivos temporales y se borran.
 
@@ -53,7 +54,16 @@ Backend: **Supabase** (login de admin por email y contraseña, con registro púb
 - `pantalla_rubros.dart`: rubros (categorías de lugares) editables.
 - `modo_automatico.dart`: detección automática del piso y del mapa.
 - `mapa_widget.dart` (~1400 líneas): painters y dibujo del plano, ruta, beacons y zonas. La celda del usuario se desliza entre celdas (`_CapaUsuario`, sólo dibujo).
-- `tema.dart`: tokens de diseño. Fondo `#0D1117`, acento cian `#00C8E0`, ruta `#2979FF`. Contraste WCAG AA.
+- `tema.dart`: sólo reexporta `TemaApp` (`design/tema_legado.dart`) para las pantallas que todavía no se migraron al sistema de diseño. Se borra al terminar la fase 5 del rediseño.
+
+**Sistema de diseño (`lib/design/`)**: lo nuevo o migrado importa `design/design.dart` (el barrel).
+- `colores.dart`: `ColoresApp`, la paleta y su fuente de verdad, con el contraste WCAG de cada color anotado (calculado con script, truncado). Incluye el token `borde` (`#6E7681`) para bordes de controles y los colores del mapa.
+- `estilo.dart`: `EstiloApp`, `ThemeExtension` con los mismos colores por rol y el degradado de acento. Se lee con `EstiloApp.de(context)`; bajo el tema viejo devuelve los oscuros.
+- `tipografia.dart`: `TipografiaApp`, Inter y la escala (`tituloGrande` 34, `titulo` 22, `tituloSeccion` 20, `destacado` y `cuerpo` 17, `subtitulo` 15, `nota` 13, `leyenda` 12, `metricaGrande` 40 y `metricaMediana` 28 con cifras tabulares), más su `TextTheme` de Material 3.
+- `formas.dart`: `FormasApp` (radios 20 tarjeta, 12 campo, 14 botón, 24 hoja; chips redondos; botón de 52, fila mínima de 52, área táctil de 48). `espaciado.dart`: `EspaciadoApp` (16 a los costados y dentro de las tarjetas, 12 entre tarjetas, 28 entre secciones).
+- `movimiento.dart`: `MovimientoApp`, duraciones, curvas, resorte de controles y escala del cambio de pestaña (los aplica la fase 3).
+- `tema_blindroute.dart`: `TemaBlindRoute.oscuro`, el `ThemeData` de Material 3 armado a mano con la paleta (sin Dynamic Color ni tinte de elevación), con Inter.
+- `tema_legado.dart`: `TemaApp`, lo que era `lib/tema.dart`, sin cambios visibles (los colores salen de `ColoresApp`). Sólo para las pantallas sin migrar: no sumarle usos.
 
 **Datos locales y modelos**
 - `database.dart`: `DatabaseHelper` (singleton de sqflite), versión de esquema **17**.
@@ -117,10 +127,22 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 - **Accesibilidad**: la app está pensada para usarse sin ver. Todo feedback importante va por voz, y la UI tiene que funcionar con lector de pantalla.
 - **Commits**: mensaje corto en español. Si algo no fue probado en el teléfono, el mensaje lo aclara entre paréntesis (por ejemplo, "(no probado)").
 
+## Rediseño visual (rama `estética`)
+
+Se rediseña sólo la capa visual: colores, tipografía, formas, componentes, movimiento y el ícono de la app. La lógica (navegación, posicionamiento, BLE, voz, Supabase, base de datos) y sus valores numéricos no se tocan. El pedido completo es un prompt del usuario (`PROMPT_REDISENO_BLINDROUTE_CLAUDECODE.md`, fuera del repo). Lo esencial:
+
+- **Una fase por vez.** Al terminar cada una: resumen, `flutter analyze` sin avisos nuevos, `flutter test` en verde, pasos para probar en el teléfono (con TalkBack y letra al 200 %) y pausa hasta el "dale" del usuario. El commit lo hace el usuario con los comandos que se le dan: archivos explícitos (nunca `git add -A` ni `git add .`), "(no probado)" si corresponde, y la entrada del Registro en el mismo commit. Push a `origin estética` (la primera vez con `-u`).
+- **Fases:** 0 sistema de diseño (hecha); 1 ícono con `assets/icon/logo_fuente.png` sin recolorearlo (legacy en `mipmap-*` de 48 a 192 px, adaptive con primer plano en la zona segura del 66 %, fondo `#0D1117` y capa monocromática; script temporal fuera del repo, sin `flutter_launcher_icons`); 2 componentes en `lib/design/components/` y galería de debug; 3 movimiento (respeta "Quitar animaciones" del teléfono y un interruptor propio en Ajustes); 4 texturas opcionales con interruptor; 5 migración, un commit por pantalla (5.1 home usuario, 5.2 catálogo de mapas, 5.3 login admin, 5.4 edificios y pisos, 5.5 mapas publicados, 5.6 configuración, 5.7 navegación: antes de tocarla, mostrarle al usuario los widgets y textos ligados a la lógica); 6 opcional, tema claro y acentos alternativos.
+- **Accesibilidad, gana siempre:** texto ≥ 4,5:1, texto importante ≥ 7:1, íconos, bordes de controles y gráficos ≥ 3:1 (calculado con script y anotado en el token); área táctil ≥ 48 dp; `Semantics` en todo control y `ExcludeSemantics` en lo decorativo, con un orden de foco que tenga sentido; nada se rompe con letra al 200 %; con reducir movimiento, sin transiciones elaboradas ni texturas animadas.
+- **Reglas:** tema oscuro principal, Material 3 sin Dynamic Color; tarjetas sin borde ni sombra; un solo degradado fuerte por pantalla, nunca en controles críticos de la navegación; títulos en tipo oración; íconos `Icons.*_rounded` (relleno si está activo, `_outlined_rounded` si no); los textos que se dicen por voz no cambian de redacción ni de orden.
+- **Permisos:** `pubspec.yaml` sólo para declarar fuentes y `assets/icon/`; íconos en `android/app/src/main/res/`. Nada de paquetes nuevos ni `flutter pub upgrade`. Nunca tocar flavors, entrypoints, `AndroidManifest.xml`, `build.gradle*` ni `Info.plist`. Pedir permiso antes de descargar cualquier archivo.
+- **No commitear** los archivos que regenera Flutter (`linux/flutter/*`, `macos/Flutter/GeneratedPluginRegistrant.swift`, `windows/flutter/*`).
+
 ## Estado actual
 
-- Rama de trabajo: `app_doble`. Rama base: `main`. HEAD en el commit que sigue a `f78d09e` (sólo actualiza este archivo).
-- **Sin commitear y sin probar:** botón "Borrar todas" (calibraciones y puntos clave del piso) en el admin (Registro del 2026-11-02, segunda entrada).
+- Rama de trabajo: `estética` (rediseño visual, ver la sección de arriba). Sale de `app_doble` en `8a13cb0` y se sube a `origin/estética` (el primer push, con `-u`, es el de la fase 0). Rama base: `main`.
+- **Fase 0 del rediseño (sistema de diseño): hecha y probada por el usuario** (las dos apps se ven igual que antes, como se esperaba). Va en el commit "Sistema de diseño en lib/design/ con Inter (fase 0)". Detalle en el Registro del 2026-11-03. Sigue la fase 1 (ícono).
+- **Commiteado en `8a13cb0` y sin probar:** botón "Borrar todas" (calibraciones y puntos clave del piso) en el admin (Registro del 2026-11-02, segunda entrada).
 - Explicación completa del funcionamiento, para el usuario: documento de Claude Docs "Cómo funciona BlindRoute" (https://claude.ai/artifact/W2itBEXnsCHPF5gRVbkFmA). Si cambia algo de fondo, conviene actualizarlo.
 - **Commiteado en `f78d09e` y sin probar:** la lista de dispositivos del admin (modo Beacons) sale de más fuerte a más débil, con filtro de potencia mínima (Registro del 2026-11-02).
 - La celda del usuario que se desliza está commiteada en `245d345` (probada: "anda bien") y la flecha de orientación del admin en `814d011` (Registro del 2026-10-30).
@@ -129,7 +151,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 - Lo de las sesiones del 2026-10-19 al 2026-10-22 está commiteado (`a600e8f`, `6c5cb19`, `54d36f1`, `01cfe36`, `6c3d063`). Según el Registro, nada de eso está probado en el teléfono.
 - Lo del 2026-10-26 ("Ubicación lista" y textos del admin) está commiteado en `aee68a8` y el usuario lo probó en el teléfono.
 - Lo demás del 2026-10-26 también está commiteado: orientación al llegar, "Ubicación lista" con la posición asentada, palabras cortas, puntos clave y ajustes de voz del usuario. El usuario probó los puntos clave y los ajustes de voz ("mejoró bastante"). El arreglo del idioma de la voz no está probado; de lo demás no dijo nada. Detalle en el Registro.
-- `flutter analyze` pasa, con 4 avisos de lint que ya existían (ninguno nuevo). `flutter test` pasa (82 casos).
+- `flutter analyze` pasa con 7 avisos de tipo info, ninguno nuevo: los 4 de siempre y 3 deprecaciones de `speech_to_text` 7.4.0 en `voz_service.dart`. `pubspec.lock` no está en git y cada máquina resuelve sus versiones: con una versión anterior de `speech_to_text` son 4. `flutter test` pasa (82 casos).
 - Varios commits anteriores están marcados como "no probado" (`6d105e6`, `c34654a`, `b5c83df`, `29bc508`).
 - `feedback.md` está vacío. Es el archivo de feedback del proyecto.
 - `log.txt` (~8 MB, codificado en UTF-16) es un volcado de logcat en la raíz del repositorio. Es anterior a los cambios de la sesión: no tiene sus líneas de diagnóstico.
@@ -559,3 +581,28 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 **Verificado:** `flutter analyze` con los mismos 4 avisos de antes y `flutter test` con 82 casos en verde.
 
 **Pendiente:** paso 19 del Estado actual.
+
+### 2026-11-03: rediseño visual, fase 0 (sistema de diseño)
+
+**Documentación modificada:** este `claude.md`: sección "Rediseño visual", `lib/design/` en la Estructura, Inter en el Stack y el Estado actual ("Borrar todas" ya estaba commiteado en `8a13cb0`; `flutter analyze` da 7 avisos, no 4).
+
+**Pedido:** rediseñar la capa visual por fases en la rama `estética`, sin tocar la lógica (ver "Rediseño visual"). La fase 0 arma el sistema de diseño sin tocar pantallas.
+
+**Cambios (commit "Sistema de diseño en lib/design/ con Inter (fase 0)"):**
+- `lib/design/` (nuevo): `colores.dart`, `estilo.dart`, `tipografia.dart`, `formas.dart`, `espaciado.dart`, `movimiento.dart`, `tema_blindroute.dart`, `tema_legado.dart` y el barrel `design.dart`. Detalle en la Estructura.
+- `lib/tema.dart`: quedó como `export 'design/tema_legado.dart';`, así las 13 pantallas que lo importan no se tocaron. `TemaApp` se mudó sin cambios visibles: los colores salen de `ColoresApp` con los mismos valores, y las medidas y el `ThemeData` de antes quedan en el legado hasta la fase 5. Se sacaron los miembros que no usaba nadie (`textoSobrePrimario`, `primario`, `textoSobreFondoClaro`, `instruccionChip`, `beacon`, `spBrujula`, `spBrujulaGrados`, `spDestino`, `spEstado`) y `spBase` pasó a privado.
+- `assets/fonts/Inter/`: Inter 4.1 (release oficial de github.com/rsms/inter, descargado con permiso del usuario), pesos estáticos Regular, Medium, SemiBold y Bold (~0,4 MB cada uno) y la licencia como `OFL.txt`.
+- `pubspec.yaml`: sólo la sección `fonts:` (familia `Inter`, pesos 400 a 700). `pubspec.lock` no cambió.
+
+**Decisiones:**
+- **Token nuevo `borde` (`#6E7681`)** para los bordes de controles. El separador (`#30363D`) da 1,55:1 sobre el fondo y no sirve para eso; `borde` es el gris más discreto de la familia que pasa 3:1 contra los cuatro fondos (3,31 sobre la superficie). No se agregó ningún otro color.
+- **Contrastes medidos** (truncados y anotados en cada token): el error da 5,55 sobre el fondo (el prompt decía 5,6) y 4,46 sobre la superficie, así que ahí no va como texto. El texto secundario da 6,15 sobre el fondo (no 6,2) y no llega a 7: no sirve para títulos ni números clave. En la tarjeta de instrucción (`exitoSuave`), el dato principal va en texto principal (11,27); el verde da 6,56. En el mapa, sobre un plano blanco, el beacon da 2,03 y el lugar 2,72: sus marcadores necesitan contorno (revisar en la fase 5).
+- **Las pantallas todavía no cambian:** siguen con `Theme(data: TemaApp.tema)`, el de antes, y toman el tema nuevo al migrarse. `EstiloApp.de(context)` devuelve los oscuros bajo el tema viejo, así un componente nuevo se ve bien en una pantalla vieja.
+- **`MaterialApp` sigue con `ThemeData(primarySwatch: Colors.indigo)`** (claro) en `main_user.dart` y `main_admin.dart`. Los diálogos y hojas que se abren con un contexto que está por encima del `Theme` de cada pantalla toman ese tema (el caso que ya se arregló en el panel de ajustes). Pasar `TemaBlindRoute.oscuro` ahí es una línea por entrypoint, pero el prompt dice no tocar los entrypoints: pedirle permiso al usuario antes de la fase 5.
+- **Tema nuevo:** `FilledButton` es el principal sólido (acento), para donde no va el degradado; `FilledButton.tonal` y `ElevatedButton`, el secundario gris con texto en acento; `OutlinedButton`, con contorno `borde`. Deshabilitados, el texto sigue legible (4,94). El chip de filtro seleccionado lleva relleno de acento con texto oscuro y tilde. Diálogos y hojas en `panel`, radio 24, con manija en `borde`. Campos con contorno `borde` (antes `#30363D`, que no llegaba a 3:1).
+
+**Verificado:** con tests temporales (borrados). `TemaApp` mudado es idéntico al original: constantes, `ThemeData` campo por campo con los estilos de botón resueltos en cada estado, y el volcado de diagnóstico completo. El tema nuevo con letra al 100 y al 200 % en 360 dp de ancho no desborda y pasa `androidTapTargetGuideline` (todo ≥ 48 dp; el chip de filtro mide 48 y 57 de alto) y `textContrastGuideline`. Flutter empaqueta los 4 pesos en el `FontManifest` y los lee como TrueType. `flutter analyze`: los mismos 7 avisos. `flutter test`: 82 casos en verde. El APK de debug del flavor usuario compila y lleva adentro los 4 pesos de Inter.
+
+**Probado por el usuario:** las dos apps se ven igual que antes, que es lo esperado (la fase 0 no cambia nada visible).
+
+**Pendiente:** la fase 1 (ícono).
