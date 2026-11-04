@@ -132,7 +132,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 Se rediseña sólo la capa visual: colores, tipografía, formas, componentes, movimiento y el ícono de la app. La lógica (navegación, posicionamiento, BLE, voz, Supabase, base de datos) y sus valores numéricos no se tocan. El pedido completo es un prompt del usuario (`PROMPT_REDISENO_BLINDROUTE_CLAUDECODE.md`, fuera del repo). Lo esencial:
 
 - **Una fase por vez.** Al terminar cada una: resumen, `flutter analyze` sin avisos nuevos, `flutter test` en verde, pasos para probar en el teléfono (con TalkBack y letra al 200 %) y pausa hasta el "dale" del usuario. El commit lo hace el usuario con los comandos que se le dan: archivos explícitos (nunca `git add -A` ni `git add .`), "(no probado)" si corresponde, y la entrada del Registro en el mismo commit. Push a `origin estética` (la primera vez con `-u`).
-- **Fases:** 0 sistema de diseño (hecha); 1 ícono con `assets/icon/logo_fuente.png` sin recolorearlo (legacy en `mipmap-*` de 48 a 192 px, adaptive con primer plano en la zona segura del 66 %, fondo `#0D1117` y capa monocromática; script temporal fuera del repo, sin `flutter_launcher_icons`); 2 componentes en `lib/design/components/` y galería de debug; 3 movimiento (respeta "Quitar animaciones" del teléfono y un interruptor propio en Ajustes); 4 texturas opcionales con interruptor; 5 migración, un commit por pantalla (5.1 home usuario, 5.2 catálogo de mapas, 5.3 login admin, 5.4 edificios y pisos, 5.5 mapas publicados, 5.6 configuración, 5.7 navegación: antes de tocarla, mostrarle al usuario los widgets y textos ligados a la lógica); 6 opcional, tema claro y acentos alternativos.
+- **Fases:** 0 sistema de diseño (hecha); 1 ícono de la app (hecha, ver el Registro del 2026-11-04); 2 componentes en `lib/design/components/` y galería de debug; 3 movimiento (respeta "Quitar animaciones" del teléfono y un interruptor propio en Ajustes); 4 texturas opcionales con interruptor; 5 migración, un commit por pantalla (5.1 home usuario, 5.2 catálogo de mapas, 5.3 login admin, 5.4 edificios y pisos, 5.5 mapas publicados, 5.6 configuración, 5.7 navegación: antes de tocarla, mostrarle al usuario los widgets y textos ligados a la lógica); 6 opcional, tema claro y acentos alternativos.
 - **Accesibilidad, gana siempre:** texto ≥ 4,5:1, texto importante ≥ 7:1, íconos, bordes de controles y gráficos ≥ 3:1 (calculado con script y anotado en el token); área táctil ≥ 48 dp; `Semantics` en todo control y `ExcludeSemantics` en lo decorativo, con un orden de foco que tenga sentido; nada se rompe con letra al 200 %; con reducir movimiento, sin transiciones elaboradas ni texturas animadas.
 - **Reglas:** tema oscuro principal, Material 3 sin Dynamic Color; tarjetas sin borde ni sombra; un solo degradado fuerte por pantalla, nunca en controles críticos de la navegación; títulos en tipo oración; íconos `Icons.*_rounded` (relleno si está activo, `_outlined_rounded` si no); los textos que se dicen por voz no cambian de redacción ni de orden.
 - **Permisos:** `pubspec.yaml` sólo para declarar fuentes y `assets/icon/`; íconos en `android/app/src/main/res/`. Nada de paquetes nuevos ni `flutter pub upgrade`. Nunca tocar flavors, entrypoints, `AndroidManifest.xml`, `build.gradle*` ni `Info.plist`. Pedir permiso antes de descargar cualquier archivo.
@@ -140,8 +140,9 @@ Se rediseña sólo la capa visual: colores, tipografía, formas, componentes, mo
 
 ## Estado actual
 
-- Rama de trabajo: `estética` (rediseño visual, ver la sección de arriba). Sale de `app_doble` en `8a13cb0` y se sube a `origin/estética` (el primer push, con `-u`, es el de la fase 0). Rama base: `main`.
-- **Fase 0 del rediseño (sistema de diseño): hecha y probada por el usuario** (las dos apps se ven igual que antes, como se esperaba). Va en el commit "Sistema de diseño en lib/design/ con Inter (fase 0)". Detalle en el Registro del 2026-11-03. Sigue la fase 1 (ícono).
+- Rama de trabajo: `estética` (rediseño visual, ver la sección de arriba). Sale de `app_doble` en `8a13cb0` y sigue a `origin/estética`. Rama base: `main`.
+- **Fase 0 del rediseño (sistema de diseño):** probada por el usuario (las dos apps se ven igual que antes, como se esperaba), commiteada en `de84a0d` y subida. Detalle en el Registro del 2026-11-03.
+- **Fase 1 del rediseño (ícono de la app): hecha, sin commitear y sin probar en el teléfono.** Detalle en el Registro del 2026-11-04. Sigue la fase 2 (componentes y galería).
 - **Commiteado en `8a13cb0` y sin probar:** botón "Borrar todas" (calibraciones y puntos clave del piso) en el admin (Registro del 2026-11-02, segunda entrada).
 - Explicación completa del funcionamiento, para el usuario: documento de Claude Docs "Cómo funciona BlindRoute" (https://claude.ai/artifact/W2itBEXnsCHPF5gRVbkFmA). Si cambia algo de fondo, conviene actualizarlo.
 - **Commiteado en `f78d09e` y sin probar:** la lista de dispositivos del admin (modo Beacons) sale de más fuerte a más débil, con filtro de potencia mínima (Registro del 2026-11-02).
@@ -606,3 +607,27 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 **Probado por el usuario:** las dos apps se ven igual que antes, que es lo esperado (la fase 0 no cambia nada visible).
 
 **Pendiente:** la fase 1 (ícono).
+
+### 2026-11-04: rediseño visual, fase 1 (ícono de la app)
+
+**Documentación modificada:** este `claude.md` (sección "Rediseño visual" y Estado actual).
+
+**Pedido:** el ícono de las dos apps a partir de `assets/icon/logo_fuente.png` (un pin azul y un camino en S de azul a verde que juntos arman una "B", sobre un cuadrado redondeado casi negro), sin recolorearlo ni cambiarle la forma.
+
+**Cambios (sin commit, sin probar en el teléfono), en `android/app/src/main/res/`:**
+- `mipmap-*/ic_launcher.png` (reemplaza el de Flutter): ícono legacy (Android 7 y anteriores) de 48 dp, de 48 a 192 px. Es el logo recortado a su cuadrado redondeado, transparente afuera y con 2 dp de aire.
+- `mipmap-anydpi-v26/ic_launcher.xml` (nuevo): ícono adaptable con fondo, primer plano y capa monocromática.
+- `mipmap-*/ic_launcher_background.png` (nuevo): 108 dp de `#0D1117` liso. Va como PNG y no como color porque `values/` no está entre los permisos del rediseño.
+- `mipmap-*/ic_launcher_foreground.png` (nuevo): 108 dp con el pin y la S. El cuadrado del logo se calza en los 72 dp visibles, así el glifo conserva la proporción del logo (59 % del lado) y llega a 28 dp del centro, adentro de la zona segura (33 dp de radio).
+- `mipmap-*/ic_launcher_monochrome.png` (nuevo): la silueta en blanco para los íconos temáticos de Android 13, con el agujero del pin y los fundidos del camino.
+- `assets/icon/logo_fuente.png`: el logo, ahora en git. No se declara en `pubspec.yaml` porque la app no lo muestra.
+- Los dos flavors usan el mismo `@mipmap/ic_launcher`: las dos apps tienen el ícono nuevo y conservan sus nombres. No se tocaron el manifest ni `build.gradle.kts`.
+
+**Cómo se generó** (por si hay que regenerarlo, por ejemplo con otro logo): script temporal fuera del repo, con System.Drawing de .NET desde PowerShell, sin descargas.
+- El logo es de 1254 px, RGB sin transparencia. El fondo de afuera es `#01010C`; el cuadrado redondeado va de x 155 a 1098 y de y 158 a 1087, con radio ~214 px y un brillo azul marino en los bordes. Se detecta donde el canal azul pasa de 18, y el radio por las diagonales.
+- El glifo se separa con "color a alfa" contra `#01010C`: sólo cuenta lo que es más claro que el fondo, canal por canal, y se deshace la mezcla para recuperar el color. El ruido azul marino se descarta (alfa por debajo de 0,11 queda en 0, con rampa hasta 0,22). Compuesto sobre `#0D1117`, da el color del logo. La silueta es opaca desde alfa 0,55 y parcial desde 0,15.
+- Remuestreo bicúbico de alta calidad sobre píxeles premultiplicados, para que no queden halos.
+
+**Verificado:** vistas previas del adaptable con máscara de círculo, cuadrado, squircle y gota, del temático claro y oscuro, del primer plano sobre magenta (sin halo ni ruido del fondo) y del legacy a 192 y 48 px. `flutter analyze`: los mismos 7 avisos. `flutter test`: 82 casos en verde. Los APK de debug de los dos flavors compilan y llevan el XML del adaptable y los 20 PNG (Android acepta la capa monocromática).
+
+**Pendiente:** probarlo en el teléfono y commitear. Después, la fase 2 (componentes y galería).
