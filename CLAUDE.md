@@ -125,7 +125,7 @@ Historial de migraciones según el comentario del código: v14 agrega `lugares.p
 - **Nombres**: clases en PascalCase, archivos en snake_case, identificadores en español.
 - **Comentarios**: explican el "por qué" en bloques con separadores (`───`, `═══`). Cuando una decisión es delicada, se documenta el problema que resuelve.
 - **Accesibilidad**: la app está pensada para usarse sin ver. Todo feedback importante va por voz, y la UI tiene que funcionar con lector de pantalla.
-- **Commits**: mensaje corto en español. Si algo no fue probado en el teléfono, el mensaje lo aclara entre paréntesis (por ejemplo, "(no probado)").
+- **Commits**: mensaje corto en español, sin `Co-Authored-By: Claude` ni ninguna otra atribución a Claude (tampoco "Generated with Claude Code" en los PR). Si algo no fue probado en el teléfono, el mensaje lo aclara entre paréntesis (por ejemplo, "(no probado)").
 
 ## Rediseño visual (rama `estética`)
 
@@ -141,8 +141,9 @@ Se rediseña sólo la capa visual: colores, tipografía, formas, componentes, mo
 ## Estado actual
 
 - Rama de trabajo: `estética` (rediseño visual, ver la sección de arriba). Sale de `app_doble` en `8a13cb0` y sigue a `origin/estética`. Rama base: `main`.
-- **Fase 0 del rediseño (sistema de diseño):** probada por el usuario (las dos apps se ven igual que antes, como se esperaba), commiteada en `de84a0d` y subida. Detalle en el Registro del 2026-11-03.
-- **Fase 1 del rediseño (ícono de la app): hecha, sin commitear y sin probar en el teléfono.** Detalle en el Registro del 2026-11-04. Sigue la fase 2 (componentes y galería).
+- **Fase 0 del rediseño (sistema de diseño):** probada por el usuario (las dos apps se ven igual que antes, como se esperaba), commiteada en `9d4b005` y subida. Detalle en el Registro del 2026-11-03.
+- **Fase 1 del rediseño (ícono de la app):** probada por el usuario en el teléfono ("anda") y commiteada en `9871f72`. Detalle en el Registro del 2026-11-04. Sigue la fase 2 (componentes y galería).
+- Los commits van sin atribución a Claude (ver Convenciones). Los dos de esta rama que la tenían se reescribieron sin ella; los 9 de `app_doble` todavía la tienen (Registro del 2026-11-04, "commits sin atribución a Claude").
 - **Commiteado en `8a13cb0` y sin probar:** botón "Borrar todas" (calibraciones y puntos clave del piso) en el admin (Registro del 2026-11-02, segunda entrada).
 - Explicación completa del funcionamiento, para el usuario: documento de Claude Docs "Cómo funciona BlindRoute" (https://claude.ai/artifact/W2itBEXnsCHPF5gRVbkFmA). Si cambia algo de fondo, conviene actualizarlo.
 - **Commiteado en `f78d09e` y sin probar:** la lista de dispositivos del admin (modo Beacons) sale de más fuerte a más débil, con filtro de potencia mínima (Registro del 2026-11-02).
@@ -614,7 +615,7 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 
 **Pedido:** el ícono de las dos apps a partir de `assets/icon/logo_fuente.png` (un pin azul y un camino en S de azul a verde que juntos arman una "B", sobre un cuadrado redondeado casi negro), sin recolorearlo ni cambiarle la forma.
 
-**Cambios (sin commit, sin probar en el teléfono), en `android/app/src/main/res/`:**
+**Cambios (commit `9871f72`), en `android/app/src/main/res/`:**
 - `mipmap-*/ic_launcher.png` (reemplaza el de Flutter): ícono legacy (Android 7 y anteriores) de 48 dp, de 48 a 192 px. Es el logo recortado a su cuadrado redondeado, transparente afuera y con 2 dp de aire.
 - `mipmap-anydpi-v26/ic_launcher.xml` (nuevo): ícono adaptable con fondo, primer plano y capa monocromática.
 - `mipmap-*/ic_launcher_background.png` (nuevo): 108 dp de `#0D1117` liso. Va como PNG y no como color porque `values/` no está entre los permisos del rediseño.
@@ -630,4 +631,18 @@ Relevamiento a pedido del usuario (sin cambios de código). Además de los filtr
 
 **Verificado:** vistas previas del adaptable con máscara de círculo, cuadrado, squircle y gota, del temático claro y oscuro, del primer plano sobre magenta (sin halo ni ruido del fondo) y del legacy a 192 y 48 px. `flutter analyze`: los mismos 7 avisos. `flutter test`: 82 casos en verde. Los APK de debug de los dos flavors compilan y llevan el XML del adaptable y los 20 PNG (Android acepta la capa monocromática).
 
-**Pendiente:** probarlo en el teléfono y commitear. Después, la fase 2 (componentes y galería).
+**Probado por el usuario:** "anda".
+
+**Pendiente:** la fase 2 (componentes y galería).
+
+### 2026-11-04: commits sin atribución a Claude
+
+**Documentación modificada:** este `claude.md` (Convenciones, Estado actual y este Registro).
+
+**Pedido:** que los commits no lleven `Co-Authored-By: Claude …` ni ninguna otra atribución a Claude, y sacarlo de los que ya lo tenían.
+
+**Cambios:**
+- Convenciones: los commits y los PR van sin atribución a Claude.
+- Los dos commits del usuario en esta rama quedan sin el trailer. Sólo cambia el mensaje: autor, fechas y archivos son los mismos. `de84a0d` pasa a ser `9d4b005` (fase 0) y `7b1edf3`, `9871f72` (fase 1). Se reescriben con `git filter-branch -f --msg-filter "sed -e '/^Co-Authored-By: Claude/d' | git stripspace" -- 8a13cb0..estética` y se suben con `git push --force-with-lease origin estética`. Los hashes nuevos se pueden saber de antemano porque la reescritura conserva autor y fechas: se calcularon en una copia del repo.
+
+**Sin tocar:** los 9 commits de `app_doble` que también lo tienen, todos de Marcianitox: `ef5e5c0`, `02d9498`, `20e33dc`, `aee68a8`, `de55a11`, `18a8833`, `f78d09e`, `1947298` y `8a13cb0`. Sacarlo de esos obliga a reescribir `app_doble` desde `ef5e5c0` (cambian los hashes de sus 18 commits, varios citados en este archivo), subirla con force push, que quien trabaje en `app_doble` rehaga su copia local y rehacer `estética` encima. Hay que acordarlo antes.
