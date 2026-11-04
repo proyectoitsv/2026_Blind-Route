@@ -1,0 +1,541 @@
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'ajustes_navegacion.dart';
+import 'beacon_model.dart';
+import 'zona_model.dart';
+import 'poi_model.dart';
+import 'calibracion_model.dart';
+import 'database.dart';
+import 'supabase_config.dart';
+
+/// Ítem liviano del catálogo de mapas publicados. NO trae los datos pesados
+/// (beacons, zonas, calibraciones): sólo lo justo para pintar la lista.
+/// Esos datos se descargan recién cuando el usuario toca "Descargar".
+class MapaPublicadoResumen {
+  final String id; // uuid remoto = clave de publicación/descarga
+  final String edificioNombre;
+  final String pisoNombre;
+  final String imagenPath; // ruta dentro del bucket de Storage
+  final int numBeacons;
+  final int numCalibraciones;
+  final DateTime actualizadoEn;
+  final String? publicadoPor; // uid del admin dueño (sólo se lee en modo admin)
+
+  const MapaPublicadoResumen({
+    required this.id,
+    required this.edificioNombre,
+    required this.pisoNombre,
+    required this.imagenPath,
+    required this.numBeacons,
+    required this.numCalibraciones,
+    required this.actualizadoEn,
+    this.publicadoPor,
+  });
+
+  factory MapaPublicadoResumen.fromRow(Map<String, dynamic> row) {
+    return MapaPublicadoResumen(
+      id: row['id'] as String,
+      edificioNombre: (row['edificio_nombre'] as String?) ?? 'Sin nombre',
+      pisoNombre: (row['piso_nombre'] as String?) ?? 'Piso',
+      imagenPath: (row['imagen_path'] as String?) ?? '',
+      numBeacons: (row['num_beacons'] as num?)?.toInt() ?? 0,
+      numCalibraciones: (row['num_calibraciones'] as num?)?.toInt() ?? 0,
+      actualizadoEn: DateTime.tryParse('${row['actualizado_en']}')?.toLocal() ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      publicadoPor: row['publicado_por'] as String?,
+    );
+  }
+}
+
+/// Cliente de la nube de mapas. Encapsula toda la interacción con Supabase
+/// (Postgres + Storage) para que el resto de la app no sepa nada del SDK.
+///
+/// Diseño pensado para ir liviano:
+///  - La imagen del plano vive en Storage, no como base64 en una fila.
+///  - Cada piso publicado es UNA fila; sus hijos (beacons/zonas/lugares/
+///    calibraciones) van como columnas JSONB. Publicar = 1 subida + 1 upsert;
+///    descargar = 1 select + 1 download. Sin N+1 ni transacciones remotas.
+///  - El catálogo lee sólo columnas livianas (sin los JSONB), así listar es
+///    barato aunque haya cientos de calibraciones por piso.
+class SupabaseService {
+  SupabaseService._();
+  static final SupabaseService instance = SupabaseService._();
+
+  static const String _tabla = 'mapas_publicados';
+
+  bool get configurado => SupabaseConfig.configurado;
+
+  SupabaseClient get _client => Supabase.instance.client;
+  String get _bucket => SupabaseConfig.bucketImagenes;
+
+  // ── PUBLICAR (admin) ──────────────────────────────────────────────────────
+
+  /// Sube (o actualiza) un piso completo a la nube y devuelve su id remoto.
+  ///
+  /// Si [remoteIdExistente] no es null, se re-publica sobre esa misma fila
+  /// (upsert por id): republicar un mapa no crea duplicados, lo reemplaza.
+  /// El llamador debe persistir el id devuelto en `pisos.remote_id`.
+  Future<String> publicarPiso({
+    required String edificioNombre,
+    required String pisoNombre,
+    required String rutaImagen,
+    required double escalaX,
+    required double escalaY,
+    required double tamCelda,
+    required double rotacion,
+    required Iterable<BeaconMarcado> beacons,
+    required List<ZonaNoTransitable> zonas,
+    required List<LugarInteres> lugares,
+    required List<CalibracionRegistro> calibraciones,
+    String? remoteIdExistente,
+  }) async {
+    final id = (remoteIdExistente != null && remoteIdExistente.isNotEmpty)
+        ? remoteIdExistente
+        : _uuidV4();
+
+    // 1) Imagen del plano → Storage (upsert: pisa la anterior si ya existía).
+    final archivo = File(rutaImagen);
+    if (!await archivo.exists()) {
+      throw Exception('No se encontró la imagen del plano en disco.');
+    }
+    final Uint8List bytes = await archivo.readAsBytes();
+    final ext = p.extension(rutaImagen).toLowerCase();
+    final storagePath = '$id$ext';
+    await _client.storage.from(_bucket).uploadBinary(
+          storagePath,
+          bytes,
+          fileOptions: FileOptions(
+            upsert: true,
+            contentType: _mimeDe(ext),
+            cacheControl: '3600',
+          ),
+        );
+
+    // 2) Fila del piso + hijos en JSONB → un único upsert.
+    final beaconsList = beacons.toList();
+    final fila = <String, dynamic>{
+      'id': id,
+      'edificio_nombre': edificioNombre,
+      'piso_nombre': pisoNombre,
+      'imagen_path': storagePath,
+      'escala_metros': escalaX,
+      'escala_metros_alto': escalaY,
+      'tam_celda_metros': tamCelda,
+      'rotacion_mapa': rotacion,
+      'beacons': beaconsList
+          .map((b) => {
+                'mac': b.mac,
+                'x': b.posicion.dx,
+                'y': b.posicion.dy,
+                'nombre': b.nombre,
+              })
+          .toList(),
+      'zonas': zonas
+          .map((z) => {
+                'nombre': z.nombre,
+                'vertices':
+                    z.vertices.map((v) => {'dx': v.dx, 'dy': v.dy}).toList(),
+              })
+          .toList(),
+      // Incluye tipo/sube/baja/direccion_entrada de las escaleras dentro del
+      // mismo JSONB: la tabla de Supabase no necesita columnas nuevas.
+      'lugares': lugares.map((l) => l.toJsonNube()).toList(),
+      // toJson() ya deja lecturas_ble / tx_power_ajustado como strings y el
+      // timestamp en ISO: se guarda tal cual y CalibracionRegistro.fromJson lo
+      // reconstruye igual al descargar. Sólo se quita el id local.
+      'calibraciones': calibraciones.map((c) {
+        final m = c.toJson();
+        m.remove('id');
+        return m;
+      }).toList(),
+      'num_beacons': beaconsList.length,
+      'num_calibraciones': calibraciones.length,
+      'actualizado_en': DateTime.now().toUtc().toIso8601String(),
+    };
+
+    // Postgres no admite el carácter nulo \u0000 en text/jsonb. Algunas
+    // lecturas BLE traen bytes nulos de relleno; se limpian antes de subir.
+    // Se reconstruye el nivel superior como Map<String, dynamic> (lo que exige
+    // upsert); los valores anidados se limpian recursivamente.
+    final filaLimpia = <String, dynamic>{
+      for (final entrada in fila.entries)
+        entrada.key: _limpiarNulos(entrada.value),
+    };
+    await _client.from(_tabla).upsert(filaLimpia);
+    return id;
+  }
+
+  // ── CATÁLOGO (usuario) ────────────────────────────────────────────────────
+
+  /// Lista los mapas publicados con columnas livianas (sin los JSONB pesados).
+  Future<List<MapaPublicadoResumen>> listarMapas() async {
+    final data = await _client
+        .from(_tabla)
+        .select(
+          'id, edificio_nombre, piso_nombre, imagen_path, '
+          'num_beacons, num_calibraciones, actualizado_en',
+        )
+        .order('edificio_nombre', ascending: true)
+        .order('piso_nombre', ascending: true);
+
+    return (data as List)
+        .map((e) => MapaPublicadoResumen.fromRow(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  /// URL pública de la imagen de un mapa (para thumbnails del catálogo).
+  String urlImagen(String imagenPath) =>
+      _client.storage.from(_bucket).getPublicUrl(imagenPath);
+
+  // ── AUTODESCARGA POR BEACON ────────────────────────────────────────────────
+
+  /// Dada una lista de MACs detectadas, pregunta al servidor si algún mapa
+  /// publicado contiene alguna de ellas. Devuelve el id remoto del mapa o null.
+  /// La búsqueda ocurre en el server (dentro del JSONB de beacons); no baja
+  /// datos pesados hasta que efectivamente se descarga el mapa.
+  Future<String?> buscarMapaPorMacs(List<String> macs) async {
+    if (macs.isEmpty) return null;
+    final res = await _client
+        .rpc('buscar_mapa_por_macs', params: {'p_macs': macs});
+    return res as String?;
+  }
+
+  // ── SINCRONIZAR EL EDIFICIO AL LLEGAR (sólo app usuario) ──────────────────
+
+  /// Pone al día los pisos de un edificio contra la nube al llegar. Devuelve:
+  ///  - `pendientes`: ids remotos de los pisos del edificio que faltan en el
+  ///    teléfono o tienen una versión más nueva en la nube (hay que bajarlos;
+  ///    la navegación entre pisos necesita tenerlos todos);
+  ///  - `eliminados`: ids remotos de los pisos que el admin eliminó de la
+  ///    nube y que se acaban de quitar del teléfono (piso, beacons, zonas,
+  ///    lugares, calibraciones e imagen).
+  ///
+  /// Consumo: en el caso normal es UNA sola consulta de dos columnas, que
+  /// responde a la vez si hay pisos nuevos, actualizados o eliminados. Sólo
+  /// si algún piso del teléfono no aparece en esa respuesta se hace una
+  /// segunda consulta, por id y nada más que de esos pisos, para confirmar
+  /// que realmente no existe antes de borrarlo.
+  ///
+  /// Sin conexión (o si el servidor no contesta dentro de [limiteRed]) lanza
+  /// la excepción y NO borra nada: sin respuesta del servidor no se puede
+  /// saber si un mapa fue eliminado. El límite se aplica acá adentro, sólo a
+  /// las consultas, y no con un `.timeout()` desde afuera: un timeout externo
+  /// no cancela el trabajo, y un borrado que llegara tarde podría sacar el
+  /// mapa cuando el usuario ya está navegando con él.
+  ///
+  /// SÓLO PARA LA APP USUARIO. En la app admin, un piso local con remote_id
+  /// es el ORIGINAL del administrador: si su fila ya no está en la nube, no
+  /// hay que borrarlo del equipo.
+  Future<({List<String> pendientes, Set<String> eliminados})>
+      sincronizarEdificio({
+    required int edificioId,
+    required String edificioNombre,
+    Duration limiteRed = const Duration(seconds: 4),
+  }) async {
+    // 1) Pisos publicados de este edificio: id + versión.
+    final data = await _client
+        .from(_tabla)
+        .select('id, actualizado_en')
+        .eq('edificio_nombre', edificioNombre)
+        .timeout(limiteRed);
+    final enNube = <String, DateTime?>{};
+    for (final raw in data as List) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      enNube[row['id'] as String] =
+          DateTime.tryParse('${row['actualizado_en']}');
+    }
+
+    // 2) Pisos de este edificio que están en el teléfono pero no vinieron en
+    //    la respuesta: candidatos a "eliminado por el admin".
+    final delEdificio =
+        await DatabaseHelper.instance.obtenerRemoteIdsDeEdificio(edificioId);
+    final ausentes = <String>[
+      for (final id in delEdificio)
+        if (!enNube.containsKey(id)) id,
+    ];
+
+    final eliminados = <String>{};
+    if (ausentes.isNotEmpty) {
+      // Confirmar por id antes de borrar: la primera consulta busca por nombre
+      // de edificio, y un mapa que sigue publicado con otro nombre de edificio
+      // no tiene que borrarse.
+      final confirmacion = await _client
+          .from(_tabla)
+          .select('id, actualizado_en')
+          .inFilter('id', ausentes)
+          .timeout(limiteRed);
+      for (final raw in confirmacion as List) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        enNube[row['id'] as String] =
+            DateTime.tryParse('${row['actualizado_en']}');
+      }
+      for (final id in ausentes) {
+        if (enNube.containsKey(id)) continue;
+        await DatabaseHelper.instance.desinstalarMapaLocal(id);
+        eliminados.add(id);
+      }
+    }
+
+    // 3) Lo que hay que bajar: pisos que no están en el teléfono o que tienen
+    //    una versión más nueva en la nube.
+    final locales = await DatabaseHelper.instance.obtenerMapasDescargados();
+    final pendientes = <String>[];
+    for (final entrada in enNube.entries) {
+      if (!locales.containsKey(entrada.key)) {
+        pendientes.add(entrada.key);
+        continue;
+      }
+      final local = locales[entrada.key];
+      final remoto = entrada.value;
+      if (local != null && remoto != null && remoto.isAfter(local)) {
+        pendientes.add(entrada.key);
+      }
+    }
+    return (pendientes: pendientes, eliminados: eliminados);
+  }
+
+  // ── NOVEDADES ───────────────────────────────────────────────────────────────
+
+  /// Cuenta cuántos mapas del catálogo son nuevos (no descargados) y cuántos
+  /// están descargados pero tienen una versión más nueva en la nube. Se usa
+  /// para el aviso del botón de inicio.
+  Future<({int nuevos, int actualizados})> contarNovedades() async {
+    final mapas = await listarMapas();
+    final descargadas =
+        await DatabaseHelper.instance.obtenerMapasDescargados();
+    int nuevos = 0;
+    int actualizados = 0;
+    for (final m in mapas) {
+      if (!descargadas.containsKey(m.id)) {
+        nuevos++;
+      } else {
+        final v = descargadas[m.id];
+        if (v != null && m.actualizadoEn.isAfter(v)) actualizados++;
+      }
+    }
+    return (nuevos: nuevos, actualizados: actualizados);
+  }
+
+  // ── CATÁLOGO ADMIN ────────────────────────────────────────────────────────
+
+  /// id del admin logueado (para saber cuáles mapas son propios). Null si no
+  /// hay sesión.
+  String? get usuarioActualId => _client.auth.currentUser?.id;
+
+  /// Igual que [listarMapas] pero incluye el dueño de cada mapa, para que la
+  /// pantalla de administración marque los propios y los ordene primero.
+  Future<List<MapaPublicadoResumen>> listarMapasAdmin() async {
+    final data = await _client
+        .from(_tabla)
+        .select(
+          'id, edificio_nombre, piso_nombre, imagen_path, '
+          'num_beacons, num_calibraciones, actualizado_en, publicado_por',
+        )
+        .order('edificio_nombre', ascending: true)
+        .order('piso_nombre', ascending: true);
+
+    return (data as List)
+        .map((e) => MapaPublicadoResumen.fromRow(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  // ── ELIMINAR (admin dueño) ────────────────────────────────────────────────
+
+  /// Borra un mapa publicado (imagen + fila). Se borra la IMAGEN primero, con la
+  /// fila todavía presente: la regla de Storage verifica el dueño consultando
+  /// esa fila, así que si se borrara la fila antes, la regla no encontraría el
+  /// dueño y la imagen quedaría huérfana. Después se borra la fila (RLS por
+  /// dueño): si no sos el dueño, no se borra ninguna fila y se corta con error.
+  Future<void> eliminarMapa(String remoteId) async {
+    // 1) Ruta de la imagen (con la fila aún presente).
+    final row = await _client
+        .from(_tabla)
+        .select('imagen_path')
+        .eq('id', remoteId)
+        .maybeSingle();
+    final imagenPath = row == null ? null : row['imagen_path'] as String?;
+
+    // 2) Imagen PRIMERO, con la API de Storage (borrarla por SQL está prohibido).
+    if (imagenPath != null && imagenPath.isNotEmpty) {
+      await _client.storage.from(_bucket).remove([imagenPath]);
+    }
+
+    // 3) Fila (RLS por dueño). Si no borró nada, no era el dueño.
+    final borradas =
+        await _client.from(_tabla).delete().eq('id', remoteId).select('id');
+    if ((borradas as List).isEmpty) {
+      throw Exception('No autorizado: el mapa es de otro administrador.');
+    }
+  }
+
+  // ── DESCARGAR (usuario) ───────────────────────────────────────────────────
+
+  /// Descarga un mapa completo y lo importa a la base local. Devuelve el
+  /// `piso_id` local resultante (listo para navegar). Si ese mapa ya se había
+  /// descargado antes (mismo remote_id), lo reemplaza en vez de duplicarlo.
+  Future<int> descargarMapa(String remoteId) async {
+    // 1) Fila completa (incluye los JSONB).
+    final row = Map<String, dynamic>.from(
+      await _client.from(_tabla).select().eq('id', remoteId).single(),
+    );
+
+    // 2) Imagen → archivo local permanente.
+    final imagenPath = row['imagen_path'] as String;
+    final Uint8List bytes =
+        await _client.storage.from(_bucket).download(imagenPath);
+    final dir = await getApplicationDocumentsDirectory();
+    final ext = p.extension(imagenPath);
+    final rutaLocal = p.join(dir.path, 'mapa_$remoteId$ext');
+    await File(rutaLocal).writeAsBytes(bytes, flush: true);
+
+    // 3) Insertar/actualizar en la base local en una sola transacción.
+    final edificioNombre = (row['edificio_nombre'] as String?) ?? 'Descargado';
+    final pisoId = await DatabaseHelper.instance.importarMapaDescargado(
+      remoteId: remoteId,
+      edificioNombre: edificioNombre,
+      pisoNombre: (row['piso_nombre'] as String?) ?? 'Piso',
+      rutaImagen: rutaLocal,
+      escalaX: (row['escala_metros'] as num?)?.toDouble() ?? 50,
+      escalaY: (row['escala_metros_alto'] as num?)?.toDouble() ?? 50,
+      tamCelda: (row['tam_celda_metros'] as num?)?.toDouble() ?? 1.0,
+      rotacion: (row['rotacion_mapa'] as num?)?.toDouble() ?? 0.0,
+      beacons: (row['beacons'] as List?) ?? const [],
+      zonas: (row['zonas'] as List?) ?? const [],
+      lugares: (row['lugares'] as List?) ?? const [],
+      calibraciones: (row['calibraciones'] as List?) ?? const [],
+      remoteActualizado: row['actualizado_en'] as String?,
+    );
+
+    // 4) Ajustes de navegación del edificio. Ahora hay conexión; en el
+    //    edificio puede no haberla. Si fallan, el mapa igual queda: se
+    //    navega con lo último guardado y se reintenta al navegar.
+    try {
+      await sincronizarAjustesNavegacion(edificioNombre);
+    } catch (e) {
+      debugPrint('[Ajustes] No se pudieron bajar los ajustes de '
+          '"$edificioNombre": $e');
+    }
+    return pisoId;
+  }
+
+  // ── AJUSTES DE NAVEGACIÓN ─────────────────────────────────────────────────
+  //
+  // Tabla `ajustes_navegacion`: una fila por capa (ver [AjustesNavegacion]),
+  // con id "general" o "edificio:<nombre>" y los valores cambiados en JSONB.
+  // La lee cualquiera (también la app del usuario, sin login) y la escribe
+  // cualquier admin logueado. Lo controla la nube
+  // (supabase/ajustes_navegacion.sql), no la app.
+
+  static const String _tablaAjustes = 'ajustes_navegacion';
+
+  /// Sube los cambios pendientes de este teléfono y baja los ajustes
+  /// generales y los de [edificio] (null: sólo los generales).
+  ///
+  /// Se sube primero: si se bajara antes, lo de la nube no pisaría los
+  /// cambios locales (siguen pendientes), pero el teléfono no vería lo que
+  /// otro haya cambiado en los parámetros que no tocó hasta la próxima vez.
+  Future<void> sincronizarAjustesNavegacion(String? edificio) async {
+    if (!configurado) return;
+    final ajustes = AjustesNavegacion.instancia;
+    await ajustes.cargar();
+    try {
+      await subirAjustesNavegacion();
+    } catch (e) {
+      // Sin permiso o sin conexión: queda pendiente y se baja igual.
+      debugPrint('[Ajustes] No se pudieron subir los cambios pendientes: $e');
+    }
+
+    final ids = [
+      AjustesNavegacion.idGeneral,
+      if (edificio != null) AjustesNavegacion.idEdificio(edificio),
+    ];
+    final filas = await _client
+        .from(_tablaAjustes)
+        .select('id, valores')
+        .inFilter('id', ids);
+    final recibidos = <String, Object?>{
+      for (final f in filas) f['id'] as String: f['valores'],
+    };
+    // Un id sin fila es una capa sin cambios: se recibe vacía, así un ajuste
+    // que se borró en la nube también se borra en el teléfono.
+    for (final id in ids) {
+      ajustes.recibirDeNube(id, recibidos[id]);
+    }
+  }
+
+  /// Sube las capas con cambios pendientes (la app del usuario nunca tiene).
+  /// Si la nube rechaza una capa (sin permiso, sin conexión), corta con ese
+  /// error y la capa sigue pendiente. Sin sesión de admin, corta con
+  /// [StateError].
+  Future<void> subirAjustesNavegacion() async {
+    final ajustes = AjustesNavegacion.instancia;
+    if (!configurado || !ajustes.hayPendientes) return;
+    if (_client.auth.currentUser == null) {
+      throw StateError('Hace falta iniciar sesión como administrador.');
+    }
+    for (final id in ajustes.pendientes.toList()) {
+      final valores = ajustes.valoresDe(id);
+      await _client.from(_tablaAjustes).upsert({
+        'id': id,
+        'valores': valores,
+        'actualizado_en': DateTime.now().toUtc().toIso8601String(),
+      });
+      ajustes.subidoANube(id, valores);
+    }
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /// Recorre mapas/listas/strings y elimina el carácter nulo \u0000, que
+  /// Postgres no acepta en text/jsonb. Devuelve una copia limpia.
+  static dynamic _limpiarNulos(dynamic valor) {
+    if (valor is String) {
+      return valor.contains('\u0000')
+          ? valor.replaceAll('\u0000', '')
+          : valor;
+    }
+    if (valor is Map) {
+      return valor.map((k, v) => MapEntry(k, _limpiarNulos(v)));
+    }
+    if (valor is List) {
+      return valor.map(_limpiarNulos).toList();
+    }
+    return valor;
+  }
+
+  static String _mimeDe(String ext) {
+    switch (ext) {
+      case '.png':
+        return 'image/png';
+      case '.jpg':
+      case '.jpeg':
+        return 'image/jpeg';
+      case '.webp':
+        return 'image/webp';
+      case '.gif':
+        return 'image/gif';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
+  /// UUID v4 generado en el cliente (sin dependencias extra) para poder hacer
+  /// el upsert de la fila en un solo viaje, con id conocido de antemano.
+  static String _uuidV4() {
+    final r = Random.secure();
+    final b = List<int>.generate(16, (_) => r.nextInt(256));
+    b[6] = (b[6] & 0x0f) | 0x40; // versión 4
+    b[8] = (b[8] & 0x3f) | 0x80; // variante 10xx
+    String hex(int n) => n.toRadixString(16).padLeft(2, '0');
+    final s = b.map(hex).join();
+    return '${s.substring(0, 8)}-${s.substring(8, 12)}-'
+        '${s.substring(12, 16)}-${s.substring(16, 20)}-${s.substring(20)}';
+  }
+}

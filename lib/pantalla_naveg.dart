@@ -1,0 +1,5555 @@
+import 'dart:async';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'dart:math';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_compass/flutter_compass.dart';
+import 'database.dart';
+import 'beacon_model.dart';
+import 'zona_model.dart';
+import 'poi_model.dart';
+import 'calibracion_model.dart';
+import 'procesador_senal.dart';
+import 'posicionador.dart';
+import 'mapa_widget.dart';
+import 'pathfinder.dart';
+import 'seguidor_ruta.dart';
+import 'buscador_lugares.dart';
+import 'rubros.dart';
+import 'bluetooth_helper.dart';
+import 'orientacion_service.dart';
+import 'orientador_llegada.dart';
+import 'voz_service.dart';
+import 'grilla_nav.dart';
+import 'filtro_un_euro.dart';
+import 'detector_movimiento.dart';
+import 'ajustes_navegacion.dart';
+import 'entorno_app.dart';
+import 'panel_ajustes_navegacion.dart';
+import 'supabase_service.dart';
+import 'restriccion_zonas.dart';
+import 'histeresis_celda.dart';
+import 'tema.dart';
+import 'piso_util.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+
+class PantallaNavegacion extends StatefulWidget {
+  final int pisoId;
+  final String rutaImagen;
+  final ProcesadorSenal? procesadorCompartido;
+
+  /// Hacia qué punto cardinal apunta el borde SUPERIOR de la imagen del mapa.
+  /// 0 = Norte (default), 90 = Este, 180 = Sur, 270 = Oeste.
+  /// Se configura una sola vez al importar el plano.
+  final double rotacionMapa;
+
+  /// Metros que representa el plano en cada eje (escala configurada por piso).
+  final double escalaX;
+  final double escalaY;
+
+  /// Lado de celda de la grilla (m). Configurable por piso, rango 0.5–1.0.
+  final double tamCeldaMetros;
+
+  /// Id del destino final cuando esta pantalla se abre por un SALTO de piso
+  /// (el usuario mantuvo apretada la pantalla al terminar de subir o bajar).
+  /// La navegación retoma ese destino sola, sin volver a preguntar.
+  final int? destinoFinalId;
+
+  /// Frase que se dice al abrir la pantalla en lugar de "Buscando ubicación."
+  /// (ej: "Estás en el piso 2. Buscando ubicación...").
+  final String? anuncioInicial;
+
+  /// Sólo en un salto de piso: true si el usuario llegó SUBIENDO, false si
+  /// llegó BAJANDO, null si la pantalla no se abrió por un salto. Sirve para
+  /// saber por qué escalera apareció (una que baja si subió, una que sube si
+  /// bajó) y arrancar la ruta desde su entrada.
+  final bool? llegoSubiendo;
+
+  const PantallaNavegacion({
+    super.key,
+    required this.pisoId,
+    required this.rutaImagen,
+    this.procesadorCompartido,
+    this.rotacionMapa = 0,
+    this.escalaX = GrillaNav.escalaPorDefecto,
+    this.escalaY = GrillaNav.escalaPorDefecto,
+    this.tamCeldaMetros = 1.0,
+    this.destinoFinalId,
+    this.anuncioInicial,
+    this.llegoSubiendo,
+  });
+ 
+  @override
+  State<PantallaNavegacion> createState() => _PantallaNavegacionState();
+}
+ 
+class _PantallaNavegacionState extends State<PantallaNavegacion>
+    with SingleTickerProviderStateMixin {
+  late final ProcesadorSenal _procesador;
+  final ResolvedorCaminos _resolvedor = ResolvedorCaminos();
+  final OrientacionService _orientacion = OrientacionService();
+  final VozService _voz = VozService();
+  late final GrillaNav _grilla;
+ 
+  Map<String, BeaconMarcado> _beaconsEnElMapa = {};
+  List<ZonaNoTransitable> _zonas = [];
+  /// Lugares del piso ACTUAL (los que se dibujan y donde están las escaleras
+  /// que se pueden usar desde acá).
+  List<LugarInteres> _lugares = [];
+
+  /// Lugares de todo el edificio: es donde se buscan los destinos.
+  List<LugarInteres> _lugaresEdificio = [];
+
+  /// Pisos del edificio indexados por id local.
+  Map<int, PisoInfo> _pisosEdificio = {};
+  List<CalibracionRegistro> _calibraciones = [];
+
+  /// Modelo de rango (txPower y n) AJUSTADO por beacon a partir de las
+  /// calibraciones guardadas. Ver [ProcesadorSenal.ajustarModelosRango]: es lo
+  /// que corrige la compresion de distancias que impedia tanto pararse encima
+  /// de un beacon como salir de la nube. Se calcula una sola vez al iniciar.
+  Map<String, ModeloRangoBeacon> _modelosRango = {};
+
+  // ── FINGERPRINTING DE PUNTOS CLAVE ────────────────────────────────────────
+  //
+  // Los puntos clave (esquinas donde hay que doblar, puertas) se miden en el
+  // modo calibracion durante mucho mas tiempo y guardan el VECTOR de RSSI de
+  // esa celda. Aca se compara ese patron contra las lecturas vivas: cuando
+  // coincide, se corrige la posicion hacia la celda del punto clave.
+  //
+  // Por que ayuda donde la multilateracion no puede: la multilateracion
+  // convierte cada RSSI en una distancia con el modelo log y despues resuelve
+  // una geometria, asi que hereda los errores del modelo — y muy cerca de un
+  // beacon el modelo es justo donde peor anda, porque el RSSI se satura. El
+  // fingerprint no estima ninguna distancia: reconoce un patron.
+  //
+  // La correccion se aplica ANTES del One Euro y del tope de paso, no despues:
+  // asi pasa por las mismas defensas anti-salto que todo lo demas y un match
+  // espurio no puede teletransportar el icono.
+
+  // Los parámetros que deciden cuándo y cuánto se aplica un punto clave
+  // (ciclos para confirmarlo, fuerza de la corrección, radio, coincidencia
+  // en dB y tolerancia de rumbo) son regulables desde el panel del admin:
+  // ver "Puntos clave" en [AjustesNavegacion].
+
+  /// Ciclos sin coincidencia que se toleran sin soltar el punto clave. Con
+  /// el ruido de los beacons (en una toma parado a 45 cm de un beacon el
+  /// crudo iba de -64 a -35 dBm) un ciclo suelto queda ambiguo o por encima
+  /// del umbral, y antes eso reiniciaba todo: la corrección casi nunca
+  /// llegaba a juntar los ciclos para aplicarse.
+  static const int _fpCiclosGracia = 4;
+
+  /// Constante de suavizado (ciclos) de la distancia en dB del candidato.
+  /// Promediar la distancia y despues mapear a confianza es mas estable que
+  /// promediar confianzas ya saturadas.
+  static const double _fpTauCiclos = 6.0;
+
+  ({int ix, int iy})? _fpCeldaCandidata;
+  int _fpCiclosConsistentes = 0;
+
+  /// Ciclos seguidos sin coincidencia del candidato (ver [_fpCiclosGracia]).
+  int _fpCiclosSinCoincidencia = 0;
+
+  /// Distancia en dB del candidato actual, suavizada en el tiempo.
+  double? _fpRmsSuavizado;
+
+  /// Peso con el que se corre la posición medida hacia [_fpObjetivo]: sube
+  /// hacia la confianza mientras el punto clave sigue coincidiendo y baja
+  /// cuando deja de coincidir, en los dos casos a razón de la "fuerza de la
+  /// corrección" de [AjustesNavegacion] por ciclo.
+  ///
+  /// POR QUÉ UN PESO ACUMULADO: antes la fuerza era la fracción que se corría
+  /// la posición en cada ciclo, y eso no alcanzaba: el ciclo siguiente la
+  /// multilateración vuelve a calcular desde las lecturas (con el ancla a la
+  /// posición anterior), así que la posición se quedaba a mitad de camino. En
+  /// una cuenta aproximada (el ancla pesa 3 veces los rangos parado y 0,25
+  /// caminando), parado llegaba al 55-70 % de la distancia al punto clave y
+  /// caminando al 27-40 %. Con el peso acumulado, parado llega al 90 % o más.
+  double _fpPeso = 0.0;
+
+  /// Centro de la celda del punto clave que se está aplicando.
+  Offset? _fpObjetivo;
+
+  /// Puntos clave ya anunciados ("Estás en X"), por etiqueta: dónde están,
+  /// cuándo se dijo y si el usuario ya se alejó de ahí. Antes se guardaba
+  /// sólo el último y se olvidaba cada vez que la coincidencia se cortaba
+  /// unos ciclos, cosa que con el ruido de los beacons pasa todo el tiempo:
+  /// parado en el punto clave, "Estás en X" se repetía cada pocos segundos.
+  /// Ahora se dice una vez por visita: se repite recién después de alejarse
+  /// [_fpAlejarseMetros] y con [_fpRepetirAnuncio] de por medio.
+  final Map<String, ({Offset centro, DateTime cuando, bool seAlejo})>
+      _fpAnunciados = {};
+  static const double _fpAlejarseMetros = 3.0;
+  static const Duration _fpRepetirAnuncio = Duration(seconds: 15);
+
+  /// Punto clave que toca anunciar en este ciclo ("Estás en X"): coincide y
+  /// todavía no se dijo en esta visita. Lo dice [_anunciarPuntoClave].
+  ({String etiqueta, Offset centro})? _fpAnuncioPendiente;
+
+  DateTime? _ultimoLogFingerprint;
+ 
+  // ── Posición ──────────────────────────────────────────────────────────────
+  //
+  // FILTRO ONE EURO + ACELERÓMETRO (reemplaza al EMA de α fijo).
+  //
+  // El EMA anterior usaba α = 0.15 (τ ≈ 1.2 s) SIEMPRE. Ese único valor tenía
+  // que servir para dos situaciones opuestas y no servía bien para ninguna:
+  // con el usuario parado dejaba pasar ~31 cm de jitter por ciclo (la celda
+  // parpadeaba), y caminando iba ~1.2 s atrasado (≈1.4 m a paso normal).
+  //
+  // Ahora la frecuencia de corte se adapta: el acelerómetro dice si el usuario
+  // está quieto o caminando, y el filtro interpola entre suavizado fuerte y
+  // respuesta rápida. Medido en simulación con ruido BLE de 1.5 m:
+  //   EMA α=0.15  → 1.19 m de error caminando | 30.5 cm/ciclo de jitter parado
+  //   One Euro+acc→ 0.95 m de error caminando |  8.7 cm/ciclo de jitter parado
+  late final FiltroUnEuroPosicion _filtroPosicion;
+  final DetectorMovimiento _movimiento = DetectorMovimiento();
+
+  /// Puerta direccional por rumbo (ver [PuertaRumbo] en posicionador.dart).
+  /// Es la que decide si un desplazamiento perpendicular a la direccion de
+  /// marcha es ruido BLE o movimiento real. Tiene estado entre ciclos: por eso
+  /// es un campo y no una funcion suelta.
+  final PuertaRumbo _puertaRumbo = PuertaRumbo();
+
+  /// Calidad minima de la brujula (0..1) para dejar que el rumbo restrinja el
+  /// posicionamiento. Por debajo de esto el heading se sigue usando para las
+  /// instrucciones de voz y para el icono, pero NO para condicionar la
+  /// posicion: un rumbo distorsionado por metal cercano clavaria la posicion
+  /// sobre un eje equivocado, que es peor que no restringir nada.
+  static const double _calidadRumboMinima = 0.35;
+
+  /// Umbral de APAGADO del rumbo, mas bajo que el de encendido (histeresis).
+  /// Sin esto, con la calidad oscilando alrededor de _calidadRumboMinima el
+  /// rumbo entraba y salia ciclo a ciclo; y cada salida ademas reseteaba la
+  /// puerta direccional (evidencia y apertura a cero), asi que la restriccion
+  /// quedaba efectivamente apagada aunque "en promedio" hubiera calidad.
+  static const double _calidadRumboApagar = 0.15;
+  bool _rumboActivo = false;
+
+  /// Throttle del log de diagnostico del rumbo (~cada 2 s).
+  DateTime? _ultimoLogRumbo;
+
+  /// Timestamp de la muestra anterior: el One Euro necesita el Δt REAL de cada
+  /// muestra, porque los callbacks BLE no llegan a ritmo constante.
+  DateTime? _ultimaMuestraPos;
+
+  /// Factor de movimiento del ciclo actual (0 = quieto, 1 = caminando).
+  double _factorMovimiento = 0.0;
+
+  /// Salida del filtrado (multilateración, puerta, One Euro, tope de paso).
+  /// Es el estado del filtro y NO sabe del plano: puede caer adentro de una
+  /// zona prohibida. La del usuario es [_posicionPermitida].
+  Offset? _posicionFiltrada;
+
+  /// [_posicionFiltrada] llevada fuera de las zonas prohibidas (ver
+  /// [RestriccionZonas]). Es la posición fina del usuario: de ella sale la
+  /// celda que se muestra ([_posicionFinal]).
+  ///
+  /// La restricción NO vuelve al filtro: si la posición restringida
+  /// alimentara el próximo ciclo, el tope de paso la haría avanzar de a
+  /// poco hacia la medición, cada paso caería en la zona y volvería al
+  /// mismo borde. Con una primera ubicación del lado equivocado de una
+  /// pared, quedaría trabada ahí para siempre.
+  Offset? _posicionPermitida;
+
+  late final RestriccionZonas _restriccionZonas = RestriccionZonas(
+    grilla: _grilla,
+    prohibida: _resolvedor.esZonaProhibida,
+    conectadas: _resolvedor.conectadas,
+    enZona: _resolvedor.puntoEnZona,
+  );
+
+  // Tope de velocidad de la posicion, en m/s REALES. Defensa anti-spike: un
+  // beacon con una lectura anomala no puede arrastrar la posicion de golpe. Se
+  // escala con el movimiento: parado, un salto grande es siempre ruido.
+  //
+  // ANTES estaba expresado en unidades NORMALIZADAS (0.012 y 0.04), lo que lo
+  // hacia depender del tamano del plano: los mismos 0.04 son 2 m en un plano de
+  // 50 m y 4 m en uno de 100 m. Y como se aplicaba sobre la distancia
+  // normalizada, en un plano rectangular (metrosX != metrosY) el tope terminaba
+  // siendo distinto segun la direccion, sin relacion con el rumbo. Ahora es un
+  // limite de velocidad fisico y se multiplica por el dt real del ciclo.
+  // El de caminando es regulable ([AjustesNavegacion.velocidadMaxima]): es el
+  // que limita cuánto puede "alcanzar de golpe" el punto después de un atraso.
+  static const double _velMaxQuietoMs = 1.2;
+
+  /// Fraccion del tope longitudinal que se le permite al eje PERPENDICULAR al
+  /// rumbo cuando el usuario camina. Es la ultima linea de defensa contra la
+  /// deriva lateral, por debajo de la puerta direccional.
+  /// RECALIBRADO 0.35 → 0.25: con la puerta bien cerrada este tope es la
+  /// cota dura de cuán rápido puede deslizarse el ícono de costado
+  /// (0.25 × 3.0 m/s = 0.75 m/s caminando).
+  static const double _facTopePerp = 0.25;
+
+  /// Zona muerta (en metros) con el usuario detenido: mientras la salida del
+  /// filtro esté a menos de esto de la posición mostrada, la posición se deja
+  /// clavada. Elimina el jitter residual que igual sobrevive al filtro y evita
+  /// el parpadeo de celda. Se compara contra la DISCREPANCIA acumulada, no
+  /// contra el paso del ciclo (ver el comentario donde se aplica).
+  static const double _zonaMuertaQuietoMetros = 0.35;
+
+  // ── FASE DE ADQUISICIÓN ───────────────────────────────────────────────────
+  //
+  // Con el usuario quieto el pipeline está armado para NO moverse: ancla
+  // temporal fuerte en el posicionador (×3), One Euro a 0,04 Hz, tope de paso
+  // y zona muerta. Eso es lo correcto cuando la posición ya es buena, pero al
+  // arrancar no lo es: el primer fix sale de ventanas de RSSI a medio llenar
+  // y a veces con sólo dos beacons a la vista. Si la persona no caminaba, ese
+  // primer fix quedaba clavado para siempre.
+  //
+  // Durante los primeros segundos después de obtener (o recuperar) la
+  // posición, el pipeline corre "como si el usuario caminara" —ancla floja,
+  // filtro rápido, sin zona muerta— y sin la restricción del rumbo, porque
+  // el error inicial no tiene nada que ver con hacia dónde mira la persona.
+  // Después el factor baja en rampa hasta el del acelerómetro, para que no
+  // haya un cambio brusco de régimen.
+  //
+  // Medido en simulación con el Posicionador y el filtro reales, usuario
+  // quieto y primer fix a 8 m: antes 8 m de error indefinidamente; con esto
+  // ~0,6 m a los 3 s y ~0,4 m al terminar la fase.
+
+  /// Momento en que arrancó la fase de adquisición en curso (null = no hay).
+  DateTime? _adquisicionDesde;
+
+  /// Tramo a factor pleno (1.0).
+  static const Duration _adquisicionPlena = Duration(seconds: 3);
+
+  /// Duración total: pleno + rampa de bajada.
+  static const Duration _adquisicionTotal = Duration(seconds: 6);
+
+  /// Si pasan más de estos segundos sin poder calcular una posición (pocos
+  /// beacons, scan caído), la posición guardada ya es vieja y al volver la
+  /// señal se readquiere igual que al arrancar.
+  static const double _silencioParaReadquirirSeg = 3.0;
+
+  /// Beacons que se esperan para dar el PRIMER fix (o todos los del piso, si
+  /// tiene menos). Con dos beacons y sin posición previa el posicionador sólo
+  /// puede devolver el punto medio entre ambos, que es un mal primer fix.
+  static const int _beaconsPrimerFix = 3;
+
+  /// Tope de la espera anterior: si en este tiempo no aparece el tercer
+  /// beacon, se arranca con los que haya.
+  static const Duration _esperaMaxPrimerFix = Duration(milliseconds: 1500);
+  DateTime? _esperandoPrimerFixDesde;
+
+  // _historialPosiciones/_ventanaCentroid (promedio móvil redundante) fueron
+  // eliminados: sumaban una segunda capa de latencia sin reducir ruido real,
+  // ver el comentario en _calcularPosicionRobusta().
+  Offset? _posicionFinal;
+
+  // Histéresis de celda: estabiliza en qué celda de la grilla está el usuario,
+  // evitando el parpadeo de borde entre dos celdas adyacentes y los saltos al
+  // otro lado de una pared angosta (ver [HisteresisCelda]). Mira las mismas
+  // paredes que [_restriccionZonas].
+  late final HisteresisCelda _histeresisCelda = HisteresisCelda(
+    grilla: _grilla,
+    prohibida: _resolvedor.esZonaProhibida,
+    conectadas: _resolvedor.conectadas,
+  );
+
+  // Throttle de repintado: desacopla el rebuild de la UI del ritmo del scan
+  // BLE (que con continuousUpdates dispara muchos callbacks por segundo).
+  DateTime? _ultimoRefrescoUI;
+  static const Duration _intervaloRefrescoUI = Duration(milliseconds: 250);
+
+  /// Lo último que se dibujó en pantalla: celda del usuario y cantidad de
+  /// beacons visibles. Sirven para NO redibujar cuando no cambió nada.
+  Offset? _posicionMostradaUI;
+  int _beaconsMostradosUI = -1;
+ 
+  bool _escaneando = false;
+  String _estadoScan = 'Iniciando...';
+ 
+  // ── NAVEGACIÓN ENTRE PISOS ─────────────────────────────────────────────────
+  //
+  // _destinoSeleccionado es SIEMPRE el destino final, aunque esté en otro
+  // piso. Si está en otro piso, el tramo de este piso termina en una
+  // escalera (_escaleraObjetivo), elegida una sola vez por piso: la más
+  // cercana POR RUTA que vaya en el sentido necesario. Se guía hasta el punto
+  // frente a su entrada, se anuncia la llegada y el usuario mantiene
+  // apretada la pantalla para cargar el piso siguiente. Si hacen falta varios
+  // pisos, cada salto repite lo mismo en el piso nuevo.
+
+  /// Escalera del piso actual hacia la que se guía (sólo en tramo entre pisos).
+  LugarInteres? _escaleraObjetivo;
+
+  /// El usuario llegó frente a la escalera: se dejan de dar giros y se espera
+  /// el "mantener apretado".
+  bool _llegoAEscalera = false;
+
+  /// El usuario llegó al destino final.
+  bool _llegoADestino = false;
+
+  /// En este piso no hay ninguna escalera en el sentido necesario.
+  bool _sinEscaleraDisponible = false;
+
+  /// Ciclos seguidos dentro del radio de llegada (evita anunciar por un
+  /// único ciclo ruidoso).
+  int _ciclosEnLlegada = 0;
+  static const int _ciclosParaLlegada = 3;
+
+  /// Distancia (m) al objetivo a la que se considera que el usuario llegó.
+  /// Antes era 1,5 m, y la llegada se anunciaba con el lugar todavía lejos
+  /// (pedido del usuario: que la tome a 0,5 m). Como la posición confirmada
+  /// es siempre el centro de una celda, también cuenta estar en la MISMA
+  /// celda del objetivo (ver [_enObjetivo]): con celdas de 1 m, un lugar
+  /// cerca del borde de su celda queda a más de 0,5 m de cualquier centro y
+  /// la llegada no saltaría nunca.
+  static const double _radioLlegadaMetros = 0.5;
+
+  /// ¿[pos] ya está en [objetivo]? A [_radioLlegadaMetros] o en su celda.
+  bool _enObjetivo(Offset pos, Offset objetivo) =>
+      _distanciaMetros(pos, objetivo) <= _radioLlegadaMetros ||
+      (_grilla.indiceX(pos.dx) == _grilla.indiceX(objetivo.dx) &&
+          _grilla.indiceY(pos.dy) == _grilla.indiceY(objetivo.dy));
+
+  /// Orientación en curso hacia el destino o la escalera del tramo, antes de
+  /// anunciar la llegada (ver [OrientadorLlegada]). Null si no hay.
+  OrientadorLlegada? _orientador;
+
+  /// Con el lugar a menos de esto (m) de donde está parado no hay una
+  /// dirección confiable hacia la que girar: con celdas de 1 m la posición
+  /// es el centro de la celda, y el lugar está prácticamente ahí.
+  static const double _distanciaMinOrientacionMetros = 0.5;
+
+  /// Si ya se eligió entre los lugares del mismo nombre del piso actual el más
+  /// cercano al usuario (hace falta la posición para decidirlo).
+  bool _destinoRefinado = true;
+
+  /// Evita dos saltos si el gesto se dispara dos veces.
+  bool _saltandoDePiso = false;
+
+  /// Tras un salto, si ya se anunció cómo sigue el recorrido en este piso.
+  bool _anuncioRetomadoHecho = false;
+
+  // ── SALIDA DE LA ESCALERA TRAS UN SALTO ────────────────────────────────────
+  //
+  // Después de cambiar de piso el usuario está parado SOBRE la escalera por
+  // la que llegó, que para el pathfinder es un obstáculo. Sin esto la ruta
+  // arrancaba desde la celda libre más cercana, que podía estar detrás o al
+  // costado de la escalera. Mientras siga cerca de esa escalera, la ruta sale
+  // desde el punto frente a su entrada/salida.
+
+  /// Escalera por la que llegó al piso (null si no vino de un salto, o si ya
+  /// se alejó de ella).
+  LugarInteres? _escaleraLlegada;
+
+  /// Si ya se decidió cuál es la escalera de llegada (hace falta posición).
+  bool _escaleraLlegadaResuelta = false;
+
+  /// Mientras la posición esté a esta distancia (m) o menos de la escalera
+  /// de llegada, la ruta sale desde su entrada. Más que el radio de llegada
+  /// porque justo después del salto la posición BLE todavía se está
+  /// estabilizando.
+  static const double _radioSalidaEscaleraMetros = 2.5;
+
+  /// Radio (m) para RECONOCER la escalera de llegada con la primera posición.
+  /// Más amplio que el anterior: la primera estimación tras el salto suele
+  /// ser la más ruidosa y no conviene descartar la escalera por eso.
+  static const double _radioDeteccionLlegadaMetros = 5.0;
+
+  /// Si ya se vio al usuario junto a la escalera de llegada. Recién a partir
+  /// de ahí, alejarse más de [_radioSalidaEscaleraMetros] cuenta como "salió".
+  bool _vistoEnEscaleraLlegada = false;
+
+  // ── MAPA DESPLAZABLE (zoom + arrastre, estilo Google Maps) ─────────────────
+  //
+  // El plano ya no se achica para entrar en la pantalla: se dibuja a una
+  // escala fija en píxeles por metro, con la proporción real del piso
+  // (escalaX : escalaY), y se mira a través de un InteractiveViewer. Un dedo
+  // lo arrastra, dos dedos hacen zoom.
+  //
+  // El arrastre y el zoom no chocan con los gestos de toda la pantalla: si el
+  // dedo se mueve, Flutter descarta el toque y el doble toque, así que un
+  // arrastre nunca abre la selección de destino ni cambia de piso.
+  //
+  // SEGUIMIENTO: mientras _seguirUsuario esté en true, el mapa se re-centra
+  // solo en la posición del usuario cada vez que se redibuja la posición.
+  // Apenas la persona arrastra o hace zoom, se deja de seguir (para que el
+  // mapa no "se le escape" mientras mira otra parte); el botón de centrar lo
+  // vuelve a activar.
+
+  /// Tiempo que hay que mantener apretada la pantalla para cambiar de piso.
+  static const Duration _duracionMantener = Duration(milliseconds: 1000);
+
+  /// Escala base del plano (zoom 1): píxeles lógicos por metro. Con 28, una
+  /// celda de 1 m mide 28 px. Si el piso es tan chico que a esta escala no
+  /// llena la pantalla, se agranda hasta llenarla.
+  static const double _pixelesPorMetro = 28.0;
+
+  /// Zoom máximo respecto de la escala base.
+  static const double _zoomMaximo = 5.0;
+
+  final TransformationController _transformMapa = TransformationController();
+
+  // ── CÁMARA DEL MAPA ──
+  //
+  // La vista se mueve con un "resorte" amortiguado en vez de una animación
+  // de duración fija. La posición se redibuja hasta 4 veces por segundo; una
+  // animación de 300 ms se reiniciaba antes de terminar y el mapa avanzaba a
+  // los tirones (arranca, frena, arranca). Con el resorte, cada posición
+  // nueva sólo cambia el OBJETIVO y la cámara sigue su movimiento sin cortes:
+  // en cada frame recorre una fracción fija de lo que le falta.
+  //
+  // La cámara se guarda como "punto del plano que está en el centro" + zoom.
+  // Interpolar eso (y no la matriz) hace que el zoom se acerque sobre el
+  // centro de la vista y no derrape hacia una esquina.
+  //
+  // El ticker sólo corre mientras la cámara se está moviendo: quieta, no
+  // gasta nada.
+
+  /// Constante de tiempo del resorte (s): a los ~0,2 s recorrió el 63 % del
+  /// camino y a los ~0,7 s llegó. Más chico = sigue más pegado pero más
+  /// brusco; más grande = más suave pero más atrasado.
+  static const double _tauCamaraSeg = 0.22;
+
+  late final Ticker _tickerCamara;
+  Duration? _ultimoTickCamara;
+
+  /// Estado actual de la cámara y hacia dónde va (coordenadas del plano a
+  /// zoom 1). Null = la cámara no está en movimiento.
+  Offset? _camaraFoco;
+  double? _camaraZoom;
+  Offset? _camaraFocoObjetivo;
+  double? _camaraZoomObjetivo;
+
+  /// El mapa sigue la posición del usuario.
+  bool _seguirUsuario = true;
+
+  /// Ya se fijó la vista inicial del mapa (centrado o vista completa).
+  bool _vistaMapaInicializada = false;
+
+  /// Tamaño del recuadro donde se ve el mapa (lo deja el LayoutBuilder).
+  Size? _viewportMapa;
+
+  /// Tamaño del plano a zoom 1 (en píxeles lógicos).
+  Size? _tamPlano;
+
+  // ── VER OTROS PISOS SIN NAVEGAR ───────────────────────────────────────────
+  //
+  // Mientras no hay destino elegido, una fila de botones (PB, 1, 2…) deja
+  // mirar el plano de cualquier piso del edificio, con sus lugares, zonas y
+  // escaleras. Es sólo para mirar: en otro piso no se dibuja la posición del
+  // usuario ni hay ruta. La navegación (BLE, voz, posición) sigue corriendo
+  // en el piso real todo el tiempo; esto sólo cambia lo que se DIBUJA.
+  // Al elegir un destino, el mapa vuelve solo al piso del usuario.
+
+  /// Piso que se está mirando cuando NO es el del usuario. Null = se ve el
+  /// piso del usuario (lo normal).
+  _VistaPiso? _otroPiso;
+
+  /// Pisos ya leídos de la base, para no releerlos al ir y volver.
+  final Map<int, _VistaPiso> _cachePisos = {};
+
+  /// Piso que se está leyendo de la base. Si se tocan dos pisos seguidos,
+  /// la carga del primero se descarta al terminar.
+  int? _pisoCargando;
+
+  // Navegacion
+  LugarInteres? _destinoSeleccionado;
+  /// Lo que FALTA recorrer de la ruta: arranca en la celda del usuario y se
+  /// va acortando a medida que avanza (ver _seguirRuta).
+  List<Offset>? _rutaActual;
+  String _estadoRuta = '';
+  bool _calculandoRuta = false; // evita cálculos solapados
+
+  // ── SEGUIMIENTO DE RUTA (ver SeguidorRuta en seguidor_ruta.dart) ──────────
+  //
+  // La ruta ya no se recalcula por distancia recorrida (el viejo umbral de
+  // 0.10 del plano), sino cuando el usuario se SALE de ella de forma
+  // sostenida. Mientras camina por el camino no se recalcula nada.
+
+  /// Desde cuándo el usuario está fuera de la ruta (null = está sobre ella).
+  DateTime? _fueraDeRutaDesde;
+
+  /// Celda desde la que se calculó la ruta vigente. Mientras el usuario siga
+  /// en esa misma celda, recalcular daría exactamente el mismo resultado
+  /// (pasa, por ejemplo, cuando la posición cae dentro de una zona prohibida
+  /// y el camino arranca en la celda libre de al lado): no se recalcula.
+  int? _celdaUltimoCalculo;
+
+  /// Cambia cada vez que se fija o se cancela un destino. Un cálculo de ruta
+  /// que termina con otra generación pertenece al destino anterior y se
+  /// descarta.
+  int _generacionRuta = 0;
+
+  /// Tiempo que hay que estar fuera de la ruta para que se recalcule. Evita
+  /// recalcular por una celda que parpadea un instante.
+  static const Duration _tiempoFueraDeRuta = Duration(milliseconds: 1500);
+
+  /// Desvío (m) a partir del cual no se espera [_tiempoFueraDeRuta]: a esa
+  /// distancia ya no es ruido de una celda.
+  static const double _desvioReplanInmediatoMetros = 3.0;
+ 
+  // Orientacion
+  StreamSubscription<CompassEvent>? _compassSubscription;
+  bool _compassDisponible = false;
+
+  // Rotación efectiva del mapa leída desde la DB en _inicializar().
+  // Puede diferir de widget.rotacionMapa si el operador la cambió en config
+  // sin reiniciar la navegación.
+  double _rotacionMapaEfectiva = 0.0;
+
+  // Título del AppBar: nombre del piso cargado async en _inicializar().
+  String? _nombrePiso;
+
+  // Flag: true solo después de que _resolvedor.inicializar() completó con los
+  // datos reales de la DB. Previene que _calcularRuta() corra con una grilla
+  // vacía si BLE empieza antes de que termine _inicializar().
+  bool _resolvedorListo = false;
+ 
+  // Trilateracion
+  static const int _minBeaconsActivos = 2;
+  static const int _maxBeaconsParaCalcular = 6; // máx. beacons por espacio
+  // _umbralRSSI: descarta beacons demasiado lejanos/ruidosos. Con la nueva
+  //   calibración (txPower = -55 dBm, n = 2.7), -90 dBm ≈ 20 m y -95 dBm ≈ 30 m.
+  //   Bajamos de -95 a -90: más allá de ~20 m la señal BLE es tan débil y ruidosa
+  //   que su distancia estimada distorsiona la trilateración más de lo que aporta.
+  static const double _umbralRSSI = -90;
+  // Dos beacons cuyo RSSI filtrado cae en la misma banda de este ancho (dBm)
+  // se consideran "igual de cercanos": ahí desempata la varianza (más estable
+  // primero). Ver ordenamiento en _calcularPosicionRobusta().
+  static const double _umbralRssiSimilar = 2.0;
+ 
+  Timer? _timeoutTimer;
+  Timer? _scanReinicioTimer;  // watchdog del scan BLE (ver _iniciarEscaneo)
+
+  /// Momento en que esta pantalla empezo a esperar resultados BLE. Es la
+  /// referencia del watchdog mientras todavia no llego ningun lote.
+  DateTime? _inicioEscaneo;
+
+  /// Silencio BLE tolerado antes de dar el scan por muerto y forzar reinicio.
+  /// Con removeIfGone de 4 s y beacons emitiendo a ~6 Hz, 8 s sin un solo lote
+  /// no es "poca senal": es que el scan dejo de entregar.
+  static const Duration _silencioParaReiniciar = Duration(seconds: 8);
+
+  /// Cada cuanto corre el watchdog.
+  static const Duration _intervaloWatchdog = Duration(seconds: 3);
+
+  /// Reinicios forzados consecutivos sin exito. Solo para informar al usuario;
+  /// la cuota de arranques la administra BluetoothHelper.
+  int _reiniciosSinDatos = 0;
+  Timer? _compassUITimer;     // refresca el chip de brújula a 4 Hz, desacoplado del BLE
+
+  // Último heading que efectivamente disparó un rebuild de UI. Se usa para
+  // que _compassUITimer no haga setState() (rebuild de TODA la pantalla,
+  // incluido el mapa) cuando el heading no cambió — ver comentario junto al
+  // Timer.periodic más abajo.
+  double? _ultimoHeadingUIRefrescado;
+  int _contadorLecturas = 0;
+
+  // Throttle del pipeline de posicionamiento.
+  // BLE en continuousUpdates puede disparar 20-50 callbacks/segundo.
+  // Ejecutar trilateración + histéresis + pathfinder en cada uno satura el hilo
+  // de UI. Limitamos a una ejecución cada 180 ms (~5.5 Hz), igual que la tasa
+  // real de actualización de posición. El setState de UI ya tiene su propio
+  // throttle de 250 ms por encima de este.
+  DateTime? _ultimoPosicionamiento;
+
+  /// Velocidad de decaimiento del RSSI de un beacon que dejo de aparecer, en
+  /// dBm por segundo. A 8 dB/s, un beacon a -70 dBm tarda ~2.5 s en cruzar el
+  /// umbral de -90: mas que el removeIfGone de 4 s no tiene sentido, y mucho
+  /// menos lo deja caer por un hueco momentaneo de un par de lotes.
+  static const double _decaimientoDbPorSeg = 8.0;
+  DateTime? _ultimoDecaimiento;
+
+  /// Silencio (s) de un beacon a partir del cual empieza a decaer. Varias
+  /// veces su intervalo de emisión (~160 ms): un par de paquetes perdidos no
+  /// lo tocan.
+  static const double _graciaSinLecturaSeg = 1.0;
+
+  /// Hora de la última lectura NUEVA procesada de cada beacon (ver "SÓLO
+  /// LECTURAS NUEVAS" en _actualizarSenales).
+  final Map<String, DateTime> _ultimaLecturaBeacon = {};
+
+  // ── DIAGNÓSTICO DE LA SEÑAL ───────────────────────────────────────────────
+  // Lecturas nuevas por beacon en el período en curso. Cada
+  // [_periodoDiagnostico] se publican como lecturas por segundo (log
+  // "[Señal]" y panel de ajustes): es el dato que define cuánto atraso y
+  // cuánto ruido deja cada ventana de señal.
+  final Map<String, int> _conteoLecturas = {};
+  DateTime? _inicioConteoLecturas;
+  static const Duration _periodoDiagnostico = Duration(seconds: 5);
+  static const Duration _intervaloPosicionamiento = Duration(milliseconds: 180);
+
+  // Cooldown de reintento de ruta: cuando el pathfinder devuelve null (origen o
+  // destino en obstáculo, grilla aún no cargada), esperamos 1.5 s antes de
+  // reintentar en lugar de disparar un compute() por cada callback BLE.
+  DateTime? _ultimoIntentoRuta;
+  static const Duration _cooldownRuta = Duration(milliseconds: 1500);
+ 
+  // Voz — STT
+  bool _escuchando = false;
+
+  // ── PRIMERA INDICACIÓN DE UNA RUTA ────────────────────────────────────────
+  //
+  // true desde que se fija un destino hasta que se dice la primera indicación
+  // de guiado. Mientras esté en true, esa indicación NO pasa por el filtro de
+  // estabilidad de VozService (4 confirmaciones + 1,8 s): se dice apenas hay
+  // ruta y el motor de voz está libre. El filtro existe para no decir giros
+  // que son un rebote de una celda; en la primera indicación no hay rebote
+  // que filtrar y lo que el usuario percibe es silencio.
+  bool _primeraInstruccionPendiente = false;
+
+  // ── CAMBIO DE RUTA DE FONDO ───────────────────────────────────────────────
+  //
+  // true desde que un recálculo adopta un camino que cambia lo que hay que
+  // hacer ([DecisionRuta.cambioDeFondo]) hasta que se dice su indicación.
+  // Antes esa indicación pasaba por el filtro anti-rebote (4 confirmaciones
+  // + 1,8 s, que se reinician cada vez que la indicación cambia mientras el
+  // usuario gira) y, si coincidía con la última dicha, esperaba el intervalo
+  // de repetición (15 s por defecto). Además el giro ya anunciado de la ruta
+  // vieja seguía valiendo ([_giroComprometido]): al pasarse de una esquina,
+  // la ruta nueva lo hacía volver a ella pero la indicación se calculaba
+  // como si ya estuviera parado ahí, así que seguía siendo "Girá a la
+  // izquierda" (ya dicho, no se repetía) en vez de "Date la vuelta". El
+  // "Date la vuelta" salía ~10 s después del giro, 7 u 8 m pasada la
+  // esquina. Ahora se dice enseguida, con la prioridad de un giro (ver
+  // VozService.hablarUrgente).
+  bool _indicacionRutaNuevaPendiente = false;
+
+  // ── "UBICACIÓN LISTA" ─────────────────────────────────────────────────────
+  //
+  // true desde la primera posición hasta que se dice "Ubicación lista.".
+  // Antes se decía una sola vez, en el ciclo de la primera posición, con
+  // hablarSinEsperar, que descarta la frase si el motor está ocupado. Y casi
+  // siempre lo estaba: la primera posición llega mientras todavía suena
+  // "Buscando ubicación." (enseguida si se viene del modo automático, que
+  // deja el scan andando; y la primera vez que se abre la app el motor de
+  // voz tarda más en arrancar). El aviso se perdía y no se reintentaba.
+  // Ahora queda pendiente y se reintenta en cada ciclo, como la primera
+  // indicación.
+  //
+  // Y se dice recién cuando la posición se asentó, no con el primer fix:
+  // durante la fase de adquisición el filtro corre rápido a propósito y el
+  // punto salta unos segundos hasta acomodarse. Se da por asentada cuando
+  // termina la adquisición ([_adquisicionTotal], 6 s) o antes, pasado el
+  // tramo pleno ([_adquisicionPlena], 3 s), si el usuario está quieto y la
+  // posición no se alejó más de [_asentamientoMaxMetros] de un mismo punto
+  // durante [_ventanaAsentamiento]. Caminando no se puede distinguir el
+  // ruido del avance: se espera al final de la adquisición.
+  bool _anuncioUbicacionPendiente = false;
+
+  /// La posición ya se asentó después del primer fix.
+  bool _ubicacionAsentada = false;
+
+  /// Punto alrededor del cual se mantiene la posición, y desde cuándo.
+  Offset? _anclaAsentamiento;
+  DateTime? _anclaAsentamientoDesde;
+
+  static const double _asentamientoMaxMetros = 1.0;
+  static const Duration _ventanaAsentamiento = Duration(milliseconds: 1500);
+
+  // ── GIROS ANTICIPADOS ─────────────────────────────────────────────────────
+  //
+  // El problema: "Girá a la izquierda" recién aparecía cuando la posición
+  // medida llegaba a la celda de la esquina. Pero la posición medida viene
+  // atrasada respecto del usuario (ventana de RSSI + filtro: más de un
+  // segundo), la indicación tenía que pasar el filtro anti-rebote de la voz
+  // (1,8 s) y decirla lleva otro segundo y pico. Caminando a 0,9 m/s eso son
+  // unos 4 metros: el giro se decía con la esquina ya pasada, o sólo si el
+  // usuario se quedaba parado en ella.
+  //
+  // Ahora los giros se anuncian ANTES de llegar a la esquina, en dos pasos:
+  //   1. "En 5 metros, girá a la izquierda"  (para que lo espere)
+  //   2. "Girá a la izquierda"               (para que lo escuche al llegar
+  //      a la esquina)
+  // No pasan por el filtro anti-rebote (se disparan una sola vez por
+  // esquina, no hay rebote que filtrar).
+  //
+  // CUÁNDO SE DICE CADA UNO. Salen de dos tiempos, regulables desde el panel
+  // de ajustes ([AjustesNavegacion]):
+  //   • el ATRASO de la posición: la posición medida muestra dónde estaba el
+  //     usuario hace ese tiempo (ventana de RSSI + filtro One Euro);
+  //   • el ANTICIPO: cuánto antes de que el usuario llegue a la esquina hay
+  //     que empezar a decir el giro.
+  // El punto del mapa llega a la esquina "atraso" segundos después que el
+  // usuario, así que el giro se dice cuando al punto le faltan
+  // atraso + anticipo segundos para llegar a ella.
+  //
+  // Para saber cuántos segundos le faltan al punto se mide en vivo el ritmo
+  // con el que se ACERCA a la esquina por el tramo ([_velocidadAcercamientoMs]).
+  // No se supone ni se aprende una velocidad de caminata: si la persona
+  // camina más rápido, el punto se acerca más rápido y el giro sale antes en
+  // metros, pero en el mismo momento respecto de la esquina. Con el usuario
+  // quieto no hay ritmo que medir y el giro se dice por distancia
+  // ([AjustesNavegacion.distanciaGiroQuieto]).
+
+  final AjustesNavegacion _ajustes = AjustesNavegacion.instancia;
+
+  /// Distancia del aviso previo con el usuario quieto (m).
+  static const double _distAvisoQuietoMetros = 3.0;
+
+  /// Ventana (s) sobre la que se mide el ritmo de acercamiento. Más corta
+  /// sigue mejor los arranques y frenadas, pero se cuela más ruido BLE.
+  static const double _ventanaAcercamientoSeg = 1.5;
+
+  /// Con menos historia que esto (s) no se mide: el ritmo sería ruido.
+  static const double _historiaMinimaAcercamientoSeg = 0.6;
+
+  /// Ritmo de acercamiento (m/s) por debajo del cual se toma al usuario como
+  /// quieto: menos que esto es ruido del BLE, no alguien caminando.
+  static const double _acercamientoMinMs = 0.2;
+
+  /// Tope del ritmo de acercamiento (m/s). Nadie camina más rápido adentro;
+  /// lo que pase de esto es un salto de la señal.
+  static const double _acercamientoMaxMs = 2.0;
+
+  /// Posiciones filtradas de los últimos [_ventanaAcercamientoSeg] segundos.
+  final List<({DateTime t, Offset p})> _historialPosicion = [];
+
+  /// Ritmo (m/s) con el que el punto del mapa se acerca a la próxima
+  /// esquina, por el tramo. 0 con el usuario quieto. Se actualiza en cada
+  /// ciclo de posición.
+  double _velocidadAcercamientoMs = 0.0;
+
+  /// El aviso previo sólo se da si queda al menos esto (m) hasta el punto
+  /// donde se va a decir el giro; si no, serían dos frases pegadas.
+  static const double _separacionAvisoGiroMetros = 1.5;
+
+  /// Una misma maniobra no se vuelve a anunciar antes de este tiempo (por
+  /// ejemplo si la posición retrocede una celda y vuelve a pasar el umbral).
+  static const Duration _noRepetirManiobra = Duration(seconds: 12);
+
+  /// Dos esquinas a menos de esto (m) y con el mismo sentido de giro son la
+  /// misma maniobra: cuando la ruta se corre una celda, la esquina también.
+  static const double _mismaManiobraMetros = 2.5;
+
+  /// Cuánto dura como máximo el "ya le dije que doble" (ver
+  /// [SeguidorRuta.guia], parámetro comprometida).
+  static const Duration _maxCompromisoGiro = Duration(seconds: 8);
+
+  /// Maniobras ya anunciadas: 1 = aviso previo, 2 = giro.
+  final List<({Offset esquina, SentidoGiro? giro, int nivel, DateTime cuando})>
+      _maniobrasAnunciadas = [];
+
+  /// Esquina cuyo giro ya se le dijo al usuario, y cuándo.
+  ({Offset esquina, DateTime desde})? _giroComprometido;
+
+  /// Cuánto más adelante está el usuario respecto de la posición medida: lo
+  /// que avanza el punto durante el atraso.
+  double get _avancePorAtrasoMetros =>
+      _velocidadAcercamientoMs * _ajustes.atrasoPosicion.valor;
+
+  /// Cuánto se espera a que el A* devuelva la ruta para decir el destino y la
+  /// primera indicación en UNA sola frase ("Baño. Girá a la izquierda."). El
+  /// cálculo tarda milisegundos; si alguna vez no llega a tiempo se dice el
+  /// destino seguido de "Calculando ruta.", como antes, y la indicación sale
+  /// sola en cuanto haya ruta.
+  static const Duration _esperaMaxPrimeraRuta = Duration(milliseconds: 1200);
+ 
+  @override
+  void initState() {
+    super.initState();
+    // La pantalla no se oscurece mientras la navegación esté abierta.
+    WakelockPlus.enable();
+    _tickerCamara = createTicker(_onTickCamara);
+    // Toda vista nueva (dedo, inercia o cámara) pasa por los límites del plano.
+    _transformMapa.addListener(_corregirVista);
+    _procesador = widget.procesadorCompartido ?? ProcesadorSenal();
+    _grilla = GrillaNav(metrosX: widget.escalaX, metrosY: widget.escalaY, tamCeldaMetros: widget.tamCeldaMetros);
+    // La escala del piso entra al filtro para que la velocidad se calcule en
+    // m/s reales y los parámetros no dependan del tamaño del plano.
+    _filtroPosicion = FiltroUnEuroPosicion(
+      metrosX: _grilla.metrosX,
+      metrosY: _grilla.metrosY,
+    );
+    _inicializar();
+  }
+ 
+  @override
+  void dispose() {
+    _timeoutTimer?.cancel();
+    _scanReinicioTimer?.cancel();
+    _compassUITimer?.cancel();
+    _compassSubscription?.cancel();
+    // En un salto de piso la pantalla nueva ya prendió el wakelock (se crea
+    // antes de que se destruya esta), así que acá no se apaga.
+    if (!_saltandoDePiso) WakelockPlus.disable();
+    _orientacion.limpiar();
+    // Guarda de dueño, misma razón que en BluetoothHelper: si esta pantalla se
+    // destruye DESPUÉS de que la siguiente ya arrancó, limpiar el TTS acá corta
+    // el anuncio de la pantalla nueva. En el log del bug se veía justamente
+    // eso: "Buscando ubicación" marcado como Interrupted: true.
+    _voz.limpiar(dueno: this);
+    _movimiento.detener();
+    _puertaRumbo.resetear();
+    _histeresisCelda.resetear();
+    if (widget.procesadorCompartido == null && !_saltandoDePiso) {
+      BluetoothHelper.detenerScanSeguro(dueno: this);
+    } else {
+      // El scan fisico sigue vivo para la proxima pantalla, pero la suscripcion
+      // hay que soltarla igual: si no, el stream sigue entregando a esta State
+      // ya desmontada, cuyo callback descarta todo por !mounted. El scan queda
+      // "vivo pero mudo" y la pantalla siguiente puede quedarse sin datos.
+      BluetoothHelper.liberarSuscripcion(this);
+    }
+    _tickerCamara.dispose();
+    _transformMapa.dispose();
+    super.dispose();
+  }
+ 
+  Future<void> _inicializar() async {
+    try {
+      _voz.registrarDueno(this);
+      await _voz.inicializar();
+      // VozService es un singleton: la última indicación dicha en la pantalla
+      // anterior (otro piso, otra navegación) no tiene que contar acá.
+      _voz.reiniciarFiltroInstrucciones();
+
+      final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
+      final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
+      final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(widget.pisoId);
+      // Destinos de todo el edificio + pisos disponibles para los saltos.
+      final lugaresEdificio =
+          await DatabaseHelper.instance.obtenerLugaresDelMismoEdificio(widget.pisoId);
+      final pisosEdificio =
+          await DatabaseHelper.instance.obtenerPisosDelMismoEdificio(widget.pisoId);
+      final calibraciones = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(widget.pisoId);
+
+      // Lookup del nombre del piso para el AppBar (item 7).
+      // DatabaseHelper no expone un método por id, así que consultamos
+      // directamente la tabla 'pisos' filtrando por id.
+      final db = await DatabaseHelper.instance.database;
+      final filas = await db.query(
+        'pisos',
+        columns: ['nombre_piso', 'rotacion_mapa'],
+        where: 'id = ?',
+        whereArgs: [widget.pisoId],
+        limit: 1,
+      );
+      final pisosPorId = {for (final p in pisosEdificio) p.id: p};
+      // Con número de piso se muestra el nombre derivado ("Piso 2").
+      final nombrePiso = pisosPorId[widget.pisoId]?.nombreVisible ??
+          (filas.isNotEmpty ? filas.first['nombre_piso'] as String? : null);
+
+      // Salto de piso: retomar el destino final que venía de la pantalla
+      // anterior. Si hay varios lugares con ese nombre en este piso, se
+      // elige el más cercano cuando se conozca la posición.
+      LugarInteres? destinoRetomado;
+      if (widget.destinoFinalId != null) {
+        for (final l in lugaresEdificio) {
+          if (l.id == widget.destinoFinalId) destinoRetomado = l;
+        }
+      }
+      // rotacion_mapa puede no existir todavía en instalaciones antiguas (v7→v8);
+      // usar el valor pasado por widget como fallback.
+      final rotacionDb = filas.isNotEmpty
+          ? ((filas.first['rotacion_mapa'] as num?)?.toDouble() ?? widget.rotacionMapa)
+          : widget.rotacionMapa;
+
+      if (!mounted) return;
+      setState(() {
+        _beaconsEnElMapa = {for (var b in beacons) b.mac: b};
+        _zonas = zonas;
+        _lugares = lugares;
+        _lugaresEdificio = lugaresEdificio;
+        _pisosEdificio = pisosPorId;
+        _calibraciones = calibraciones;
+        if (destinoRetomado != null) {
+          _destinoSeleccionado = destinoRetomado;
+          _destinoRefinado = false;
+          _estadoRuta = 'Buscando tu ubicación para seguir...';
+          // Tras un salto de piso la primera indicación también sale sin
+          // esperar al filtro de estabilidad.
+          _primeraInstruccionPendiente = true;
+        }
+        _nombrePiso = nombrePiso;
+        _rotacionMapaEfectiva = rotacionDb;
+      });
+ 
+      // Solo los beacons configurados de este piso son relevantes para el
+      // filtro: el scan BLE ve todos los dispositivos del ambiente y, sin esto,
+      // sus MAC se acumulaban para siempre en el ProcesadorSenal (fuga de
+      // memoria/CPU que crecia durante toda la sesion de navegacion). Ademas,
+      // si venimos del modo automatico con un procesador compartido, esto
+      // suelta las entradas ajenas que quedaron sembradas durante la busqueda.
+      // Va antes de que arranque el scan, asi ningun callback ajeno se procesa.
+      _procesador.definirBeaconsRelevantes(_beaconsEnElMapa.keys);
+
+      // Ajuste del modelo de rango por beacon. Va DESPUES del setState que
+      // carga beacons y calibraciones, y una sola vez: es una regresion sobre
+      // datos que no cambian durante la navegacion.
+      _modelosRango = ProcesadorSenal.ajustarModelosRango(
+        calibraciones: _calibraciones,
+        posicionesBeacons: {
+          for (final b in _beaconsEnElMapa.values) b.mac: b.posicion,
+        },
+        grilla: _grilla,
+      );
+      final ajustados = _modelosRango.values.where((m) => m.ajustado).length;
+      debugPrint('[Rango] Modelos ajustados por regresion: $ajustados/'
+          '${_modelosRango.length}. Los no ajustados usan n por defecto '
+          '(hacen falta ${ProcesadorSenal.minPuntosAjuste}+ calibraciones a '
+          'distancias distintas por beacon).');
+
+      // Las escaleras del piso son obstáculos: la ruta las rodea y llega por
+      // la entrada. Se deja libre la celda frente a cada entrada, que es a
+      // donde apunta la ruta.
+      final escaleras = _lugares.where((l) => l.esEscalera).toList();
+      _resolvedor.inicializar(
+        _zonas,
+        grilla: _grilla,
+        obstaculosRect: [
+          for (final e in escaleras)
+            e.areaEscalera(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY),
+        ],
+        puntosLibres: [
+          for (final e in escaleras)
+            e.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY),
+        ],
+      );
+      _resolvedorListo = true;
+      // Ajustes de los giros y de la posición de ESTE edificio (ver
+      // [AjustesNavegacion]). Antes del scan: las ventanas de señal ya rigen
+      // desde la primera lectura BLE, antes del primer ciclo de posición.
+      // Primero lo guardado en el teléfono (en el edificio puede no haber
+      // señal); la nube se consulta aparte y, si trae algo distinto, rige
+      // desde el ciclo siguiente.
+      final pisoConEdificio =
+          await DatabaseHelper.instance.obtenerPisoConEdificio(widget.pisoId);
+      final edificio = pisoConEdificio?['edificio_nombre'] as String?;
+      await _ajustes.usarEdificio(edificio);
+      unawaited(
+        SupabaseService.instance
+            .sincronizarAjustesNavegacion(edificio)
+            .timeout(const Duration(seconds: 8))
+            .catchError((Object e) {
+          debugPrint('[Ajustes] Sin ajustes de la nube, se usan los del '
+              'teléfono: $e');
+        }),
+      );
+      _aplicarAjustesPosicion();
+      // Acelerómetro: si el dispositivo no lo expone, el detector devuelve un
+      // factor intermedio fijo y el filtro sigue funcionando (con un
+      // comportamiento parecido al EMA anterior).
+      final hayAcelerometro = await _movimiento.iniciar();
+      if (!hayAcelerometro) {
+        debugPrint('[Posicionamiento] Sin acelerómetro: el filtro One Euro '
+            'trabaja con factor de movimiento fijo.');
+      }
+      await _iniciarBrujula();
+ 
+      // Anuncio de bienvenida. NO se espera a que termine: `hablar()` bloquea
+      // hasta que el motor TTS confirma la locucion (o hasta su timeout, ~3.4 s
+      // para este texto). Al entrar y salir rapido de la pantalla, el TTS
+      // anterior se interrumpe y esa espera retrasaba el arranque del scan
+      // varios segundos justo cuando mas importa. El anuncio es informativo:
+      // no tiene por que estar en el camino critico del posicionamiento.
+      _voz.hablarSinEsperar(widget.anuncioInicial ?? 'Buscando ubicación.');
+ 
+      if (widget.procesadorCompartido != null && FlutterBluePlus.isScanningNow) {
+        if (mounted) {
+          setState(() {
+            _escaneando = true;
+            _estadoScan = 'Continuando escaneo...';
+          });
+        }
+        // Antes esta rama llamaba a _suscribirAScan(), que se suscribia al
+        // stream pero NO instalaba el watchdog del scan. Resultado: todo el
+        // camino "vengo del modo automatico" corria sin vigilancia, y si el
+        // scan moria no habia nada que lo reviviera. Ahora ambos caminos pasan
+        // por el mismo metodo.
+        await _iniciarEscaneo(reutilizandoScan: true);
+        return;
+      }
+ 
+      if (!mounted) return;
+      final ok = await BluetoothHelper.verificarPrecondiciones(context);
+      if (!ok) {
+        if (mounted) {
+          setState(() => _estadoScan = 'Bluetooth o permisos no disponibles');
+        }
+        await _voz.hablar('Bluetooth no disponible.');
+        return;
+      }
+ 
+      await _iniciarEscaneo();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _estadoScan = 'Error de inicializacion: $e');
+      }
+    }
+  }
+ 
+  Future<void> _iniciarBrujula() async {
+    try {
+      _compassDisponible = FlutterCompass.events != null;
+      if (!_compassDisponible) return;
+
+      // Si en los primeros 5 s no llega ningún heading válido, declaramos la
+      // brújula no disponible y lo anunciamos por TTS (una sola vez).
+      bool recibioPrimerHeadingValido = false;
+      final timeoutBrujula = Timer(const Duration(seconds: 5), () {
+        if (!recibioPrimerHeadingValido && mounted) {
+          setState(() => _compassDisponible = false);
+          _compassSubscription?.cancel();
+          _compassSubscription = null;
+          _voz.hablarSinEsperar(
+            'Brújula no disponible, las instrucciones de giro pueden ser menos precisas',
+          );
+          debugPrint('[Brujula] Timeout: no se recibió heading válido en 5 s.');
+        }
+      });
+
+      _compassSubscription = FlutterCompass.events!.listen(
+        (CompassEvent event) {
+          if (event.heading == null) {
+            // El hardware no está calibrado o aún no tiene fix: loguear y seguir.
+            debugPrint('[Brujula] Evento con heading null — sensor sin calibrar o sin datos.');
+            return;
+          }
+          if (!recibioPrimerHeadingValido) {
+            recibioPrimerHeadingValido = true;
+            timeoutBrujula.cancel();
+            // Iniciar timer de UI para el chip de brújula a 4 Hz.
+            //
+            // BUG ORIGINAL: `setState(() {})` acá era INCONDICIONAL, 4 veces
+            // por segundo, durante TODA la sesión de navegación — sin
+            // importar si el heading había cambiado o no. Eso reconstruye la
+            // pantalla ENTERA (mapa con InteractiveViewer, tarjeta de
+            // indicación de giro, listas de beacons/lugares, etc.) 4x/s de
+            // forma perpetua, compitiendo por el isolate principal con el
+            // pipeline de posicionamiento BLE (~5.5 Hz) y con la recepción
+            // del resultado del compute() del A*. A mayor duración de la
+            // sesión, más se acumula esta competencia por CPU — coincide con
+            // que el cálculo de ruta empeoraba con el tiempo.
+            //
+            // FIX: solo hacer setState si el heading cambió lo suficiente
+            // como para importar visualmente (>1°). Si el usuario está
+            // parado/apuntando estable, no hay rebuild — el heading crudo se
+            // sigue actualizando en el modelo igual, sin costo de UI.
+            _compassUITimer?.cancel();
+            _compassUITimer = Timer.periodic(
+              const Duration(milliseconds: 250),
+              (_) {
+                if (!mounted) return;
+                final actual = _orientacion.heading;
+                if (actual == null) return;
+                final anterior = _ultimoHeadingUIRefrescado;
+                bool cambio;
+                if (anterior == null) {
+                  cambio = true;
+                } else {
+                  // Diferencia angular con signo en [-180, 180). Mismo patrón
+                  // que _diferenciaAngular() en OrientacionService: en Dart,
+                  // el % de doubles preserva el signo del dividendo, así que
+                  // hay que forzar el rango [0, 360) antes de doblar.
+                  double d = ((actual - anterior) % 360 + 360) % 360;
+                  if (d > 180) d -= 360;
+                  cambio = d.abs() > 1.0;
+                }
+                if (cambio) {
+                  _ultimoHeadingUIRefrescado = actual;
+                  setState(() {});
+                }
+              },
+            );
+          }
+          // Solo actualizar el modelo — sin setState aquí.
+          if (!mounted) return;
+          _orientacion.actualizarHeadingBrujula(event.heading!);
+        },
+        onError: (e) {
+          timeoutBrujula.cancel();
+          _compassUITimer?.cancel();
+          debugPrint('[Brujula] Error en stream: $e');
+          if (!mounted) return;
+          setState(() => _compassDisponible = false);
+          _voz.hablarSinEsperar(
+            'Brújula no disponible, las instrucciones de giro pueden ser menos precisas',
+          );
+        },
+        // cancelOnError:false mantiene la suscripción activa después de un error
+        // transitorio del sensor (p.ej. calibración en curso en Android).
+        cancelOnError: false,
+      );
+    } catch (e) {
+      debugPrint('[Brujula] Excepción al iniciar: $e');
+      _compassDisponible = false;
+    }
+  }
+ 
+  /// Arranca (o reengancha) el escaneo BLE e instala el watchdog.
+  ///
+  /// [reutilizandoScan] indica que venimos de otra pantalla que dejo el scan
+  /// fisico corriendo (modo automatico): no hay que volver a pedir permisos ni
+  /// arrancar nada, solo suscribirse. Pero el watchdog se instala IGUAL, que es
+  /// justamente lo que faltaba antes.
+  Future<void> _iniciarEscaneo({bool reutilizandoScan = false}) async {
+    if (!mounted) return;
+    setState(() => _escaneando = true);
+
+    _inicioEscaneo = DateTime.now();
+    _reiniciosSinDatos = 0;
+
+    final scanOk = await BluetoothHelper.iniciarScanSeguro(
+      dueno: this,
+      onResultados: (resultados) => _actualizarSenales(resultados),
+      onError: (e) {
+        if (mounted) {
+          setState(() => _estadoScan = 'Error en scan: $e');
+        }
+      },
+      removeIfGone: const Duration(seconds: 4),
+    );
+
+    if (!scanOk && !reutilizandoScan) {
+      // Puede ser un fallo real o simplemente falta de cupo de arranques. El
+      // watchdog de abajo se instala igual y va a reintentar cuando haya cupo,
+      // asi que esto es informativo, no terminal.
+      final espera = BluetoothHelper.esperaParaArrancar();
+      if (mounted) {
+        setState(() => _estadoScan = espera > Duration.zero
+            ? 'Reintentando escaneo en ${espera.inSeconds} s...'
+            : 'No se pudo iniciar el escaneo');
+      }
+    } else if (mounted) {
+      setState(() => _estadoScan = 'Buscando beacons...');
+    }
+
+    _timeoutTimer?.cancel();
+    _timeoutTimer = Timer(const Duration(seconds: 12), () {
+      if (mounted && _posicionFinal == null) {
+        setState(() => _estadoScan = 'No se detectan beacons suficientes.\nAcercate a un beacon configurado.');
+      }
+    });
+
+    _instalarWatchdogScan();
+  }
+
+  /// ── WATCHDOG DEL SCAN BLE ────────────────────────────────────────────────
+  ///
+  /// El watchdog anterior preguntaba `if (!FlutterBluePlus.isScanningNow)` cada
+  /// 20 s. Esa condicion NO detecta el modo de falla que congelaba la posicion:
+  /// cuando se supera el limite de Android de 5 arranques de scan por 30 s, el
+  /// sistema acepta el `startScan()`, deja de entregar advertisements, y
+  /// `isScanningNow` sigue devolviendo `true`. El watchdog concluia que el scan
+  /// estaba sano y no hacia nada, para siempre.
+  ///
+  /// La unica evidencia confiable de que el scan esta vivo es que LLEGUEN
+  /// DATOS. Por eso este watchdog vigila el silencio: si pasan
+  /// [_silencioParaReiniciar] sin un solo lote de resultados, fuerza un
+  /// reinicio completo (stop + start) en lugar de confiar en la bandera.
+  void _instalarWatchdogScan() {
+    _scanReinicioTimer?.cancel();
+    _scanReinicioTimer = Timer.periodic(_intervaloWatchdog, (_) async {
+      if (!mounted) return;
+
+      // Renovación preventiva antes del límite de 30 minutos de Android: un
+      // scan degradado sigue entregando algo (lo que escanea otra app), así
+      // que el control de silencio de abajo no lo detecta. Ver
+      // BluetoothHelper.renovarScanCada.
+      if (BluetoothHelper.esDueno(this) && BluetoothHelper.scanParaRenovar) {
+        debugPrint('[BLE] Renovando el scan (lleva '
+            '${BluetoothHelper.antiguedadScan?.inMinutes} min corriendo).');
+        await BluetoothHelper.reiniciarScanForzado();
+        return;
+      }
+
+      final referencia =
+          BluetoothHelper.ultimoResultado ?? _inicioEscaneo ?? DateTime.now();
+      final silencio = DateTime.now().difference(referencia);
+      if (silencio < _silencioParaReiniciar) {
+        _reiniciosSinDatos = 0;
+        return;
+      }
+
+      // AUTOCURACIÓN: si perdimos la propiedad del scan (una pantalla anterior
+      // se destruyó tarde y desarmó nuestros callbacks), no hay nada que
+      // "reiniciar" — hay que volver a registrarse. Sin esto, el watchdog
+      // quedaba pidiendo un reinicio que el helper rechazaba en silencio,
+      // exactamente lo que mostraba el log: "Forzando reinicio" cada 3 s,
+      // para siempre, sin recuperación posible.
+      if (!BluetoothHelper.esDueno(this)) {
+        debugPrint('[BLE] Perdimos la propiedad del scan. Re-registrando.');
+        await _iniciarEscaneo(reutilizandoScan: true);
+        return;
+      }
+
+      debugPrint('[BLE] Sin resultados hace ${silencio.inSeconds}s '
+          '(isScanningNow=${FlutterBluePlus.isScanningNow}). Forzando reinicio.');
+
+      final ok = await BluetoothHelper.reiniciarScanForzado();
+      if (!mounted) return;
+
+      if (ok) {
+        _reiniciosSinDatos = 0;
+        setState(() => _estadoScan = 'Reconectando con los beacons...');
+      } else {
+        _reiniciosSinDatos++;
+        final espera = BluetoothHelper.esperaParaArrancar();
+        setState(() {
+          _estadoScan = espera > Duration.zero
+              ? 'Bluetooth saturado, reintentando en ${espera.inSeconds} s...'
+              : 'Sin senal de beacons, reintentando...';
+        });
+        // Aviso por voz una sola vez, cuando el problema deja de ser un bache
+        // momentaneo. Es informacion que un usuario ciego necesita: sin esto,
+        // la app simplemente deja de guiarlo sin decir nada.
+        if (_reiniciosSinDatos == 3) {
+          _voz.hablarSinEsperar(
+            'Perdi la senal de los beacons. Estoy reintentando.',
+          );
+        }
+      }
+    });
+  }
+ 
+  void _actualizarSenales(List<ScanResult> resultados) {
+    if (!mounted) return;
+    _contadorLecturas++;
+ 
+    // ── SÓLO LECTURAS NUEVAS ───────────────────────────────────────────────
+    // flutter_blue_plus entrega en cada callback la lista ACUMULADA de
+    // dispositivos (todo lo oído en los últimos removeIfGone = 4 s), y cada
+    // uno viene con su ÚLTIMA lectura aunque no haya vuelto a emitir. Antes
+    // se procesaba la lista entera en cada callback, con dos efectos:
+    //   • la última lectura de cada beacon entraba a su ventana de mediana
+    //     una y otra vez: las "13 lecturas" de la ventana eran casi todas
+    //     copias de una o dos, y cuántas copias entraban dependía de cuántos
+    //     dispositivos BLE hubiera alrededor (cada uno dispara callbacks). La
+    //     ventana no medía lo que decía y el mismo ajuste andaba distinto en
+    //     cada lugar;
+    //   • un beacon "aparecía en el ciclo" mientras siguiera en la lista, así
+    //     que el decaimiento de abajo recién arrancaba a los 4 s.
+    // Ahora una lectura cuenta sólo si es posterior a la última procesada de
+    // ese beacon ([_ultimaLecturaBeacon]).
+    final ahoraSenales = DateTime.now();
+    for (var res in resultados) {
+      try {
+        final mac = res.device.remoteId.str;
+        final beacon = _beaconsEnElMapa[mac];
+        if (beacon == null) continue; // dispositivo ajeno al piso
+        final ultima = _ultimaLecturaBeacon[mac];
+        if (ultima != null && !res.timeStamp.isAfter(ultima)) continue;
+        _ultimaLecturaBeacon[mac] = res.timeStamp;
+        _conteoLecturas[mac] = (_conteoLecturas[mac] ?? 0) + 1;
+        final rssiSuave = _procesador.filtrarYPromediar(mac, res.rssi);
+        if (rssiSuave != null) beacon.rssiFiltrado = rssiSuave;
+      } catch (e) {
+        // Ignorar
+      }
+    }
+    _publicarDiagnosticoSenal(ahoraSenales);
+
+    // Decaimiento suave: si un beacon deja de oírse, su RSSI baja
+    // gradualmente en lugar de caer a -100 de golpe. removeIfGone (4s) se
+    // encarga de limpiar los que realmente desaparecen.
+    //
+    // Arranca recién después de [_graciaSinLecturaSeg] sin lecturas nuevas
+    // de ese beacon: emite cada ~160 ms y entre dos lecturas suyas llegan
+    // callbacks de los demás dispositivos; decaerlo en cada uno lo
+    // arrastraría hacia abajo todo el tiempo.
+    //
+    // FIX: antes el decaimiento era de 2 dBm por CALLBACK. El ritmo de
+    // callbacks de flutter_blue_plus con continuousUpdates es variable (5-50
+    // por segundo segun el trafico BLE del ambiente), asi que la velocidad de
+    // caida no era una propiedad del beacon sino del ruido de fondo del lugar:
+    // en un ambiente concurrido un beacon que se perdia dos o tres lotes
+    // seguidos (normal por sombra del cuerpo) caia decenas de dBm y quedaba
+    // por debajo de _umbralRSSI. Al descartarse, el set visible bajaba a 2
+    // beacons y el posicionamiento perdia geometria justo cuando mas la
+    // necesitaba. Ahora el decaimiento es en dBm por SEGUNDO real.
+    final dtDecaimiento = _ultimoDecaimiento == null
+        ? 0.0
+        : ahoraSenales.difference(_ultimoDecaimiento!).inMicroseconds / 1e6;
+    _ultimoDecaimiento = ahoraSenales;
+    if (dtDecaimiento > 0 && dtDecaimiento < 5.0) {
+      final caida = _decaimientoDbPorSeg * dtDecaimiento;
+      final graciaUs = (_graciaSinLecturaSeg * 1e6).round();
+      for (var beacon in _beaconsEnElMapa.values) {
+        final ultima = _ultimaLecturaBeacon[beacon.mac];
+        if (ultima == null ||
+            ahoraSenales.difference(ultima).inMicroseconds > graciaUs) {
+          beacon.rssiFiltrado =
+              (beacon.rssiFiltrado - caida).clamp(-100.0, 0.0);
+        }
+      }
+    }
+
+    // Solo mientras todavía NO hay posición: una vez que el pipeline publica
+    // "Ubicacion estable...", este setState (a ~3-5 Hz según el ritmo de
+    // callbacks BLE) peleaba con aquel texto, alternando los dos mensajes y
+    // forzando rebuilds completos de la pantalla por fuera del throttle de UI
+    // de 250 ms. Además el _estadoScan está dentro de un Semantics liveRegion:
+    // el titileo de texto se traducía en anuncios repetidos de TalkBack.
+    if (_contadorLecturas % 10 == 0 && mounted && _posicionFinal == null) {
+      final activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > _umbralRSSI).length;
+      final texto = 'Beacons detectados: $activos / ${_beaconsEnElMapa.length}';
+      if (texto != _estadoScan) {
+        setState(() => _estadoScan = texto);
+      }
+    }
+
+    // Throttle: no ejecutar el pipeline de posicionamiento más de una vez
+    // cada _intervaloPosicionamiento. BLE puede disparar mucho más rápido que eso.
+    final ahora = DateTime.now();
+    if (_ultimoPosicionamiento != null &&
+        ahora.difference(_ultimoPosicionamiento!) < _intervaloPosicionamiento) {
+      return;
+    }
+    _ultimoPosicionamiento = ahora;
+
+    _calcularPosicionRobusta();
+  }
+ 
+  /// Publica cada [_periodoDiagnostico] cuántas lecturas nuevas por segundo
+  /// llegan de los beacons del piso, y cuánto lleva corriendo el scan.
+  void _publicarDiagnosticoSenal(DateTime ahora) {
+    final inicio = _inicioConteoLecturas ??= ahora;
+    final seg = ahora.difference(inicio).inMilliseconds / 1000.0;
+    if (seg < _periodoDiagnostico.inSeconds) return;
+
+    final tasas = [for (final n in _conteoLecturas.values) n / seg]..sort();
+    final promedio = tasas.isEmpty
+        ? 0.0
+        : tasas.reduce((a, b) => a + b) / tasas.length;
+    final edadScan = BluetoothHelper.antiguedadScan;
+    final texto = [
+      tasas.isEmpty
+          ? 'Sin lecturas de los beacons del piso'
+          : '${tasas.length} beacons · ${promedio.toStringAsFixed(1)} '
+              'lecturas/s por beacon (de ${tasas.first.toStringAsFixed(1)} '
+              'a ${tasas.last.toStringAsFixed(1)})',
+      if (edadScan != null) 'escaneo de hace ${edadScan.inMinutes} min',
+    ].join(' · ');
+
+    _ajustes
+      ..lecturasPorSegundo = tasas.isEmpty ? 0.0 : promedio
+      ..diagnosticoSenal = texto
+      ..diagnosticoSenalHora = ahora;
+    debugPrint('[Señal] $texto');
+    _conteoLecturas.clear();
+    _inicioConteoLecturas = ahora;
+  }
+
+  /// Pasa los ajustes regulables del seguimiento de la posición (ver
+  /// [AjustesNavegacion]) a los componentes que los usan. Se llama en cada
+  /// ciclo: el panel los puede cambiar en cualquier momento y son sólo
+  /// asignaciones.
+  void _aplicarAjustesPosicion() {
+    _movimiento.umbralMoviendo = _ajustes.umbralCaminata.valor;
+    _procesador.configurarVentanas(
+      quietoSeg: _ajustes.ventanaSenalQuieto.valor,
+      caminandoSeg: _ajustes.ventanaSenalCaminando.valor,
+    );
+    _filtroPosicion
+      ..cutoffQuieto = _ajustes.filtroQuieto.valor
+      ..cutoffMoviendo = _ajustes.filtroCaminando.valor
+      ..beta = _ajustes.empujeVelocidad.valor;
+  }
+
+  void _calcularPosicionRobusta() {
+    if (!mounted) return;
+
+    try {
+      _aplicarAjustesPosicion();
+      var candidatos = _beaconsEnElMapa.values
+          .where((b) => b.rssiFiltrado > _umbralRSSI)
+          .toList();
+ 
+      if (candidatos.length < _minBeaconsActivos) {
+        // Sólo si el texto cambió: antes se redibujaba la pantalla entera en
+        // cada ciclo (~5 veces por segundo) con el mismo mensaje.
+        final texto = 'Beacons cercanos: ${candidatos.length} (necesitamos $_minBeaconsActivos)';
+        if (mounted && texto != _estadoScan) {
+          setState(() => _estadoScan = texto);
+        }
+        return;
+      }
+
+      // ── PRIMER FIX: ESPERAR (UN MOMENTO) AL TERCER BEACON ────────────────
+      // Los beacons no aparecen todos juntos: cada uno entra cuando junta sus
+      // primeras muestras. Si el primer fix se calcula en el instante en que
+      // hay dos, sale el punto medio entre esos dos (ver Posicionador.estimar
+      // con menos de 3 rangos y sin posición previa). Se espera hasta
+      // _esperaMaxPrimerFix a que haya tres; pasado ese tiempo se sigue con
+      // lo que haya, así un piso con poca cobertura no queda sin posición.
+      if (_posicionFiltrada == null) {
+        final deseados = min(_beaconsPrimerFix, _beaconsEnElMapa.length);
+        if (candidatos.length < deseados) {
+          final ahoraFix = DateTime.now();
+          _esperandoPrimerFixDesde ??= ahoraFix;
+          if (ahoraFix.difference(_esperandoPrimerFixDesde!) <
+              _esperaMaxPrimerFix) {
+            final texto =
+                'Beacons cercanos: ${candidatos.length} (esperando más señal)';
+            if (mounted && texto != _estadoScan) {
+              setState(() => _estadoScan = texto);
+            }
+            return;
+          }
+        }
+      }
+ 
+      // Orden: primero por RSSI (más cercano) DESC, y entre beacons de fuerza
+      // similar, por varianza (más estable) ASC. Cuantizamos el RSSI a bandas
+      // de _umbralRssiSimilar dBm para que el desempate por varianza se active
+      // realmente con valores filtrados continuos y para mantener el orden
+      // transitivo (un comparador con epsilon directo no lo sería).
+      candidatos.sort((a, b) {
+        final bandaA = (a.rssiFiltrado / _umbralRssiSimilar).round();
+        final bandaB = (b.rssiFiltrado / _umbralRssiSimilar).round();
+        if (bandaA != bandaB) return bandaB.compareTo(bandaA); // RSSI DESC
+        return _procesador
+            .varianzaBeacon(a.mac)
+            .compareTo(_procesador.varianzaBeacon(b.mac)); // varianza ASC
+      });
+      final activos = candidatos.take(_maxBeaconsParaCalcular).toList();
+ 
+      // MULTILATERACIÓN por mínimos cuadrados (reemplaza al centroide ponderado
+      // 1/d²). El centroide era un promedio de las POSICIONES de los beacons:
+      // andaba bien pegado a un beacon (ese beacon dominaba el peso) pero
+      // COLAPSABA al centro del layout cuando el usuario estaba en el medio,
+      // equidistante de varios. La multilateración usa las distancias como
+      // restricciones geométricas (circunferencias) y sí puede ubicar al
+      // usuario en cualquier parte del plano. Ver [Posicionador] para el detalle
+      // y las mediciones. Se sigue usando el txPower CALIBRADO por beacon.
+      final observaciones = <ObservacionRango>[];
+      for (var b in activos) {
+        // Modelo de rango AJUSTADO (txPower + n por beacon). Si un beacon no
+        // tiene calibraciones suficientes, ajustarModelosRango ya devolvio el
+        // modelo por defecto, asi que este camino es siempre valido.
+        final modelo = _modelosRango[b.mac];
+        final d = modelo != null
+            ? modelo.distancia(b.rssiFiltrado)
+            : ProcesadorSenal.rssiADistanciaConTx(
+                b.rssiFiltrado,
+                ProcesadorSenal.txPowerCalibrado(b.mac, _calibraciones),
+              );
+        // Beacon más cercano = rango más confiable: el error en metros del
+        // modelo log crece con la distancia, así que pesa menos lo lejano.
+        final confianza = 1.0 / (d + 1.0);
+        observaciones.add(ObservacionRango(b.posicion, d, confianza));
+      }
+      if (observaciones.isEmpty) return;
+
+      // El factor de movimiento (acelerómetro) se lee ANTES de estimar porque
+      // gobierna el ancla temporal del posicionador, la puerta direccional y la
+      // ventana de mediana del RSSI.
+      _factorMovimiento = _movimiento.factorMovimiento;
+
+      // Δt REAL entre muestras: el scan BLE no entrega a ritmo constante.
+      // Se calcula ACÁ ARRIBA (antes se calculaba después de estimar) porque
+      // ahora también lo necesita la puerta direccional, que convierte el
+      // desplazamiento del ciclo en una velocidad en m/s.
+      final ahoraMuestra = DateTime.now();
+      final dt = _ultimaMuestraPos == null
+          ? 0.0
+          : ahoraMuestra.difference(_ultimaMuestraPos!).inMicroseconds / 1e6;
+      _ultimaMuestraPos = ahoraMuestra;
+
+      // ── FASE DE ADQUISICIÓN ──────────────────────────────────────────────
+      // Arranca con el primer fix y cada vez que la posición se recupera
+      // después de un silencio largo. `fPos` es el factor con el que corre
+      // todo el posicionamiento de este ciclo: el del acelerómetro o el de la
+      // adquisición, el que sea mayor. `_factorMovimiento` sigue siendo el
+      // real y es el que se muestra y el que ajusta la ventana de RSSI.
+      if (_posicionFiltrada == null || dt > _silencioParaReadquirirSeg) {
+        _adquisicionDesde = ahoraMuestra;
+        debugPrint('[Posicionamiento] Adquisición iniciada '
+            '(${_posicionFiltrada == null ? "primer fix" : "posición recuperada tras ${dt.toStringAsFixed(1)} s"}).');
+      }
+      final fAdq = _factorAdquisicion(ahoraMuestra);
+      final adquiriendo = fAdq > 0.0;
+      final fPos = max(_factorMovimiento, fAdq);
+
+      // ── ¿SE PUEDE USAR EL RUMBO PARA RESTRINGIR EL MOVIMIENTO? ───────────
+      //
+      // Tres condiciones, y las tres importan:
+      //
+      //  1. Hay brújula y ya entregó un heading.
+      //
+      //  2. El heading es ESTABLE ([OrientacionService.calidadRumbo]). En
+      //     interiores el campo magnético está distorsionado por estructura
+      //     metálica, ascensores y tableros. Un heading basura no "restringe"
+      //     el movimiento: clava la posición sobre un eje EQUIVOCADO, que es
+      //     peor que no restringir nada. Esta condición no existía antes y es
+      //     una de las razones por las que el sistema andaba de forma errática:
+      //     bastaba pasar cerca de una columna con hierro para que el eje
+      //     privilegiado se fuera 40° y la posición quedara trabada de costado.
+      //
+      //  3. Hay acelerómetro. Sin él, [DetectorMovimiento] devuelve un factor
+      //     fijo de 0.45 y no se puede distinguir "caminando" de "parado".
+      //     "Dirección de marcha" de alguien que quizás no está marchando no
+      //     significa nada, así que se prefiere el ancla isotrópica.
+      //
+      // El rumbo se lleva al marco del PLANO (se descuenta la rotación del
+      // mapa, igual que en _buildOrientacion) y se expresa como DIRECCIÓN en
+      // coordenadas normalizadas de pantalla (x→derecha, y→abajo), que es el
+      // contrato de Posicionador.estimar / PuertaRumbo.aplicar.
+      //
+      // FIX (bug vectorial): la dirección física del rumbo, en METROS, es
+      // (sin hp, -cos hp). Antes se pasaba ese versor físico tal cual, pero
+      // los tres consumidores (prior anisotrópico, puerta direccional y tope
+      // de paso) esperan una dirección en coordenadas NORMALIZADAS y la
+      // multiplican por (metrosX, metrosY) para volver al marco métrico. Con
+      // un plano rectangular (metrosX ≠ metrosY) esa doble conversión rotaba
+      // el eje privilegiado: en un plano de 100×25 m, mirar a 45° hacía que
+      // todo el filtro trabajara sobre un eje de 76° (31° de error). El eje
+      // "adelante" quedaba mal, el movimiento real se frenaba como si fuera
+      // lateral y el ruido lateral pasaba como si fuera marcha. Para expresar
+      // la dirección física en normalizado hay que dividir cada componente
+      // por la escala de su eje (la magnitud no importa: los consumidores
+      // renormalizan después de volver a metros).
+      final calidadRumbo = _orientacion.calidadRumbo;
+      _rumboActivo = _rumboActivo
+          ? calidadRumbo >= _calidadRumboApagar
+          : calidadRumbo >= _calidadRumboMinima;
+
+      // Durante la adquisición el rumbo NO restringe: el error de un primer
+      // fix puede estar en cualquier dirección, y la puerta direccional lo
+      // dejaría pasar al 3 % si cae de costado y al 15 % si cae hacia atrás.
+      // Además, se puede apagar desde el panel de ajustes para probar sin la
+      // restricción ([AjustesNavegacion.frenarLateralConBrujula]).
+      Offset? rumboPlano;
+      if (!adquiriendo &&
+          _ajustes.frenarLateralConBrujula &&
+          _compassDisponible &&
+          _movimiento.disponible &&
+          _rumboActivo) {
+        final h = _orientacion.heading;
+        if (h != null) {
+          final hp = ((h - _rotacionMapaEfectiva) % 360 + 360) % 360;
+          final rad = hp * pi / 180.0;
+          rumboPlano = Offset(
+            sin(rad) / _grilla.metrosX,
+            -cos(rad) / _grilla.metrosY,
+          );
+        }
+      }
+
+      // Multilateración RECURSIVA: se le pasa la posición filtrada previa
+      // como ancla temporal y arranque en caliente. Eso mata los saltos
+      // (un outlier de un frame ya no la mueve) y estabiliza geometrías
+      // malas, sin reintroducir el sesgo al centro. El rumbo sólo SESGA acá
+      // (ver el comentario de _factorPerpMax en Posicionador); la decisión
+      // dura la toma la puerta de abajo.
+      var nuevaPosicionRaw = Posicionador.estimar(
+        observaciones,
+        metrosX: _grilla.metrosX,
+        metrosY: _grilla.metrosY,
+        posPrevia: _posicionFiltrada,
+        factorMovimiento: fPos,
+        rumboPlano: rumboPlano,
+      );
+
+      // ── PUERTA DIRECCIONAL ───────────────────────────────────────────────
+      // Descompone el desplazamiento propuesto en "a lo largo del rumbo" y
+      // "perpendicular", y deja pasar el lateral sólo si viene sostenido en el
+      // mismo sentido durante ~1 s (ver [PuertaRumbo]). El ruido BLE alterna
+      // de signo ciclo a ciclo, así que nunca junta esa evidencia; una persona
+      // que se corre de verdad hacia el costado, sí.
+      if (rumboPlano != null && _posicionFiltrada != null) {
+        nuevaPosicionRaw = _puertaRumbo.aplicar(
+          posPrevia: _posicionFiltrada!,
+          candidata: nuevaPosicionRaw,
+          rumboPlano: rumboPlano,
+          metrosX: _grilla.metrosX,
+          metrosY: _grilla.metrosY,
+          factorMovimiento: fPos,
+          dt: dt,
+          velocidadAngularGrados: _orientacion.velocidadAngularGrados,
+        );
+      } else {
+        // Sin rumbo confiable la puerta no debe conservar evidencia vieja: al
+        // volver a haber brújula, esa evidencia pertenecería a otro eje.
+        _puertaRumbo.resetear();
+      }
+
+      // ── CORRECCION POR PUNTO CLAVE (FINGERPRINT) ─────────────────────────
+      // Se compara el vector de RSSI vivo contra los puntos clave guardados.
+      // Si uno gana con confianza y sin ambiguedad durante varios ciclos
+      // seguidos, la posicion se corre hacia su celda con un peso que se va
+      // acumulando (ver _fpPeso). Los parámetros salen del panel del admin.
+      final logFp = _ultimoLogFingerprint == null ||
+          ahoraMuestra.difference(_ultimoLogFingerprint!).inMilliseconds >
+              2000;
+      final diagnosticoFp = logFp ? <String>[] : null;
+      final fuerzaFp = _ajustes.fpFuerza.valor;
+      final coincidenciaDbFp = _ajustes.fpCoincidenciaDb.valor;
+      final coincidencia = ProcesadorSenal.compararFingerprints(
+        lecturasVivas: {
+          for (final b in _beaconsEnElMapa.values)
+            if (b.rssiFiltrado > _umbralRSSI) b.mac: b.rssiFiltrado,
+        },
+        calibraciones: _calibraciones,
+        // Rumbo CRUDO de la brujula, igual que el guardado en la calibracion.
+        // Solo se pasa si la brujula esta siendo confiable: con _rumboActivo en
+        // false, mandar el rumbo filtraria patrones por un dato malo.
+        rumboVivo: _rumboActivo ? _orientacion.heading : null,
+        dbMalo: coincidenciaDbFp,
+        toleranciaRumbo: _ajustes.fpToleranciaRumbo.valor,
+        diagnostico: diagnosticoFp,
+      );
+
+      // Radio espacial: el punto clave tiene que estar cerca de donde ya se
+      // ubica al usuario. Sin esto, y con umbrales en dB tolerantes al
+      // fading, un match flojo podria tironear la posicion desde lejos. Se
+      // mide desde la posición filtrada anterior, que ya incluye la
+      // corrección: medido desde la multilateración del ciclo, la corrección
+      // se soltaba sola si la multilateración seguía errada en más del radio.
+      Offset? objetivoFp;
+      double? distanciaFp;
+      ({String etiqueta, Offset centro})? anuncioFp;
+      if (coincidencia != null) {
+        final centro = Offset(
+          _grilla.centroX(coincidencia.celdaIx),
+          _grilla.centroY(coincidencia.celdaIy),
+        );
+        final referencia = _posicionFiltrada ?? nuevaPosicionRaw;
+        distanciaFp = _distanciaMetros(centro, referencia);
+        if (distanciaFp <= _ajustes.fpRadio.valor) objetivoFp = centro;
+      }
+
+      if (coincidencia == null || objetivoFp == null) {
+        // Un ciclo suelto sin coincidencia no suelta el punto clave (ver
+        // _fpCiclosGracia); el peso va bajando mientras tanto.
+        _fpCiclosSinCoincidencia++;
+        _fpPeso *= 1 - fuerzaFp;
+        if (_fpCiclosSinCoincidencia > _fpCiclosGracia) {
+          _fpCeldaCandidata = null;
+          _fpCiclosConsistentes = 0;
+          _fpRmsSuavizado = null;
+        }
+      } else {
+        _fpCiclosSinCoincidencia = 0;
+        final celda = (ix: coincidencia.celdaIx, iy: coincidencia.celdaIy);
+        if (_fpCeldaCandidata != null &&
+            _fpCeldaCandidata!.ix == celda.ix &&
+            _fpCeldaCandidata!.iy == celda.iy) {
+          _fpCiclosConsistentes++;
+          // EMA de la distancia en dB: promedia el fading ciclo a ciclo.
+          final a = 1.0 / _fpTauCiclos;
+          _fpRmsSuavizado =
+              _fpRmsSuavizado! * (1 - a) + coincidencia.distanciaDb * a;
+        } else {
+          // Otro punto clave: el peso arranca de cero hacia el nuevo.
+          _fpCeldaCandidata = celda;
+          _fpCiclosConsistentes = 1;
+          _fpRmsSuavizado = coincidencia.distanciaDb;
+          _fpPeso = 0.0;
+        }
+
+        if (_fpCiclosConsistentes >= _ajustes.fpCiclos.valor.round()) {
+          // La confianza sale del rms SUAVIZADO, no del instantaneo.
+          final confianza = ProcesadorSenal.confianzaFingerprint(
+            _fpRmsSuavizado!,
+            dbMalo: coincidenciaDbFp,
+          );
+          _fpPeso += fuerzaFp * (confianza - _fpPeso);
+          _fpObjetivo = objetivoFp;
+
+          // Aviso por voz una vez por visita (ver _fpAnunciados): para una
+          // persona ciega, saber que llego a la esquina es mas util que
+          // cualquier correccion en el mapa. Solo si el operador le puso
+          // etiqueta. Se dice al final del ciclo, si ninguna indicación está
+          // por salir (ver "ESTÁS EN…").
+          final etiqueta = coincidencia.etiqueta;
+          final anterior = etiqueta == null ? null : _fpAnunciados[etiqueta];
+          final toca = anterior == null ||
+              (anterior.seAlejo &&
+                  ahoraMuestra.difference(anterior.cuando) >=
+                      _fpRepetirAnuncio);
+          if (etiqueta != null && etiqueta.isNotEmpty && toca) {
+            anuncioFp = (etiqueta: etiqueta, centro: objetivoFp);
+          }
+        }
+      }
+      // Sólo vale mientras el punto clave coincide: si el usuario ya se fue
+      // de ahí, "Estás en…" sería mentira.
+      _fpAnuncioPendiente = anuncioFp;
+
+      // ¿Se alejó de los puntos clave ya anunciados? Desde ahí, el próximo
+      // paso por ese punto se vuelve a anunciar.
+      final aca = _posicionFiltrada ?? nuevaPosicionRaw;
+      _fpAnunciados.updateAll((_, a) => !a.seAlejo &&
+              _distanciaMetros(aca, a.centro) > _fpAlejarseMetros
+          ? (centro: a.centro, cuando: a.cuando, seAlejo: true)
+          : a);
+
+      final objetivoAplicado = _fpObjetivo;
+      if (_fpPeso > 0.01 && objetivoAplicado != null) {
+        nuevaPosicionRaw = Offset(
+          nuevaPosicionRaw.dx +
+              (objetivoAplicado.dx - nuevaPosicionRaw.dx) * _fpPeso,
+          nuevaPosicionRaw.dy +
+              (objetivoAplicado.dy - nuevaPosicionRaw.dy) * _fpPeso,
+        );
+      } else {
+        _fpPeso = 0.0;
+      }
+
+      // Diagnóstico cada ~2 s, sólo si hay puntos clave en el piso: qué dio
+      // cada uno, o por qué quedó afuera.
+      if (diagnosticoFp != null && _calibraciones.any((c) => c.esFingerprint)) {
+        _ultimoLogFingerprint = ahoraMuestra;
+        final estado = coincidencia == null
+            ? 'sin coincidencia'
+            : objetivoFp == null
+                ? 'fuera de radio (${distanciaFp!.toStringAsFixed(1)} m)'
+                : 'coincide $_fpCiclosConsistentes ciclos'
+                    ' (${distanciaFp!.toStringAsFixed(1)} m)';
+        debugPrint('[Fingerprint] $estado · peso '
+            '${_fpPeso.toStringAsFixed(2)} · ${diagnosticoFp.join(' · ')}');
+      }
+
+      // ── DIAGNOSTICO DEL RUMBO (cada ~2 s) ────────────────────────────────
+      // La restriccion direccional tiene varios interruptores que la apagan
+      // POR COMPLETO (calidad de brujula, acelerometro, giro rapido) y una
+      // escala global (factorMovimiento) que puede dejarla en identidad. Si
+      // "los parametros no hacen nada", esta linea dice cual interruptor esta
+      // cortando. Leer con `adb logcat | grep Rumbo` o desde flutter run.
+      final ahoraLog = DateTime.now();
+      if (_ultimoLogRumbo == null ||
+          ahoraLog.difference(_ultimoLogRumbo!).inMilliseconds > 2000) {
+        _ultimoLogRumbo = ahoraLog;
+        debugPrint('[Rumbo] activo=${rumboPlano != null} '
+            'calidad=${calidadRumbo.toStringAsFixed(2)} '
+            '(R=${_orientacion.resultante.toStringAsFixed(3)}) '
+            'compass=$_compassDisponible acel=${_movimiento.disponible} '
+            'mov=${_factorMovimiento.toStringAsFixed(2)} '
+            'adq=${fAdq.toStringAsFixed(2)} '
+            'velAng=${_orientacion.velocidadAngularGrados.toStringAsFixed(0)}°/s '
+            // Del ciclo anterior: ritmo de acercamiento a la esquina y si la
+            // posición tuvo que sacarse de una zona prohibida.
+            'acerc=${_velocidadAcercamientoMs.toStringAsFixed(2)} m/s '
+            'enZona=${_posicionPermitida != _posicionFiltrada} '
+            'puerta(apertura=${_puertaRumbo.apertura.toStringAsFixed(2)}, '
+            'evid=${_puertaRumbo.evidenciaLateralMs.toStringAsFixed(2)} m/s)');
+      }
+
+      // ── FILTRO ONE EURO GOBERNADO POR EL ACELERÓMETRO ────────────────────
+      //
+      // La ventana de mediana del RSSI también se acorta al caminar: es la
+      // mayor fuente de latencia de todo el pipeline (3 s de ventana ≈ 1.5 s
+      // de retardo de grupo, ~1.8 m a paso normal).
+      _procesador.ajustarPorMovimiento(_factorMovimiento);
+
+      final filtrada = _filtroPosicion.filtrar(
+        nuevaPosicionRaw,
+        dt: dt,
+        factorMovimiento: fPos,
+      );
+
+      Offset nuevaPosicionFiltrada;
+      if (_posicionFiltrada == null) {
+        nuevaPosicionFiltrada = filtrada;
+      } else {
+        // ── TOPE DE PASO POR CICLO, EN METROS Y ANISOTRÓPICO ───────────────
+        // Es la última defensa anti-spike, por debajo de la puerta. Antes era
+        // isotrópico y en unidades normalizadas, así que "deshacía" parte de la
+        // anisotropía que el rumbo había logrado más arriba: un pico lateral
+        // que el solver había frenado seguía teniendo permiso de moverse tanto
+        // de costado como hacia adelante.
+        final dtPaso =
+            (dt.isFinite && dt > 0) ? dt.clamp(0.05, 1.0) : 0.18;
+        final velMaxMoviendo =
+            max(_velMaxQuietoMs, _ajustes.velocidadMaxima.valor);
+        final velMax = _velMaxQuietoMs +
+            (velMaxMoviendo - _velMaxQuietoMs) * fPos;
+        final topeAlong = velMax * dtPaso;
+
+        double dxM = (filtrada.dx - _posicionFiltrada!.dx) * _grilla.metrosX;
+        double dyM = (filtrada.dy - _posicionFiltrada!.dy) * _grilla.metrosY;
+
+        if (rumboPlano != null) {
+          // Versor del rumbo en marco métrico (mx≠my ⇒ hay que renormalizar).
+          double hx = rumboPlano.dx * _grilla.metrosX;
+          double hy = rumboPlano.dy * _grilla.metrosY;
+          final hn = sqrt(hx * hx + hy * hy);
+          if (hn > 1e-6) {
+            hx /= hn;
+            hy /= hn;
+            final nx = -hy, ny = hx;
+            final topePerp = topeAlong *
+                (1.0 + (_facTopePerp - 1.0) * fPos);
+            final a = (dxM * hx + dyM * hy).clamp(-topeAlong, topeAlong);
+            final l = (dxM * nx + dyM * ny).clamp(-topePerp, topePerp);
+            dxM = a * hx + l * nx;
+            dyM = a * hy + l * ny;
+          }
+        } else {
+          final dm = sqrt(dxM * dxM + dyM * dyM);
+          if (dm > topeAlong) {
+            final s = topeAlong / dm;
+            dxM *= s;
+            dyM *= s;
+          }
+        }
+
+        nuevaPosicionFiltrada = Offset(
+          _posicionFiltrada!.dx + dxM / _grilla.metrosX,
+          _posicionFiltrada!.dy + dyM / _grilla.metrosY,
+        );
+
+        // Zona muerta con el usuario detenido: mientras la salida del filtro
+        // esté cerca de la posición mostrada no se mueve nada. Es lo que
+        // termina de eliminar el parpadeo del ícono cuando la persona está
+        // parada. Se desactiva apenas el acelerómetro detecta movimiento.
+        //
+        // FIX (posición clavada en un lugar equivocado): antes se comparaba
+        // el PASO YA RECORTADO de este ciclo contra la zona muerta. Pero con
+        // el usuario quieto el tope de paso es 1,2 m/s × ~0,18 s ≈ 0,22 m, que
+        // es MENOR que los 0,35 m de la zona muerta: la condición se cumplía
+        // siempre y la posición no podía moverse nunca, por más lejos que el
+        // filtro dijera que estaba el usuario. Ahora se compara la distancia
+        // entre la posición mostrada y la salida del filtro (antes del tope):
+        // el ruido de un ciclo no la supera, pero un error sostenido sí, y
+        // entonces la posición avanza hacia ahí a la velocidad del tope.
+        if (fPos < 0.25) {
+          final discrepancia = _distanciaMetros(_posicionFiltrada!, filtrada);
+          if (discrepancia < _zonaMuertaQuietoMetros) {
+            nuevaPosicionFiltrada = _posicionFiltrada!;
+          }
+        }
+      }
+      _posicionFiltrada = nuevaPosicionFiltrada;
+      _registrarPosicion(ahoraMuestra, nuevaPosicionFiltrada);
+
+      // ── FUERA DE LAS ZONAS PROHIBIDAS ────────────────────────────────────
+      // Si el filtrado cae adentro de una zona no transitable, la posición
+      // del usuario pasa a la celda transitable que mejor coincide (ver
+      // [RestriccionZonas]). Va DESPUÉS de todo el filtrado y no vuelve a él
+      // (ver [_posicionPermitida]).
+      var posicionPermitida = nuevaPosicionFiltrada;
+      if (_ajustes.restringirZonas && _resolvedorListo) {
+        posicionPermitida = _restriccionZonas.restringir(
+          nuevaPosicionFiltrada,
+          previa: _posicionPermitida,
+        );
+      }
+      _posicionPermitida = posicionPermitida;
+
+      // BUG ARQUITECTONICO (causaba TANTO el congelamiento como los saltos de
+      // 10 m -- son el mismo defecto visto en dos momentos distintos):
+      //
+      // Antes, para "confirmar" una posicion nueva se exigian 5 ciclos
+      // CONSECUTIVOS con delta de EMA < 1.25 m, y recien ahi _posicionConfirmada
+      // saltaba DIRECTO al valor del EMA en ese instante (sin interpolar desde
+      // el valor viejo). El EMA esta clampeado a 2 m/ciclo -- con ruido BLE
+      // moderado, es comun que se mueva entre 1.25 m y 2 m por ciclo de forma
+      // sostenida: siempre por encima del umbral de "estable", asi que los 5
+      // ciclos seguidos nunca se juntaban y la posicion quedaba congelada. Y
+      // cuando por fin habia 5 ciclos tranquilos, el salto directo al EMA
+      // actual podia ser de hasta 5 ciclos x 2 m = 10 m si venia congelada
+      // mientras la persona caminaba. Mismo bug, dos sintomas.
+      //
+      // FIX: la posicion filtrada (con su propio clamp de paso maximo por
+      // ciclo, que YA evita saltos bruscos por spikes de RSSI) alimenta la
+      // posicion directamente, todos los ciclos. Sin gate extra encima. Esto
+      // da seguimiento continuo y en tiempo real.
+      //
+      // NOTA: aquel gate era un intento de resolver por fuerza bruta lo que
+      // ahora resuelve el filtro adaptativo. Un umbral fijo de "estabilidad"
+      // no puede distinguir ruido de movimiento real porque en BLE ambos
+      // tienen la misma amplitud; el acelerometro si puede, y por eso el
+      // criterio de cuanto suavizar salio del propio pipeline BLE.
+      final nuevaPosicionFinal = posicionPermitida;
+
+      {
+        final bool primeraUbicacion = _posicionFinal == null;
+
+        // Mantener SIEMPRE la posicion mas reciente para que el pathfinder y la
+        // voz usen el valor actual, pero desacoplar el rebuild de la UI del
+        // ritmo del scan BLE: refrescar como mucho cada _intervaloRefrescoUI.
+        // Sin este throttle el callback de scan dispara decenas de setState por
+        // segundo y, durante la navegacion, el repintado del mapa + ruta satura
+        // el hilo de UI y la pantalla se congela.
+        //
+        // Histéresis de celda (ver [HisteresisCelda]): no es un gate de
+        // velocidad, sólo filtra el parpadeo en el borde entre dos celdas.
+        // Parado exige más confirmaciones (nada debería cambiar de celda);
+        // caminando confirma de inmediato, para no sumar latencia encima del
+        // filtro.
+        //
+        // Del otro lado de una pared angosta pide más: 5 ciclos caminando
+        // (~0,9 s) y 11 parado (~2 s). Es justo donde el ruido hacía saltar
+        // al usuario atrás de la pared desde que las zonas se bloquean por el
+        // centro de la celda. Sólo con la restricción de zonas activa: si está
+        // apagada, la posición no sabe nada del plano.
+        final ix = _grilla.indiceX(nuevaPosicionFinal.dx);
+        final iy = _grilla.indiceY(nuevaPosicionFinal.dy);
+        final caminando = fPos > 0.5;
+        final celdaFirme = _histeresisCelda.actualizar(
+          ix,
+          iy,
+          ciclos: caminando ? 1 : 3,
+          ciclosPared: (_ajustes.restringirZonas && _resolvedorListo)
+              ? (caminando ? 5 : 11)
+              : null,
+        );
+        final posicionSnap = celdaFirme != null
+            ? Offset(_grilla.centroX(celdaFirme.ix), _grilla.centroY(celdaFirme.iy))
+            : nuevaPosicionFinal;
+        _posicionFinal = posicionSnap;
+
+        // Además del tope de frecuencia, se redibuja SÓLO si cambió algo de
+        // lo que se ve: la celda del usuario, el texto de estado o la
+        // cantidad de beacons visibles. Antes se redibujaba la pantalla
+        // entera 4 veces por segundo aunque la persona estuviera parada. Se
+        // compara contra lo último DIBUJADO (no contra el ciclo anterior):
+        // así un cambio que cae dentro del tope no se pierde, se dibuja en
+        // el próximo ciclo. El giro del usuario lo refresca el timer de la
+        // brújula.
+        // "ajustando" = fase de adquisición en curso: la posición todavía
+        // se está acomodando y puede moverse aunque la persona esté quieta.
+        final modo = adquiriendo
+            ? ' · ajustando'
+            : !_movimiento.disponible
+                ? ''
+                : (_factorMovimiento > 0.5 ? ' · en movimiento' : ' · quieto');
+        final textoEstado = 'Ubicacion estable (${activos.length} beacons)$modo';
+        final bool cambioUI = posicionSnap != _posicionMostradaUI ||
+            textoEstado != _estadoScan ||
+            candidatos.length != _beaconsMostradosUI;
+
+        final ahora = DateTime.now();
+        final bool pasoIntervalo = _ultimoRefrescoUI == null ||
+            ahora.difference(_ultimoRefrescoUI!) > _intervaloRefrescoUI;
+        if (mounted && (primeraUbicacion || (pasoIntervalo && cambioUI))) {
+          _ultimoRefrescoUI = ahora;
+          _posicionMostradaUI = posicionSnap;
+          _beaconsMostradosUI = candidatos.length;
+          setState(() => _estadoScan = textoEstado);
+          // El mapa acompaña al usuario mientras no lo haya movido a mano.
+          if (_seguirUsuario) _centrarEnUsuario();
+        }
+
+        // Anunciar cuando la primera ubicación se asentó (ver
+        // _anuncioUbicacionPendiente). Va antes de las indicaciones para que,
+        // si las dos esperan al motor, "Ubicación lista." salga primero.
+        if (primeraUbicacion) _anuncioUbicacionPendiente = true;
+        if (_anuncioUbicacionPendiente) {
+          _actualizarAsentamiento(posicionSnap, fAdq, ahoraMuestra);
+          if (_ubicacionAsentada) _anunciarUbicacionLista();
+        }
+        if (_avisoSinCaminoPendiente) _anunciarSinCamino();
+
+        // Actualizar la instruccion de voz aca (no en build()) para que hablar()
+        // no sea un efecto colateral del repintado del widget.
+        // Los giros anticipados van primero: si en este ciclo toca anunciar
+        // uno, la indicación común de abajo ya lo encuentra dicho. Los dos
+        // usan el ritmo de acercamiento a la esquina de este ciclo.
+        _actualizarVelocidadAcercamiento(adquiriendo: adquiriendo);
+        _anunciarManiobras();
+        _actualizarInstruccionVoz();
+
+        // ¿Llegó a la escalera o al destino final?
+        _verificarLlegada();
+
+        // "Estás en…" va último: sólo si ninguna de las de arriba habló ni
+        // está por hablar.
+        _anunciarPuntoClave();
+      }
+ 
+      if (_destinoSeleccionado != null &&
+          _posicionFinal != null &&
+          !_llegoADestino &&
+          !(_esTramoEntrePisos && _sinEscaleraDisponible)) {
+        _seguirRuta();
+      }
+    } catch (e) {
+      // Antes esto se ignoraba en silencio. Si algo del pipeline de
+      // posicionamiento (trilateración, EMA, histéresis de celda) tira una
+      // excepción en un ciclo, ahora al menos queda logueado: sin esto era
+      // imposible distinguir "no llegan datos BLE" de "llegan pero el cálculo
+      // explota siempre" — ambos se ven igual desde la UI (ícono congelado).
+      debugPrint('[Posicionamiento] Error en _calcularPosicionRobusta: $e');
+    }
+  }
+ 
+  /// Decide si la posición ya se asentó (ver _anuncioUbicacionPendiente).
+  /// [fAdq]: factor de la fase de adquisición en este ciclo (1 en el tramo
+  /// pleno, 0 cuando terminó).
+  void _actualizarAsentamiento(Offset pos, double fAdq, DateTime ahora) {
+    if (_ubicacionAsentada) return;
+    if (fAdq <= 0.0) {
+      _ubicacionAsentada = true;
+      debugPrint('[Posicionamiento] Ubicación asentada: terminó la '
+          'adquisición.');
+      return;
+    }
+    final ancla = _anclaAsentamiento;
+    final desde = _anclaAsentamientoDesde;
+    if (ancla == null ||
+        desde == null ||
+        _factorMovimiento > 0.5 ||
+        _distanciaMetros(pos, ancla) > _asentamientoMaxMetros) {
+      _anclaAsentamiento = pos;
+      _anclaAsentamientoDesde = ahora;
+      return;
+    }
+    if (fAdq < 1.0 && ahora.difference(desde) >= _ventanaAsentamiento) {
+      _ubicacionAsentada = true;
+      debugPrint('[Posicionamiento] Ubicación asentada: quieta '
+          '${ahora.difference(desde).inMilliseconds} ms.');
+    }
+  }
+
+  /// Intenta decir "Ubicación lista.". Si el motor de voz está ocupado queda
+  /// pendiente para el próximo ciclo (~0,2 s), o sea apenas termina la frase
+  /// en curso. hablarSinEsperar para NO bloquear el loop de posicionamiento.
+  void _anunciarUbicacionLista() {
+    // Con un pedido de destino en curso se espera: caería encima de las
+    // preguntas o con el micrófono abierto (ver _pedidoDesde).
+    if (_pedidoEnCurso || _escuchando) return;
+    if (_voz.hablarSinEsperar('Ubicación lista.')) {
+      _anuncioUbicacionPendiente = false;
+    }
+  }
+
+  /// "Ubicación lista. " para el comienzo del anuncio de un salto de piso,
+  /// si ya corresponde decirlo, y lo da por dicho. Si la posición todavía no
+  /// se asentó, vacío: el aviso sale solo después.
+  String _tomarUbicacionLista() {
+    if (!_anuncioUbicacionPendiente || !_ubicacionAsentada) return '';
+    _anuncioUbicacionPendiente = false;
+    return 'Ubicación lista. ';
+  }
+
+  /// Factor de movimiento que impone la fase de adquisición en [ahora]:
+  /// 1.0 durante [_adquisicionPlena], después baja en rampa hasta 0 al llegar
+  /// a [_adquisicionTotal]. 0 si no hay adquisición en curso.
+  double _factorAdquisicion(DateTime ahora) {
+    final desde = _adquisicionDesde;
+    if (desde == null) return 0.0;
+    final ms = ahora.difference(desde).inMilliseconds;
+    final total = _adquisicionTotal.inMilliseconds;
+    final plena = _adquisicionPlena.inMilliseconds;
+    if (ms >= total) {
+      _adquisicionDesde = null;
+      debugPrint('[Posicionamiento] Adquisición terminada.');
+      return 0.0;
+    }
+    if (ms <= plena) return 1.0;
+    return (total - ms) / (total - plena);
+  }
+
+  /// Distancia real (m) entre dos posiciones normalizadas, usando la escala
+  /// del piso en cada eje. Los ejes pueden tener escalas muy distintas, así
+  /// que una distancia en unidades normalizadas no es comparable entre planos.
+  double _distanciaMetros(Offset a, Offset b) {
+    final dx = (a.dx - b.dx) * _grilla.metrosX;
+    final dy = (a.dy - b.dy) * _grilla.metrosY;
+    return sqrt(dx * dx + dy * dy);
+  }
+
+  /// Posición recortada al interior del plano, que es lo que acepta el
+  /// pathfinder (ver el comentario en _calcularRuta).
+  Offset _posicionParaRuta() => Offset(
+        _posicionFinal!.dx.clamp(0.001, 0.999),
+        _posicionFinal!.dy.clamp(0.001, 0.999),
+      );
+
+  /// Texto de la ruta para el panel superior, con la distancia que falta.
+  String _textoEstadoRuta(List<Offset> camino) {
+    final distancia = _calcularDistancia(camino).toStringAsFixed(1);
+    if (_esTramoEntrePisos) {
+      final pisoDestino = _numeroPisoDe(_destinoSeleccionado!);
+      return '${_escaleraObjetivo?.medioNombre ?? 'Escalera'} '
+          'para ${_subiendo ? 'subir' : 'bajar'}: '
+          '${distancia}m · destino en '
+          '${pisoDestino != null ? PisoUtil.nombre(pisoDestino) : 'otro piso'}';
+    }
+    return 'Ruta a ${_destinoSeleccionado!.nombre}: ${distancia}m';
+  }
+
+  /// Se llama en cada ciclo de posición mientras hay un destino. Decide si
+  /// hay que calcular una ruta, y si ya hay una, la va consumiendo.
+  ///
+  ///  • Sin ruta → se calcula (con cooldown si el último intento falló).
+  ///  • Sobre la ruta → no se recalcula; se descartan las celdas que el
+  ///    usuario ya pasó, así la ruta siempre arranca donde está.
+  ///  • Fuera de la ruta → si se sostiene [_tiempoFueraDeRuta] (o el desvío
+  ///    es grande), se recalcula desde donde está. Qué se hace con ese
+  ///    camino nuevo lo decide [SeguidorRuta.decidir] dentro de _calcularRuta.
+  void _seguirRuta() {
+    if (_calculandoRuta) return;
+    final ahora = DateTime.now();
+    // Cooldown: no lanzar un compute() por cada callback BLE.
+    final fueraDeCooldown = _ultimoIntentoRuta == null ||
+        ahora.difference(_ultimoIntentoRuta!) >= _cooldownRuta;
+
+    // Mismo origen que usaría el pathfinder: tras un salto de piso, mientras
+    // el usuario siga junto a la escalera por la que llegó, es la salida de
+    // esa escalera y no su posición (que cae sobre un obstáculo).
+    final origen = _origenRuta(_posicionParaRuta());
+
+    final ruta = _rutaActual;
+    if (ruta == null || ruta.isEmpty) {
+      // Si desde esta celda ya no hubo camino (ver _manejarSinCamino), se
+      // vuelve a probar recién cuando el usuario cambie de celda: el A*
+      // daría lo mismo.
+      if (fueraDeCooldown &&
+          SeguidorRuta.claveCelda(origen, _grilla) != _celdaUltimoCalculo) {
+        _ultimoIntentoRuta = ahora;
+        _calcularRuta();
+      }
+      return;
+    }
+
+    final ubicacion = SeguidorRuta.ubicar(ruta, origen, _grilla);
+
+    if (ubicacion.enRuta) {
+      _fueraDeRutaDesde = null;
+      if (ubicacion.indice > 0) {
+        // Avanzó: lo ya recorrido se descarta.
+        final resto = ruta.sublist(ubicacion.indice);
+        // La ruta ya no arranca donde se calculó: la marca de "misma celda,
+        // mismo resultado" deja de valer.
+        _celdaUltimoCalculo = null;
+        setState(() {
+          _rutaActual = resto;
+          _estadoRuta = _textoEstadoRuta(resto);
+        });
+      }
+      return;
+    }
+
+    // Fuera de la ruta.
+    _fueraDeRutaDesde ??= ahora;
+    if (!fueraDeCooldown) return;
+    if (SeguidorRuta.claveCelda(origen, _grilla) == _celdaUltimoCalculo) {
+      return; // desde esta misma celda ya se calculó: saldría lo mismo
+    }
+    final sostenido =
+        ahora.difference(_fueraDeRutaDesde!) >= _tiempoFueraDeRuta;
+    if (sostenido ||
+        ubicacion.desvioMetros >= _desvioReplanInmediatoMetros) {
+      debugPrint('[Ruta] Fuera de ruta '
+          '(${ubicacion.desvioMetros.toStringAsFixed(1)} m). Recalculando.');
+      _ultimoIntentoRuta = ahora;
+      _calcularRuta();
+    }
+  }
+
+  Future<void> _calcularRuta() async {
+    if (_posicionFinal == null || _destinoSeleccionado == null) {
+      debugPrint('[Ruta] _calcularRuta abortada: posicionFinal o destino null.');
+      return;
+    }
+    if (_calculandoRuta) {
+      debugPrint('[Ruta] _calcularRuta abortada: ya hay un cálculo en curso (_calculandoRuta=true).');
+      return;
+    }
+    if (!_resolvedorListo) {
+      debugPrint('[Ruta] _calcularRuta abortada: _resolvedorListo=false.');
+      return;
+    }
+
+    _calculandoRuta = true;
+    // Si mientras se calcula el usuario cambia o cancela el destino, este
+    // resultado ya no sirve (ver _generacionRuta).
+    final generacion = _generacionRuta;
+    debugPrint('[Ruta] Iniciando cálculo hacia "${_destinoSeleccionado!.nombre}"...');
+    try {
+      // Clampear la posición a [0, 1) en ambos ejes antes de pasarla al
+      // pathfinder. La trilateración puede devolver valores ligeramente fuera
+      // de [0, 1] cuando el usuario está cerca del borde del mapa; el
+      // _aStarIsolate los clampea con clampX/clampY, pero si esa celda de
+      // borde es un obstáculo, _celdaLibreCercana puede no encontrar alternativa
+      // y retornar null, haciendo que la ruta nunca aparezca.
+      final origen = _origenRuta(_posicionParaRuta());
+      final celdaOrigen = SeguidorRuta.claveCelda(origen, _grilla);
+
+      // Destino en este piso con nombre repetido: ahora que se conoce la
+      // posición, quedarse con el más cercano.
+      if (!_esTramoEntrePisos && !_destinoRefinado) {
+        _refinarDestinoEnPiso(origen);
+      }
+
+      // Tramo entre pisos: elegir la escalera una sola vez por piso.
+      if (_esTramoEntrePisos && _escaleraObjetivo == null) {
+        final escalera = await _elegirEscalera(origen);
+        if (!mounted || generacion != _generacionRuta) return;
+        if (escalera == null) {
+          final sube = _subiendo;
+          setState(() {
+            _sinEscaleraDisponible = true;
+            _rutaActual = null;
+            _estadoRuta = 'No hay escalera ni ascensor para '
+                '${sube ? 'subir' : 'bajar'} en este piso';
+          });
+          _voz.hablar('No hay escalera ni ascensor para '
+              '${sube ? 'subir' : 'bajar'} en este piso.');
+          return;
+        }
+        setState(() => _escaleraObjetivo = escalera);
+        // Si esta pantalla se abrió por un salto, avisar cómo se sigue. Con
+        // "Ubicación lista" adelante sólo si la posición ya se asentó; si
+        // no, ese aviso sale después, solo (ver _anuncioUbicacionPendiente).
+        if (widget.destinoFinalId != null && !_anuncioRetomadoHecho) {
+          _anuncioRetomadoHecho = true;
+          _voz.hablar('${_tomarUbicacionLista()}'
+              'Vamos ${escalera.medioComoDestino}.');
+        }
+      } else if (!_esTramoEntrePisos &&
+          widget.destinoFinalId != null &&
+          !_anuncioRetomadoHecho) {
+        // Salto al piso final: avisar que ya se guía al destino.
+        _anuncioRetomadoHecho = true;
+        _voz.hablar('${_tomarUbicacionLista()}Vamos a '
+            '${_destinoSeleccionado!.nombre}.');
+      }
+
+      final objetivo = _puntoObjetivoTramo();
+      if (objetivo == null) return;
+      final destino = Offset(
+        objetivo.dx.clamp(0.001, 0.999),
+        objetivo.dy.clamp(0.001, 0.999),
+      );
+
+      final nueva = await _resolvedor.encontrarCamino(origen, destino);
+      if (!mounted || generacion != _generacionRuta) return;
+
+      if (nueva == null) {
+        _manejarSinCamino(origen, destino, celdaOrigen);
+        return;
+      }
+
+      // ── ¿CAMINO NUEVO O EL QUE SE VENÍA SIGUIENDO? ───────────────────────
+      // Si ya había una ruta, el camino recién calculado no se adopta a
+      // ciegas: SeguidorRuta.decidir lo compara con lo que quedaba de la
+      // anterior. Devuelve siempre una ruta que arranca en la celda actual
+      // del usuario; lo que cambia es si reusa el recorrido anterior o no.
+      final decision = await SeguidorRuta.decidir(
+        nueva: nueva,
+        vieja: _rutaActual,
+        grilla: _grilla,
+        buscarCamino: _resolvedor.encontrarCamino,
+      );
+      if (!mounted || generacion != _generacionRuta) return;
+      final camino = decision.ruta;
+      _celdaUltimoCalculo = celdaOrigen;
+      _fueraDeRutaDesde = null;
+      debugPrint('[Ruta] ${decision.esNueva ? "Camino nuevo" : "Ruta anterior"}'
+          ': ${decision.motivo}'
+          '${decision.cambioDeFondo ? ' (cambio de fondo)' : ''}.');
+      if (decision.cambioDeFondo) _rutaCambioDeFondo();
+
+      // Hay camino: si después se vuelve a perder, se avisa de nuevo.
+      _avisoSinCaminoPendiente = false;
+      _sinCaminoAvisado = false;
+      setState(() {
+        _rutaActual = camino;
+        _estadoRuta = _textoEstadoRuta(camino);
+      });
+    } catch (e) {
+      // BUG ORIGINAL: este catch no hacía nada. Si encontrarCamino() (el A*
+      // que corre en un isolate vía compute()) tiraba cualquier excepción,
+      // _estadoRuta se quedaba pegado en "Calculando ruta..." para siempre.
+      // Ahora el reintento no depende de nada que haya que resetear acá: si
+      // no hay ruta, _seguirRuta vuelve a intentar pasado el cooldown; y si
+      // había una, sigue vigente y _celdaUltimoCalculo no se tocó, así que
+      // el próximo ciclo fuera de ruta recalcula.
+      debugPrint('[Pathfinder] Error calculando ruta: $e');
+      if (mounted) {
+        setState(() {
+          _estadoRuta = 'Error calculando ruta. Reintentando...';
+        });
+      }
+    } finally {
+      _calculandoRuta = false;
+    }
+  }
+
+  /// Un recálculo adoptó un camino que cambia lo que hay que hacer (ver
+  /// [_indicacionRutaNuevaPendiente]). Lo anunciado sobre la ruta vieja deja
+  /// de valer, y la indicación de la nueva queda pendiente para decirla ya.
+  void _rutaCambioDeFondo() {
+    _giroComprometido = null;
+    _maniobrasAnunciadas.clear();
+    // Si la primera indicación del destino todavía no se dijo, ésa ya sale
+    // sin filtro: no hace falta otra.
+    if (!_primeraInstruccionPendiente) _indicacionRutaNuevaPendiente = true;
+  }
+
+  // ── SIN CAMINO HASTA EL OBJETIVO ──────────────────────────────────────────
+  //
+  // Antes, si el A* no encontraba camino, la ruta quedaba en null y el
+  // guiado seguía apuntando al destino EN LÍNEA RECTA: indicaciones sin
+  // sentido (a través de paredes) hacia un lugar al que no se puede llegar,
+  // y un reintento cada 1,5 s que daba siempre lo mismo. Ahora se mira cuál
+  // de las dos puntas quedó encerrada
+  // ([ResolvedorCaminos.diagnosticarSinCamino]):
+  //
+  //  • El destino → no se puede llegar. Se dice y se suelta el destino.
+  //  • El origen (la posición cayó en un recinto sin salida, casi siempre
+  //    por un error de la posición) → se avisa una vez y se sigue buscando,
+  //    sin indicaciones, cada vez que el usuario cambia de celda. Cuando
+  //    aparece el camino, su primera indicación sale enseguida.
+  //
+  // Si ya había una ruta, el destino era alcanzable desde donde estaba el
+  // usuario hasta hace un momento: lo que quedó encerrado es la posición. Se
+  // conserva esa ruta, sin decir nada.
+
+  /// Hay que decir [_fraseSinCaminoDesdeAca] en cuanto el motor de voz
+  /// esté libre.
+  bool _avisoSinCaminoPendiente = false;
+
+  /// [_fraseSinCaminoDesdeAca] ya se dijo (o está pendiente) para este
+  /// destino: no se repite en cada reintento. Vuelve a false cuando aparece
+  /// un camino.
+  bool _sinCaminoAvisado = false;
+
+  static const String _fraseSinCaminoDesdeAca =
+      'No encuentro un camino desde donde estás. Sigo buscando.';
+
+  void _manejarSinCamino(Offset origen, Offset destino, int celdaOrigen) {
+    final motivo = _resolvedor.diagnosticarSinCamino(origen, destino);
+    final ruta = _rutaActual;
+    final habiaRuta = ruta != null && ruta.isNotEmpty;
+    debugPrint('[Ruta] Sin camino hasta el objetivo: '
+        '${motivo?.name ?? 'sin diagnóstico'}'
+        '${habiaRuta ? ' (se conserva la ruta anterior)' : ''}.');
+    // Desde esta celda no se vuelve a probar: daría lo mismo.
+    _celdaUltimoCalculo = celdaOrigen;
+    if (habiaRuta) return;
+
+    final d = _destinoSeleccionado!;
+    if (motivo == SinCamino.destinoEncerrado) {
+      final hasta = _esTramoEntrePisos
+          ? (_escaleraObjetivo?.medioConArticulo ?? 'la escalera')
+          : 'ahí';
+      _soltarDestino();
+      _voz.hablar('No se puede llegar a ${d.nombre}: '
+          'no hay un camino libre hasta $hasta.');
+      return;
+    }
+
+    // Sin camino desde donde está: sin indicaciones hasta que haya ruta (ver
+    // _tramoDeGuiado), y la primera se dice sin filtro.
+    _primeraInstruccionPendiente = true;
+    _indicacionRutaNuevaPendiente = false;
+    if (!_sinCaminoAvisado) {
+      _sinCaminoAvisado = true;
+      _avisoSinCaminoPendiente = true;
+    }
+    setState(() {
+      _rutaActual = null;
+      _estadoRuta = 'Sin camino desde tu posición. Buscando...';
+    });
+  }
+
+  /// Intenta decir [_fraseSinCaminoDesdeAca]; si el motor está ocupado
+  /// queda pendiente para el próximo ciclo, como "Ubicación lista.".
+  void _anunciarSinCamino() {
+    if (_pedidoEnCurso || _escuchando) return;
+    if (_voz.hablarSinEsperar(_fraseSinCaminoDesdeAca)) {
+      _avisoSinCaminoPendiente = false;
+    }
+  }
+
+  // ─── NAVEGACIÓN ENTRE PISOS: helpers ──────────────────────────────────────
+
+  /// Origen real de la ruta. Tras un salto de piso, mientras el usuario siga
+  /// junto a la escalera por la que llegó, es el punto frente a su
+  /// entrada/salida (así la ruta sale por donde se sale de la escalera, no
+  /// por la celda libre más cercana). Al alejarse, vuelve a ser su posición.
+  Offset _origenRuta(Offset posicion) {
+    if (widget.llegoSubiendo != null && !_escaleraLlegadaResuelta) {
+      _escaleraLlegadaResuelta = true;
+      _escaleraLlegada = _detectarEscaleraLlegada(posicion);
+    }
+    final esc = _escaleraLlegada;
+    if (esc == null) return posicion;
+
+    final d = _distanciaMetros(posicion, esc.posicion);
+    if (d > _radioSalidaEscaleraMetros) {
+      // Ya estuvo en la escalera y se alejó (o la posición quedó claramente
+      // lejos): de acá en más la ruta sale de su posición, sin volver atrás.
+      if (_vistoEnEscaleraLlegada || d > _radioDeteccionLlegadaMetros) {
+        _escaleraLlegada = null;
+      }
+      return posicion;
+    }
+    _vistoEnEscaleraLlegada = true;
+    final salida = esc.puntoEntrada(
+      metrosX: _grilla.metrosX,
+      metrosY: _grilla.metrosY,
+    );
+    return Offset(salida.dx.clamp(0.001, 0.999), salida.dy.clamp(0.001, 0.999));
+  }
+
+  /// Escalera de este piso por la que llegó el usuario: si subió, una que
+  /// BAJA (conecta con el piso de abajo); si bajó, una que SUBE. Si hay
+  /// varias, la más cercana a su posición. Si ninguna tiene el sentido
+  /// esperado (datos incompletos), la escalera más cercana. Null si el
+  /// piso no tiene escaleras o la más cercana está lejos.
+  LugarInteres? _detectarEscaleraLlegada(Offset posicion) {
+    final subio = widget.llegoSubiendo;
+    if (subio == null) return null;
+    final escaleras = _lugares.where((l) => l.esEscalera).toList();
+    if (escaleras.isEmpty) return null;
+    var candidatas =
+        escaleras.where((l) => subio ? l.baja : l.sube).toList();
+    if (candidatas.isEmpty) candidatas = escaleras;
+    candidatas.sort((a, b) => _distanciaMetros(posicion, a.posicion)
+        .compareTo(_distanciaMetros(posicion, b.posicion)));
+    final esc = candidatas.first;
+    // Si la posición ya está lejos de toda escalera, no forzar nada.
+    return _distanciaMetros(posicion, esc.posicion) <= _radioDeteccionLlegadaMetros
+        ? esc
+        : null;
+  }
+
+  /// Número del piso actual (null si el piso no tiene número asignado).
+  int? get _numeroPisoActual => _pisosEdificio[widget.pisoId]?.numero;
+
+  /// Número del piso donde está [l] (null si ese piso no tiene número).
+  int? _numeroPisoDe(LugarInteres l) => _pisosEdificio[l.pisoId]?.numero;
+
+  /// El destino final está en otro piso: el tramo de este piso termina en
+  /// una escalera.
+  bool get _esTramoEntrePisos =>
+      _destinoSeleccionado != null &&
+      _destinoSeleccionado!.pisoId != widget.pisoId;
+
+  /// true si hay que subir para llegar al destino.
+  bool get _subiendo {
+    final actual = _numeroPisoActual;
+    final destino =
+        _destinoSeleccionado == null ? null : _numeroPisoDe(_destinoSeleccionado!);
+    return actual != null && destino != null && destino > actual;
+  }
+
+  /// Número del piso al que lleva la escalera de este tramo.
+  int? get _siguientePisoNumero {
+    final actual = _numeroPisoActual;
+    if (actual == null || !_esTramoEntrePisos) return null;
+    return actual + (_subiendo ? 1 : -1);
+  }
+
+  PisoInfo? _pisoPorNumero(int numero) {
+    for (final p in _pisosEdificio.values) {
+      if (p.numero == numero) return p;
+    }
+    return null;
+  }
+
+  /// Se puede llegar a [l]: está en este piso, o en otro piso con número y
+  /// todos los pisos intermedios (incluido el suyo) tienen mapa cargado.
+  bool _puedeLlegarA(LugarInteres l) {
+    if (l.pisoId == widget.pisoId) return true;
+    final actual = _numeroPisoActual;
+    final destino = _numeroPisoDe(l);
+    if (actual == null || destino == null || destino == actual) return false;
+    final paso = destino > actual ? 1 : -1;
+    for (int n = actual + paso; n != destino + paso; n += paso) {
+      if (_pisoPorNumero(n) == null) return false;
+    }
+    return true;
+  }
+
+  /// Punto al que se calcula la ruta en ESTE piso: el destino si está acá, o
+  /// el punto frente a la entrada de la escalera si hay que cambiar de piso.
+  Offset? _puntoObjetivoTramo() {
+    final d = _destinoSeleccionado;
+    if (d == null) return null;
+    if (!_esTramoEntrePisos) {
+      // Si el destino es una escalera de este piso, también se llega por su
+      // entrada: su cuadrado es un obstáculo para el pathfinder.
+      return d.esEscalera
+          ? d.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
+          : d.posicion;
+    }
+    return _escaleraObjetivo?.puntoEntrada(
+      metrosX: _grilla.metrosX,
+      metrosY: _grilla.metrosY,
+    );
+  }
+
+  /// Elige la escalera de este piso que va en el sentido necesario y queda
+  /// más cerca POR RUTA (no en línea recta: una escalera detrás de una pared
+  /// puede estar cerca en línea recta y lejísimos caminando). Si ninguna
+  /// tiene ruta, se usa la más cercana en línea recta. Null si no hay.
+  Future<LugarInteres?> _elegirEscalera(Offset origen) async {
+    final sube = _subiendo;
+    final candidatas = _lugares
+        .where((l) => l.esEscalera && (sube ? l.sube : l.baja))
+        .toList();
+    if (candidatas.isEmpty) return null;
+    if (candidatas.length == 1) return candidatas.first;
+
+    LugarInteres? mejor;
+    int mejorPasos = 1 << 30;
+    for (final e in candidatas) {
+      final entrada = e.puntoEntrada(
+        metrosX: _grilla.metrosX,
+        metrosY: _grilla.metrosY,
+      );
+      final camino = await _resolvedor.encontrarCamino(
+        origen,
+        Offset(entrada.dx.clamp(0.001, 0.999), entrada.dy.clamp(0.001, 0.999)),
+      );
+      if (camino != null && camino.length < mejorPasos) {
+        mejorPasos = camino.length;
+        mejor = e;
+      }
+    }
+    if (mejor != null) return mejor;
+
+    candidatas.sort((a, b) => _distanciaMetros(origen, a.posicion)
+        .compareTo(_distanciaMetros(origen, b.posicion)));
+    return candidatas.first;
+  }
+
+  /// Entre los lugares alcanzables con el mismo nombre (normalizado) que
+  /// [nombreNorm], elige el del piso más cercano al actual.
+  LugarInteres? _elegirDestino(String nombreNorm) {
+    return _elegirEntre(_lugaresEdificio
+        .where((l) => _normalizar(l.nombre) == nombreNorm && _puedeLlegarA(l))
+        .toList());
+  }
+
+  /// Punto al que se llega a [l] (la entrada, si es una escalera o un
+  /// ascensor), recortado al interior del plano como lo pide el pathfinder.
+  Offset _puntoDeLlegada(LugarInteres l) {
+    final p = l.esEscalera
+        ? l.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
+        : l.posicion;
+    return Offset(p.dx.clamp(0.001, 0.999), p.dy.clamp(0.001, 0.999));
+  }
+
+  /// false si [l] está en este piso y desde donde está el usuario no se
+  /// llega caminando (está encerrado por zonas; ver
+  /// ResolvedorCaminos.alcanzable). Si está en otro piso, o todavía no hay
+  /// posición, no se sabe: true.
+  bool _seLlegaCaminando(LugarInteres l) {
+    if (l.pisoId != widget.pisoId || _posicionFinal == null) return true;
+    return _resolvedor.alcanzable(_posicionParaRuta(), _puntoDeLlegada(l));
+  }
+
+  /// ═══ PRIMERO, A LOS QUE SE PUEDE IR ═══
+  /// [candidatos] sin los que se sabe que no se puede llegar caminando. Si
+  /// no queda ninguno se devuelven todos: el que se elija va a terminar en
+  /// "No se puede llegar a…" (ver _manejarSinCamino), que es lo que hay que
+  /// decirle al usuario.
+  List<LugarInteres> _priorizarAlcanzables(List<LugarInteres> candidatos) {
+    final alcanzables = candidatos.where(_seLlegaCaminando).toList();
+    return alcanzables.isEmpty ? candidatos : alcanzables;
+  }
+
+  /// Elige, entre [candidatos], el del piso más cercano al actual. Si hay
+  /// varios en ese piso y es el piso actual, el más cercano al usuario. Los
+  /// que no se pueden alcanzar caminando quedan para el final (ver
+  /// _priorizarAlcanzables).
+  LugarInteres? _elegirEntre(List<LugarInteres> candidatos) {
+    if (candidatos.isEmpty) return null;
+    candidatos = _priorizarAlcanzables(candidatos);
+
+    final actual = _numeroPisoActual;
+    int distanciaPisos(LugarInteres l) {
+      if (l.pisoId == widget.pisoId) return 0;
+      final n = _numeroPisoDe(l);
+      return (actual == null || n == null) ? 1 << 20 : (n - actual).abs();
+    }
+
+    candidatos.sort((a, b) => distanciaPisos(a).compareTo(distanciaPisos(b)));
+    final mejores = candidatos
+        .where((l) => distanciaPisos(l) == distanciaPisos(candidatos.first))
+        .toList();
+
+    final pos = _posicionFinal;
+    final enEstePiso = mejores.where((l) => l.pisoId == widget.pisoId).toList();
+    if (enEstePiso.isNotEmpty && pos != null) {
+      enEstePiso.sort((a, b) => _distanciaMetros(pos, a.posicion)
+          .compareTo(_distanciaMetros(pos, b.posicion)));
+      return enEstePiso.first;
+    }
+    return mejores.first;
+  }
+
+  // ─── BAÑOS: HOMBRES / MUJERES ─────────────────────────────────────────────
+  //
+  // Con "baño" no se ofrecen opciones: se va al más cercano al que se pueda
+  // ir caminando. Pero "baño" no alcanza: hay que saber de quién. Si el
+  // usuario no lo aclaró y el edificio tiene de los dos, se le pregunta por
+  // voz y recién ahí se elige el más cercano del que pidió.
+
+  static const Set<String> _palabrasBano = {
+    'bano', 'banos', 'bao', 'baos', 'sanitario', 'sanitarios', 'toilette',
+    'toilet', 'wc', 'servicios',
+  };
+  static const Set<String> _palabrasHombre = {
+    'hombre', 'hombres', 'caballero', 'caballeros', 'masculino', 'masculinos',
+    'varon', 'varones', 'chicos', 'ellos',
+  };
+  static const Set<String> _palabrasMujer = {
+    'mujer', 'mujeres', 'dama', 'damas', 'femenino', 'femeninos', 'femenina',
+    'chicas', 'ellas',
+  };
+  static const Set<String> _palabrasIndistinto = {
+    'cualquiera', 'cualquier', 'indistinto', 'igual', 'importa', 'mas',
+    'cercano', 'ninguno',
+  };
+
+  /// ¿El texto (ya normalizado) nombra un baño?
+  bool _mencionaBano(String textoNorm) =>
+      textoNorm.split(' ').any(_palabrasBano.contains);
+
+  /// Género que nombra un texto ya normalizado (el nombre de un lugar o lo
+  /// que dijo el usuario). null si no menciona ninguno.
+  _GeneroBano? _generoEnTexto(String textoNorm) {
+    final palabras = textoNorm.split(' ');
+    if (palabras.any(_palabrasMujer.contains)) return _GeneroBano.mujeres;
+    if (palabras.any(_palabrasHombre.contains)) return _GeneroBano.hombres;
+    return null;
+  }
+
+  /// ¿Este lugar es un baño? Por su rubro, por su nombre o por sus palabras
+  /// clave.
+  bool _esBano(LugarInteres l) =>
+      l.rubro == Rubros.bano ||
+      _mencionaBano(_normalizar(l.nombre)) ||
+      l.palabrasClave.any((p) => _mencionaBano(_normalizar(p)));
+
+  /// Género de un baño: el que diga su nombre y, si no dice, sus palabras
+  /// clave.
+  _GeneroBano? _generoDe(LugarInteres l) {
+    final porNombre = _generoEnTexto(_normalizar(l.nombre));
+    if (porNombre != null) return porNombre;
+    for (final p in l.palabrasClave) {
+      final g = _generoEnTexto(_normalizar(p));
+      if (g != null) return g;
+    }
+    return null;
+  }
+
+  /// Resuelve lo que pidió el usuario (texto ya normalizado) a un destino
+  /// concreto. Para los baños pregunta el género si hace falta; para el
+  /// resto busca por nombre y por palabras clave, y si hay más de un lugar
+  /// posible le da a elegir.
+  Future<LugarInteres?> _resolverPedido(String textoNorm) async {
+    _pedidoCancelado = false;
+    if (!_mencionaBano(textoNorm)) {
+      return _resolverPorNombreOClave(textoNorm);
+    }
+
+    final banos =
+        _lugaresEdificio.where((l) => _puedeLlegarA(l) && _esBano(l)).toList();
+    // Dijo "baño" pero no hay ninguno cargado como tal: se busca igual por
+    // nombre y palabras clave, por si algún lugar lo tiene de otra forma.
+    if (banos.isEmpty) return _resolverPorNombreOClave(textoNorm);
+
+    // Género que pidió el usuario ("baño de hombres" no se pregunta).
+    var genero = _generoEnTexto(textoNorm);
+
+    final disponibles =
+        banos.map(_generoDe).whereType<_GeneroBano>().toSet();
+    final hayDeLosDos = disponibles.length > 1;
+
+    // El género se pregunta sobre TODOS los baños, también los encerrados:
+    // si el de hombres no se puede alcanzar, a un hombre hay que decírselo,
+    // no llevarlo al de mujeres.
+    if (genero == null && hayDeLosDos) {
+      genero = await _preguntarGeneroBano();
+    }
+    // Indistinto o sin datos: el más cercano de cualquiera.
+    if (genero == null) return _masCercanoCaminando(banos);
+
+    final delGenero = banos.where((l) => _generoDe(l) == genero).toList();
+    // Si no hay de ese género (datos incompletos), el más cercano igual.
+    return _masCercanoCaminando(delGenero.isNotEmpty ? delGenero : banos);
+  }
+
+  /// El más cercano de [candidatos] para ir caminando: primero a los que se
+  /// puede ir (ver _priorizarAlcanzables); entre ellos, el del piso más
+  /// cercano y, en este piso, el de menos metros de CAMINO (ver
+  /// _medirOpciones): un baño pegado pero del otro lado de una pared no es
+  /// el más cercano.
+  Future<LugarInteres?> _masCercanoCaminando(
+      List<LugarInteres> candidatos) async {
+    final opciones = _priorizarAlcanzables(candidatos);
+    if (opciones.length < 2 || _posicionFinal == null) {
+      return _elegirEntre(opciones);
+    }
+    final medidas = await _medirOpciones(opciones);
+    return medidas.first.lugar;
+  }
+
+  // ─── NOMBRE O PALABRA CLAVE, CON OPCIONES ─────────────────────────────────
+
+  /// Máximo de opciones que se leen en voz alta. Más que esto no se retiene
+  /// de oído; si hay más, se leen las más cercanas.
+  static const int _maxOpcionesDichas = 4;
+
+  /// A cuántas opciones se les calcula el camino real para saber cuál es la
+  /// más cercana (ver _medirOpciones).
+  static const int _maxCaminosMedidos = 6;
+
+  /// Qué tan lejos queda un lugar, para ordenar opciones: primero por pisos
+  /// de diferencia y, dentro de este piso, por metros hasta el usuario.
+  int _pisosHasta(LugarInteres l) {
+    if (l.pisoId == widget.pisoId) return 0;
+    final actual = _numeroPisoActual;
+    final n = _numeroPisoDe(l);
+    return (actual == null || n == null) ? 1 << 20 : (n - actual).abs();
+  }
+
+  /// true si el último pedido terminó porque el USUARIO lo dejó (dijo que no
+  /// a las opciones, cortó la escucha, o no se lo pudo entender al elegir).
+  /// En ese caso no corresponde el "No encontré…" del que llama.
+  bool _pedidoCancelado = false;
+
+  /// Cambia cada vez que arranca un pedido de destino nuevo (o se cancela la
+  /// navegación). Un pedido es una conversación de varios pasos —"¿A dónde
+  /// vas?", "¿Vamos ahí?", "Las otras opciones son…"— con esperas en el
+  /// medio. Si el usuario toca la pantalla mientras se le leen las opciones,
+  /// arranca un pedido nuevo; sin esto, el viejo seguía por su cuenta y los
+  /// dos hablaban y escuchaban encima. Cada paso mira el turno y, si ya no
+  /// es el suyo, se retira en silencio.
+  int _turnoVoz = 0;
+
+  /// Cuándo arrancó el pedido de destino que está en curso (null = ninguno).
+  /// Mientras haya uno, las indicaciones de giro NO se dicen: caerían encima
+  /// de las preguntas o, peor, con el micrófono abierto, y el reconocedor
+  /// tomaría "seguí derecho" como si fuera la respuesta del usuario. Pasa al
+  /// cambiar de destino en plena navegación.
+  DateTime? _pedidoDesde;
+
+  /// Tope de seguridad: si por lo que sea un pedido no cerrara, las
+  /// indicaciones vuelven solas pasado este tiempo.
+  static const Duration _maxDuracionPedido = Duration(seconds: 60);
+
+  bool get _pedidoEnCurso {
+    final desde = _pedidoDesde;
+    return desde != null &&
+        DateTime.now().difference(desde) < _maxDuracionPedido;
+  }
+
+  /// Busca el pedido por nombre, por rubro y por palabras clave (ver
+  /// BuscadorLugares).
+  ///  - Un solo lugar posible → ese.
+  ///  - Varios → sólo cuentan a los que se puede ir caminando (si no se
+  ///    puede ir a ninguno, se dice). Si queda uno, ese; si quedan varios,
+  ///    se le ofrece el más cercano y, si dice que no, las otras opciones
+  ///    (ver _ofrecerMasCercano).
+  ///  - Ninguno → queda la búsqueda aproximada de antes (por pedazos del
+  ///    nombre), que rescata lo que el reconocedor de voz escribió mal.
+  Future<LugarInteres?> _resolverPorNombreOClave(String textoNorm) async {
+    final alcanzables = _lugaresEdificio.where(_puedeLlegarA);
+
+    // Si lo pedido ES el nombre de un lugar, tal cual, va a ese sin más
+    // vueltas. Es el caso de la lista táctil (manda el nombre exacto) y evita
+    // que "Aula" y "Aulas", que el buscador trata como la misma palabra, se
+    // ofrezcan como dos opciones cuando se eligió una de las dos.
+    if (alcanzables.any((l) => _normalizar(l.nombre) == textoNorm)) {
+      return _elegirDestino(textoNorm);
+    }
+
+    final candidatos = BuscadorLugares.candidatos(textoNorm, alcanzables);
+
+    if (candidatos.isEmpty) {
+      final coincidencia = _buscarMejorCoincidencia(textoNorm);
+      return coincidencia == null
+          ? null
+          : _elegirDestino(_normalizar(coincidencia.nombre));
+    }
+
+    // Una opción por NOMBRE: el mismo lugar repetido (en varios pisos, o dos
+    // veces en este) no son dos opciones para el usuario; de cada nombre se
+    // toma el más cercano.
+    final porNombre = <String, List<LugarInteres>>{};
+    for (final l in candidatos) {
+      porNombre.putIfAbsent(_normalizar(l.nombre), () => []).add(l);
+    }
+    final todas = <LugarInteres>[
+      for (final grupo in porNombre.values) _elegirEntre(grupo)!,
+    ];
+    if (todas.length == 1) return todas.first;
+
+    // Primero, a los que se puede ir: los que están encerrados no se ofrecen
+    // (ver _priorizarAlcanzables). Si no se llega a ninguno, se dice acá:
+    // preguntar a cuál, para después decir que no se puede llegar, no sirve.
+    final opciones = todas.where(_seLlegaCaminando).toList();
+    if (opciones.isEmpty) {
+      _pedidoCancelado = true;
+      await _voz.hablar(
+          'No hay un camino libre hasta ninguno de esos lugares.');
+      return null;
+    }
+    if (opciones.length == 1) return opciones.first;
+
+    // Sin posición todavía no se puede decir cuál es el más cercano: se leen
+    // las opciones y elige.
+    if (_posicionFinal == null) {
+      opciones.sort((a, b) => _pisosHasta(a).compareTo(_pisosHasta(b)));
+      return _preguntarOpcion(opciones);
+    }
+
+    final medidas = await _medirOpciones(opciones);
+    if (!mounted) return null;
+    return _ofrecerMasCercano(medidas);
+  }
+
+  // ─── "EL MÁS CERCANO ES…" ─────────────────────────────────────────────────
+  //
+  // Cuando lo que pidió el usuario corresponde a varios lugares ("quiero
+  // comer"), casi siempre quiere el que tiene más cerca. Así que no se le
+  // lee la lista entera: se le propone el más cercano, con la distancia, y
+  // con un "sí" ya está. Recién si dice que no se le nombran los otros.
+
+  /// Calcula a cuánto queda cada opción y las devuelve de más cerca a más
+  /// lejos: primero las de este piso, por metros de CAMINO (no en línea
+  /// recta: un lugar pegado pero del otro lado de una pared no es el más
+  /// cercano); después las de otros pisos, por pisos de diferencia.
+  Future<List<_OpcionMedida>> _medirOpciones(List<LugarInteres> opciones) async {
+    final origen = _posicionParaRuta();
+
+    // El camino real se calcula sólo para las más cercanas en línea recta:
+    // con 15 aulas en el piso no tiene sentido lanzar 15 búsquedas para
+    // decidir cuál es la primera. El resto queda con la línea recta.
+    final enEstePiso = opciones.where((l) => l.pisoId == widget.pisoId).toList()
+      ..sort((a, b) => _distanciaMetros(origen, a.posicion)
+          .compareTo(_distanciaMetros(origen, b.posicion)));
+    final conCamino = enEstePiso.take(_maxCaminosMedidos).toSet();
+
+    final salida = <_OpcionMedida>[];
+    for (final l in opciones) {
+      double? metros;
+      if (l.pisoId == widget.pisoId) {
+        // Respaldo: línea recta (si todavía no hay grilla o no hay camino).
+        metros = _distanciaMetros(origen, l.posicion);
+        if (_resolvedorListo && conCamino.contains(l)) {
+          final camino =
+              await _resolvedor.encontrarCamino(origen, _puntoDeLlegada(l));
+          if (camino != null) metros = _calcularDistancia(camino);
+        }
+      }
+      salida.add((lugar: l, pisos: _pisosHasta(l), metros: metros));
+    }
+    salida.sort((a, b) {
+      final porPiso = a.pisos.compareTo(b.pisos);
+      if (porPiso != 0) return porPiso;
+      return (a.metros ?? double.infinity)
+          .compareTo(b.metros ?? double.infinity);
+    });
+    return salida;
+  }
+
+  /// "McDonald's, a 20 metros" / "Havanna, en el piso 2".
+  String _nombreConDistancia(_OpcionMedida o) {
+    final metros = o.metros;
+    if (metros != null) {
+      return '${o.lugar.nombre}, a ${_distanciaParaVoz(metros)}';
+    }
+    final piso = _numeroPisoDe(o.lugar);
+    return piso == null
+        ? o.lugar.nombre
+        : '${o.lugar.nombre}, en ${PisoUtil.paraVoz(piso)}';
+  }
+
+  /// Dice [frase], escucha y devuelve la respuesta normalizada ('' si no
+  /// dijo nada o no se entendió). Devuelve null cuando hay que ABANDONAR la
+  /// conversación sin decir nada más: la pantalla se cerró, arrancó otro
+  /// pedido (ver _turnoVoz) o el usuario cortó la escucha con un toque.
+  ///
+  /// [entiende]: qué respuestas (ya normalizadas) sabe interpretar el que
+  /// pregunta. Con eso se elige entre las interpretaciones del reconocedor
+  /// (ver VozService.escuchar).
+  ///
+  /// Sin espera entre la pregunta y la escucha: VozService.escuchar ya deja
+  /// 200 ms para que se apague el altavoz. Antes había otros 200 ms acá, y
+  /// un "sí" dicho enseguida caía antes de que el micrófono se abriera.
+  Future<String?> _preguntarYEscuchar(
+    String frase, {
+    bool Function(String norm)? entiende,
+  }) async {
+    final turno = _turnoVoz;
+    await _voz.hablar(frase);
+    if (!mounted || turno != _turnoVoz) return null;
+    setState(() => _escuchando = true);
+
+    final respuesta = Completer<String?>();
+    bool cortada = false;
+    await _voz.escuchar(
+      timeout: const Duration(seconds: 8),
+      entiende: entiende == null ? null : (t) => entiende(_normalizar(t)),
+      onEscuchando: (activo) {
+        if (mounted && turno == _turnoVoz) {
+          setState(() => _escuchando = activo);
+        }
+      },
+      onResultado: (texto) {
+        if (!respuesta.isCompleted) respuesta.complete(texto);
+      },
+      onError: (error) {
+        cortada = error == VozService.errorCancelado;
+        if (!respuesta.isCompleted) respuesta.complete(null);
+      },
+    );
+    final texto = await respuesta.future;
+    if (!mounted || turno != _turnoVoz) return null;
+    setState(() => _escuchando = false);
+    if (cortada) {
+      // La cortó el usuario (tocó la pantalla mientras se escuchaba): no se
+      // insiste ni se elige por él.
+      _pedidoCancelado = true;
+      return null;
+    }
+    return texto == null ? '' : _normalizar(texto);
+  }
+
+  /// Propone la opción más cercana. Entiende:
+  ///  - "sí", "dale", "vamos" → va a esa;
+  ///  - el nombre de cualquiera de las opciones → va a la que nombró;
+  ///  - "no", "otro", "¿cuáles hay?" → le dice las otras;
+  ///  - "cualquiera" → la más cercana.
+  /// Si en dos intentos no se entiende, va a la más cercana (es lo que se le
+  /// estaba proponiendo y lo más probable que quiera).
+  Future<LugarInteres?> _ofrecerMasCercano(
+    List<_OpcionMedida> opciones, {
+    int intento = 1,
+  }) async {
+    final primera = opciones.first;
+    final lugares = opciones.map((o) => o.lugar).toList();
+    final norm = await _preguntarYEscuchar(
+      intento == 1
+          ? 'El más cercano es ${_nombreConDistancia(primera)}. ¿Vamos ahí?'
+          : 'Decí sí para ir a ${primera.lugar.nombre}, '
+              'o no para escuchar las otras opciones.',
+      entiende: (n) =>
+          BuscadorLugares.siONo(n) != null ||
+          BuscadorLugares.opcionDicha(n, lugares, ordinales: false) != null ||
+          _dice(n, _palabrasDaIgual) ||
+          _dice(n, _palabrasIndistinto),
+    );
+    if (norm == null) return null;
+
+    final nombrada =
+        BuscadorLugares.opcionDicha(norm, lugares, ordinales: false);
+    final respuesta = BuscadorLugares.siONo(norm);
+
+    if (respuesta == true) {
+      // Un "sí" es para la que se propuso, salvo que además nombre OTRA con
+      // su nombre completo. Una palabra suelta no alcanza: en "sí, al
+      // restaurante" el "restaurante" es lo que pidió, no un cambio de idea.
+      if (nombrada != null &&
+          BuscadorLugares.dijoNombreCompleto(norm, lugares[nombrada])) {
+        return lugares[nombrada];
+      }
+      return primera.lugar;
+    }
+    // Sin un "sí": si nombró una opción (la propuesta u otra), va a esa.
+    if (nombrada != null) return lugares[nombrada];
+    // "No importa", "me da igual", "cualquiera": le sirve la propuesta. Va
+    // ANTES de mirar el "no", porque "no importa" trae un "no" adentro.
+    if (norm.split(' ').any(_palabrasDaIgual.contains)) return primera.lugar;
+    if (respuesta == false) return _decirOtrasOpciones(opciones);
+    if (norm.split(' ').any(_palabrasIndistinto.contains)) return primera.lugar;
+
+    if (intento >= 2) {
+      await _voz.hablar('Te llevo al más cercano.');
+      return primera.lugar;
+    }
+    return _ofrecerMasCercano(opciones, intento: intento + 1);
+  }
+
+  /// Formas de decir "cualquiera me sirve" que pueden venir con un "no"
+  /// adelante ("no importa"): se miran antes que el sí / no.
+  static const Set<String> _palabrasDaIgual = {
+    'cualquiera', 'cualquier', 'indistinto', 'igual', 'importa',
+  };
+
+  static const Set<String> _palabrasCancelar = {
+    'ninguno', 'ninguna', 'nada', 'cancelar', 'cancela', 'cancelalo', 'deja',
+    'dejalo', 'olvidalo',
+  };
+
+  /// ¿El texto (ya normalizado) tiene alguna de [palabras]?
+  static bool _dice(String textoNorm, Set<String> palabras) =>
+      textoNorm.split(' ').any(palabras.contains);
+
+  /// El usuario no quiso la más cercana: se le dicen las otras (hasta
+  /// [_maxOpcionesDichas], de más cerca a más lejos) y elige por nombre o
+  /// por orden. Si no quiere ninguna, o no se lo entiende en dos intentos,
+  /// no se va a ningún lado: acá ya dijo que NO a lo que se le propuso, así
+  /// que elegir por él sería llevarlo a donde no pidió.
+  Future<LugarInteres?> _decirOtrasOpciones(
+    List<_OpcionMedida> opciones, {
+    int intento = 1,
+  }) async {
+    final otras = opciones.skip(1).take(_maxOpcionesDichas).toList();
+    final lugaresOtras = otras.map((o) => o.lugar).toList();
+    final unaSola = otras.length == 1;
+
+    final String frase;
+    if (unaSola) {
+      frase = intento == 1
+          ? 'La otra opción es ${_nombreConDistancia(otras.first)}. ¿Vamos ahí?'
+          : 'Decí sí para ir a ${otras.first.lugar.nombre}, o no para cancelar.';
+    } else {
+      final lista = otras.map(_nombreConDistancia).join('. ');
+      frase = intento == 1
+          ? 'Las otras opciones son: $lista. ¿A cuál vas?'
+          : 'Decí el nombre, o primero, segundo'
+              '${otras.length > 2 ? ', tercero' : ''}. '
+              'Las opciones son: ${_enumerar(lugaresOtras.map((l) => l.nombre).toList())}.';
+    }
+    final todas = opciones.map((o) => o.lugar).toList();
+    final norm = await _preguntarYEscuchar(
+      frase,
+      entiende: (n) =>
+          BuscadorLugares.siONo(n) != null ||
+          BuscadorLugares.opcionDicha(n, todas, ordinales: false) != null ||
+          BuscadorLugares.opcionDicha(n, lugaresOtras) != null ||
+          _dice(n, _palabrasDaIgual) ||
+          _dice(n, _palabrasCancelar) ||
+          _dice(n, _palabrasIndistinto),
+    );
+    if (norm == null) return null;
+    final palabras = norm.split(' ');
+
+    // Por nombre vale cualquiera, también la primera que había descartado
+    // ("mejor al McDonald's").
+    final nombrada = BuscadorLugares.opcionDicha(norm, todas, ordinales: false);
+    final respuesta = BuscadorLugares.siONo(norm);
+
+    // Con una sola opción leída, un "sí" es para esa (salvo que nombre otra
+    // con su nombre completo; mismo criterio que en _ofrecerMasCercano).
+    if (unaSola && respuesta == true) {
+      if (nombrada != null &&
+          BuscadorLugares.dijoNombreCompleto(norm, todas[nombrada])) {
+        return todas[nombrada];
+      }
+      return otras.first.lugar;
+    }
+    if (nombrada != null) return todas[nombrada];
+    // Por orden ("el primero") vale sobre las que se acaban de leer.
+    final elegida = BuscadorLugares.opcionDicha(norm, lugaresOtras);
+    if (elegida != null) return lugaresOtras[elegida];
+
+    // "No importa", "cualquiera": la primera de las que se leyeron. Antes
+    // del "no", por lo mismo que en _ofrecerMasCercano.
+    if (palabras.any(_palabrasDaIgual.contains)) return otras.first.lugar;
+
+    final cancela = palabras.any(_palabrasCancelar.contains) ||
+        respuesta == false;
+    if (cancela) {
+      _pedidoCancelado = true;
+      await _voz.hablar('Listo, no vamos a ninguno.');
+      return null;
+    }
+    if (palabras.any(_palabrasIndistinto.contains)) return otras.first.lugar;
+
+    if (intento >= 2) {
+      _pedidoCancelado = true;
+      await _voz.hablar(
+          'No te entendí. Tocá la pantalla para pedirlo de nuevo.');
+      return null;
+    }
+    return _decirOtrasOpciones(opciones, intento: intento + 1);
+  }
+
+  /// "A, B y C".
+  String _enumerar(List<String> nombres) {
+    if (nombres.length <= 1) return nombres.join();
+    return '${nombres.sublist(0, nombres.length - 1).join(', ')} '
+        'y ${nombres.last}';
+  }
+
+  /// Lee las opciones y escucha cuál quiere. Entiende el nombre (o una parte
+  /// que no se confunda con otra opción), "primero / segundo…", y "cualquiera"
+  /// o "el más cercano". Si en dos intentos no se entiende, va al más cercano.
+  Future<LugarInteres?> _preguntarOpcion(
+    List<LugarInteres> opciones, {
+    int intento = 1,
+  }) async {
+    final dichas = opciones.take(_maxOpcionesDichas).toList();
+    final nombres = _enumerar(dichas.map((l) => l.nombre).toList());
+    final String frase;
+    if (intento > 1) {
+      frase = 'Decí el nombre, o primero, segundo'
+          '${dichas.length > 2 ? ', tercero' : ''}. '
+          'Las opciones son: $nombres.';
+    } else if (opciones.length > dichas.length) {
+      frase = 'Hay ${opciones.length} opciones. Las más cercanas son: '
+          '$nombres. ¿A cuál vas?';
+    } else {
+      frase = 'Hay ${dichas.length} opciones: $nombres. ¿A cuál vas?';
+    }
+    final norm = await _preguntarYEscuchar(
+      frase,
+      entiende: (n) =>
+          BuscadorLugares.opcionDicha(n, dichas) != null ||
+          _dice(n, _palabrasIndistinto),
+    );
+    if (norm == null) return null;
+    final indice = BuscadorLugares.opcionDicha(norm, dichas);
+    if (indice != null) return dichas[indice];
+    // "Cualquiera", "el más cercano": la primera, que es la más cercana.
+    if (norm.split(' ').any(_palabrasIndistinto.contains)) return dichas.first;
+    if (intento >= 2) {
+      await _voz.hablar('Te llevo al más cercano.');
+      return dichas.first;
+    }
+    return _preguntarOpcion(opciones, intento: intento + 1);
+  }
+
+  /// Pregunta por voz si quiere el baño de hombres o el de mujeres. Devuelve
+  /// null si el usuario dice que le da igual o si no se entiende en dos
+  /// intentos (ahí se usa el más cercano de cualquiera).
+  Future<_GeneroBano?> _preguntarGeneroBano({int intento = 1}) async {
+    final norm = await _preguntarYEscuchar(
+      intento == 1
+          ? '¿De hombres o de mujeres?'
+          : 'Decí hombres, mujeres, o cualquiera.',
+      entiende: (n) =>
+          _generoEnTexto(n) != null || _dice(n, _palabrasIndistinto),
+    );
+    // Conversación abandonada (otro pedido, escucha cortada, pantalla
+    // cerrada): el que llama lo ve por _turnoVoz / _pedidoCancelado.
+    if (norm == null) return null;
+    final genero = _generoEnTexto(norm);
+    if (genero != null) return genero;
+    if (norm.split(' ').any(_palabrasIndistinto.contains)) return null;
+    if (intento >= 2) {
+      await _voz.hablar('Te llevo al más cercano.');
+      return null;
+    }
+    return _preguntarGeneroBano(intento: intento + 1);
+  }
+
+  /// Destino en este piso con nombre repetido: se queda con el más cercano
+  /// al usuario. Se hace una sola vez, cuando ya hay posición.
+  void _refinarDestinoEnPiso(Offset origen) {
+    _destinoRefinado = true;
+    final d = _destinoSeleccionado;
+    if (d == null) return;
+    final nombreNorm = _normalizar(d.nombre);
+    final mismos = _lugares
+        .where((l) => _normalizar(l.nombre) == nombreNorm)
+        .toList();
+    if (mismos.length < 2) return;
+    // Primero los que se pueden alcanzar caminando: uno encerrado no sirve
+    // aunque esté más cerca (se diría "No se puede llegar" habiendo otro).
+    final alcanzable = {
+      for (final l in mismos)
+        l: _resolvedor.alcanzable(origen, _puntoDeLlegada(l)),
+    };
+    mismos.sort((a, b) {
+      if (alcanzable[a] != alcanzable[b]) return alcanzable[a]! ? -1 : 1;
+      return _distanciaMetros(origen, a.posicion)
+          .compareTo(_distanciaMetros(origen, b.posicion));
+    });
+    if (mismos.first.id != d.id && mounted) {
+      setState(() => _destinoSeleccionado = mismos.first);
+    }
+  }
+
+  /// Fija un nuevo destino final y reinicia todo el estado del tramo.
+  Future<void> _establecerDestino(LugarInteres destino) async {
+    if (!mounted) return;
+    // Si se estaba mirando otro piso, el mapa vuelve al del usuario: la ruta
+    // arranca acá.
+    _volverAMiPiso();
+    setState(() {
+      _destinoSeleccionado = destino;
+      _escaleraObjetivo = null;
+      _llegoAEscalera = false;
+      _llegoADestino = false;
+      _orientador = null;
+      _sinEscaleraDisponible = false;
+      _ciclosEnLlegada = 0;
+      _destinoRefinado = _posicionFinal != null;
+      _rutaActual = null;
+      _estadoRuta = 'Calculando ruta...';
+      _ultimoIntentoRuta = null;
+      _anuncioRetomadoHecho = true;
+    });
+    // Estado del seguimiento de ruta: todo de cero para el destino nuevo.
+    final generacion = ++_generacionRuta;
+    _fueraDeRutaDesde = null;
+    _celdaUltimoCalculo = null;
+    _maniobrasAnunciadas.clear();
+    _giroComprometido = null;
+    _indicacionRutaNuevaPendiente = false;
+    _avisoSinCaminoPendiente = false;
+    _sinCaminoAvisado = false;
+
+    // Destino nuevo: el filtro de voz arranca de cero y la primera indicación
+    // queda marcada como pendiente (ver _primeraInstruccionPendiente).
+    _voz.reiniciarFiltroInstrucciones();
+    _primeraInstruccionPendiente = true;
+
+    final calculo = _calcularRuta();
+
+    if (_esTramoEntrePisos) {
+      final pisoDestino = _numeroPisoDe(destino)!;
+      // Se espera un instante a que _calcularRuta elija por dónde se cambia
+      // de piso, para poder decir si es una escalera o un ascensor.
+      await Future.any<void>([
+        calculo,
+        Future<void>.delayed(_esperaMaxPrimeraRuta),
+      ]);
+      if (!mounted) return;
+      // No se puede llegar a la escalera (_calcularRuta ya lo dijo y soltó el
+      // destino) o se eligió otro destino mientras tanto.
+      if (generacion != _generacionRuta) return;
+      // Sin escalera ni ascensor en el sentido necesario: _calcularRuta ya
+      // lo avisó; decir "vamos a…" encima sería contradecirlo.
+      if (_sinEscaleraDisponible) return;
+      final medio = _escaleraObjetivo;
+      final destinoYPiso =
+          '${destino.nombre}, ${PisoUtil.nombre(pisoDestino).toLowerCase()}.';
+      if (_avisoSinCaminoPendiente) {
+        _avisoSinCaminoPendiente = false;
+        await _voz.hablar('$destinoYPiso $_fraseSinCaminoDesdeAca');
+        return;
+      }
+      await _voz.hablar(
+        '$destinoYPiso '
+        '${medio == null ? 'Hay que cambiar de piso.' : 'Vamos ${medio.medioComoDestino}.'}',
+      );
+      // La indicación hacia la escalera o el ascensor la dice
+      // _actualizarInstruccionVoz en el próximo ciclo de posición (queda
+      // pendiente): ~0,2 s después de que termina esta frase.
+      return;
+    }
+
+    // ── DESTINO + PRIMERA INDICACIÓN EN UNA SOLA FRASE ──────────────────────
+    //
+    // Antes se decía "<destino>. Calculando ruta." y la indicación quedaba a
+    // cargo del filtro de voz, que la dejaba para cuando terminara esa frase
+    // (y, por el bug de hablarSiCambio, en la práctica para 15 s después).
+    // La ruta se calcula en milisegundos, así que conviene esperarla un
+    // instante y decir todo junto: el usuario escucha el destino que se
+    // entendió y, pegado, para dónde tiene que ir.
+    await Future.any<void>([
+      calculo,
+      Future<void>.delayed(_esperaMaxPrimeraRuta),
+    ]);
+    if (!mounted) return;
+    // No se puede llegar (_calcularRuta ya lo dijo y soltó el destino) o se
+    // eligió otro destino mientras tanto.
+    if (generacion != _generacionRuta) return;
+
+    // Sin camino desde donde está: el aviso va pegado al destino, en una
+    // sola frase (si no, "<destino>. Calculando ruta." lo pisaría).
+    if (_avisoSinCaminoPendiente) {
+      _avisoSinCaminoPendiente = false;
+      final nombre = _destinoSeleccionado?.nombre ?? destino.nombre;
+      await _voz.hablar('$nombre. $_fraseSinCaminoDesdeAca');
+      return;
+    }
+
+    final primera = _rutaActual != null ? _indicacionParaVoz() : null;
+    if (primera != null && _primeraInstruccionPendiente) {
+      _primeraInstruccionPendiente = false;
+      // Se registra ANTES de hablar: mientras suena la frase el loop de
+      // posición sigue llamando al filtro, y no tiene que volver a decirla.
+      _voz.registrarInstruccionDicha(primera.clave);
+      // _destinoSeleccionado y no `destino`: con nombres repetidos en el piso,
+      // _calcularRuta puede haberlo cambiado por el más cercano.
+      final nombre = _destinoSeleccionado?.nombre ?? destino.nombre;
+      await _voz.hablar('$nombre. ${primera.texto}.');
+      return;
+    }
+
+    // Todavía no hay ruta (no hay posición, no hay brújula, o el cálculo se
+    // demoró): se confirma el destino y la indicación sale sola en cuanto
+    // haya ruta, porque sigue pendiente.
+    await _voz.hablar('${destino.nombre}. Calculando ruta.');
+  }
+
+  /// Revisa, en cada ciclo de posición, si el usuario llegó a la escalera del
+  /// tramo o al destino final. Pide [_ciclosParaLlegada] ciclos seguidos
+  /// dentro del radio para no anunciar por un salto de ruido. Al llegar, lo
+  /// orienta hacia el lugar antes de anunciarlo (ver [OrientadorLlegada]).
+  void _verificarLlegada() {
+    final d = _destinoSeleccionado;
+    final pos = _posicionFinal;
+    if (d == null || pos == null) return;
+
+    if (_orientador != null) {
+      _seguirOrientacion();
+      return;
+    }
+
+    if (_esTramoEntrePisos) {
+      final esc = _escaleraObjetivo;
+      if (esc == null || _llegoAEscalera) return;
+      final entrada = esc.puntoEntrada(
+        metrosX: _grilla.metrosX,
+        metrosY: _grilla.metrosY,
+      );
+      final finDeRuta = _finDeRutaSiObjetivoEnZona(entrada);
+      final cerca = _enObjetivo(pos, entrada) ||
+          (finDeRuta != null && _enObjetivo(pos, finDeRuta));
+      _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
+      if (_ciclosEnLlegada >= _ciclosParaLlegada) {
+        _ciclosEnLlegada = 0;
+        setState(() => _llegoAEscalera = true);
+        // Con la entrada cargada, el rumbo es el de la boca de la escalera
+        // (desde el punto de entrada hacia su centro), que no depende del
+        // ruido de la posición.
+        _empezarOrientacion(
+          desde: esc.direccionEntrada != null
+              ? entrada
+              : _posicionAlLlegar(pos, esc.posicion),
+          hacia: esc.posicion,
+          llegandoA: esc.medioComoDestino,
+        );
+      }
+      return;
+    }
+
+    if (_llegoADestino) return;
+    // Una escalera como destino se alcanza por su entrada (su cuadrado es
+    // obstáculo, así que la posición del usuario nunca cae encima).
+    final objetivoLlegada = d.esEscalera
+        ? d.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
+        : d.posicion;
+    final finDeRuta = _finDeRutaSiObjetivoEnZona(objetivoLlegada);
+    final cerca = _enObjetivo(pos, objetivoLlegada) ||
+        (finDeRuta != null && _enObjetivo(pos, finDeRuta));
+    _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
+    if (_ciclosEnLlegada >= _ciclosParaLlegada) {
+      _ciclosEnLlegada = 0;
+      // _llegoADestino ya corta la guía: durante la orientación no se dicen
+      // más indicaciones de la ruta.
+      setState(() {
+        _llegoADestino = true;
+        _estadoRuta = 'Llegando a ${d.nombre}';
+      });
+      _empezarOrientacion(
+        desde: d.esEscalera && d.direccionEntrada != null
+            ? objetivoLlegada
+            : _posicionAlLlegar(pos, d.posicion),
+        hacia: d.posicion,
+        llegandoA: 'a ${d.nombre}',
+      );
+    }
+  }
+
+  /// Dónde está parado el usuario al llegar, para calcular hacia dónde queda
+  /// el lugar: la posición medida, adelantada sobre la ruta lo que avanzó
+  /// durante el atraso (ver [_avancePorAtrasoMetros]). Caminando, la
+  /// posición medida es un punto que el usuario ya pasó, y el lugar parecía
+  /// más adelante de lo que está. Si así quedaría encima de [lugar] (no hay
+  /// dirección), se usa la medida.
+  Offset _posicionAlLlegar(Offset pos, Offset lugar) {
+    final ruta = _rutaActual;
+    if (ruta == null || ruta.isEmpty) return pos;
+    final u = SeguidorRuta.ubicar(ruta, pos, _grilla);
+    if (u.desvioMetros > SeguidorRuta.toleranciaProyeccionMetros) return pos;
+    final tam = _grilla.tamCeldaMetros > 0 ? _grilla.tamCeldaMetros : 1.0;
+    final i = min(ruta.length - 1,
+        u.indice + (_avancePorAtrasoMetros / tam).round());
+    if (i == u.indice) return pos;
+    final adelantada = ruta[i];
+    return _distanciaMetros(adelantada, lugar) < _distanciaMinOrientacionMetros
+        ? pos
+        : adelantada;
+  }
+
+  /// Arranca la orientación hacia [hacia], mirando desde [desde] (ver
+  /// [OrientadorLlegada]). [llegandoA]: "a Baño", "a la escalera".
+  ///
+  /// Sin brújula, o con el lugar prácticamente encima, no hay hacia dónde
+  /// girar: se anuncia la llegada enseguida, como antes.
+  void _empezarOrientacion({
+    required Offset desde,
+    required Offset hacia,
+    required String llegandoA,
+  }) {
+    final heading = _orientacion.heading;
+    if (heading == null ||
+        _distanciaMetros(desde, hacia) < _distanciaMinOrientacionMetros) {
+      _anunciarLlegada(null);
+      return;
+    }
+    final ahora = DateTime.now();
+    final orientador = OrientadorLlegada(
+      rumboObjetivo: OrientacionService.rumboHacia(
+        desde: desde,
+        hacia: hacia,
+        rotacionMapa: _rotacionMapaEfectiva,
+        metrosX: _grilla.metrosX,
+        metrosY: _grilla.metrosY,
+      ),
+      inicio: ahora,
+    );
+    final paso = orientador.actualizar(
+      heading: heading,
+      velocidadAngular: _orientacion.velocidadAngularGrados,
+      ahora: ahora,
+    );
+    final indicacion = paso.indicacion;
+    if (paso.estado != EstadoOrientacion.girando || indicacion == null) {
+      // Ya venía mirando hacia el lugar.
+      _anunciarLlegada(paso);
+      return;
+    }
+    HapticFeedback.mediumImpact();
+    setState(() => _orientador = orientador);
+    // hablar() corta la indicación de la ruta que pudiera estar sonando.
+    _voz.hablar('Estás llegando $llegandoA. $indicacion.');
+    orientador.registrarIndicacion(indicacion, ahora);
+  }
+
+  /// Un ciclo de la orientación en curso: corrige si hace falta y, cuando
+  /// queda de frente (o se vence), anuncia la llegada.
+  void _seguirOrientacion() {
+    final orientador = _orientador;
+    if (orientador == null) return;
+    // Con un pedido de destino en curso se espera: caería encima de las
+    // preguntas o con el micrófono abierto (ver _pedidoDesde).
+    if (_pedidoEnCurso || _escuchando) return;
+    final ahora = DateTime.now();
+    final paso = orientador.actualizar(
+      heading: _orientacion.heading,
+      velocidadAngular: _orientacion.velocidadAngularGrados,
+      ahora: ahora,
+    );
+    if (paso.estado != EstadoOrientacion.girando) {
+      setState(() => _orientador = null);
+      _anunciarLlegada(paso);
+      return;
+    }
+    final indicacion = paso.indicacion;
+    // Sin interrumpir: si el motor está ocupado, el orientador la vuelve a
+    // pedir en el ciclo siguiente.
+    if (indicacion != null && _voz.hablarSinEsperar('$indicacion.')) {
+      orientador.registrarIndicacion(indicacion, ahora);
+    }
+  }
+
+  /// Anuncia la llegada al destino o a la escalera del tramo, con el lado
+  /// donde quedó el lugar si se sabe ([paso] null: sin brújula).
+  void _anunciarLlegada(PasoOrientacion? paso) {
+    final giro = paso?.giro;
+    final lado = giro == null ? '' : ' Está ${OrientadorLlegada.lado(giro)}.';
+    if (_llegoAEscalera) {
+      final esc = _escaleraObjetivo;
+      if (esc != null) _anunciarLlegadaEscalera(esc, lado);
+      return;
+    }
+    final d = _destinoSeleccionado;
+    if (d == null) return;
+    setState(() => _estadoRuta = 'Llegaste');
+    HapticFeedback.heavyImpact();
+    // Ej: "Llegaste a Baño. Está adelante."
+    _voz.hablar('Llegaste a ${d.nombre}.$lado');
+  }
+
+  /// Final de la ruta, si [objetivo] cae en una zona prohibida; si no, null.
+  ///
+  /// Un lugar dibujado adentro de una zona (un aula marcada como no
+  /// transitable, por ejemplo) no se puede pisar: la posición ya no entra en
+  /// las zonas prohibidas (ver [RestriccionZonas]) y, si el lugar está a más
+  /// de [_radioLlegadaMetros] del borde, la llegada no se anunciaría nunca.
+  /// Ahí cuenta como llegada estar en el final de la ruta, que es la celda
+  /// transitable más cercana al lugar que encontró el pathfinder.
+  ///
+  /// Se mira la CELDA del lugar (bloqueada si su centro cae en la zona) y no
+  /// el punto, porque es lo mismo que mira el pathfinder para decidir dónde
+  /// termina la ruta. Si el lugar está adentro de la zona pero el centro de
+  /// su celda no, la celda es transitable y la ruta termina en ella; la
+  /// posición del usuario ahí es ese centro, en la misma celda del lugar:
+  /// cuenta como llegada (ver [_enObjetivo]).
+  Offset? _finDeRutaSiObjetivoEnZona(Offset objetivo) {
+    if (!_ajustes.restringirZonas) return null;
+    final ruta = _rutaActual;
+    if (ruta == null || ruta.isEmpty) return null;
+    final enZona = _resolvedor.esZonaProhibida(
+      _grilla.indiceX(objetivo.dx),
+      _grilla.indiceY(objetivo.dy),
+    );
+    return enZona ? ruta.last : null;
+  }
+
+  /// Anuncio al llegar frente a la escalera, ya orientado hacia su entrada
+  /// (ver [_empezarOrientacion]): dónde quedó ([lado], vacío sin brújula),
+  /// si hay que subir o bajar, hasta qué piso, y el recordatorio del gesto
+  /// para cambiar de piso.
+  void _anunciarLlegadaEscalera(LugarInteres esc, String lado) {
+    HapticFeedback.heavyImpact();
+    final accion = _subiendo ? 'Subí' : 'Bajá';
+    final sig = _siguientePisoNumero;
+
+    // Ej: "Escalera. Está adelante. Subí al piso 2 y mantené la pantalla
+    // apretada."
+    _voz.hablar(
+      '${esc.medioNombre}.$lado $accion'
+      '${sig != null ? ' ${PisoUtil.destinoVoz(sig)}' : ''}'
+      ' y mantené la pantalla apretada.',
+    );
+  }
+
+  /// Gesto de mantener apretada la pantalla: carga el piso siguiente del
+  /// tramo y retoma la navegación hacia el destino final.
+  ///
+  /// Se permite aunque el sistema todavía no haya detectado la llegada a la
+  /// escalera: el posicionamiento BLE puede no confirmarla justo en el borde,
+  /// y quien sabe que ya subió es el usuario.
+  Future<void> _cambiarDePiso() async {
+    if (_saltandoDePiso || !mounted) return;
+    final d = _destinoSeleccionado;
+    if (d == null || !_esTramoEntrePisos) {
+      _voz.hablar('No hay cambio de piso pendiente.');
+      return;
+    }
+    if (_sinEscaleraDisponible) {
+      _voz.hablar('No hay escalera ni ascensor en este piso.');
+      return;
+    }
+    final sig = _siguientePisoNumero;
+    final piso = sig == null ? null : _pisoPorNumero(sig);
+    if (sig == null || piso == null) {
+      _voz.hablar('Falta el mapa del piso siguiente.');
+      return;
+    }
+
+    _saltandoDePiso = true;
+    HapticFeedback.heavyImpact();
+    _turnoVoz++; // un pedido a medio conversar no sigue en el piso nuevo
+    _pedidoDesde = null;
+    if (_escuchando) {
+      _voz.detenerEscucha();
+      _escuchando = false;
+    }
+
+    // Ej: "Piso 2. Buscando ubicación."
+    final anuncio = '${PisoUtil.nombre(sig)}. Buscando ubicación.';
+
+    // El scan físico sigue vivo para la pantalla nueva, igual que al pasar
+    // desde el modo automático. La pantalla nueva toma la propiedad del scan
+    // y de la voz; la limpieza tardía de esta queda neutralizada.
+    BluetoothHelper.mantenerScanActivo = true;
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PantallaNavegacion(
+          pisoId: piso.id,
+          rutaImagen: piso.rutaImagen,
+          escalaX: piso.escalaX,
+          escalaY: piso.escalaY,
+          tamCeldaMetros: piso.tamCeldaMetros,
+          rotacionMapa: piso.rotacionMapa,
+          // Mismo procesador: conserva el historial de RSSI de los beacons
+          // que se ven entre pisos y la posición se estabiliza antes.
+          procesadorCompartido: _procesador,
+          destinoFinalId: d.id,
+          anuncioInicial: anuncio,
+          llegoSubiendo: _subiendo,
+        ),
+      ),
+    );
+  }
+ 
+  double _calcularDistancia(List<Offset> camino) {
+    // El camino es una secuencia de celdas adyacentes (1 celda ≈ 1 m real en
+    // ambos ejes), así que la distancia ≈ cantidad de pasos × tamaño de celda.
+    if (camino.length < 2) return 0;
+    return (camino.length - 1) * _grilla.tamCeldaMetros;
+  }
+ 
+  // ─── SELECCIÓN DE DESTINO POR VOZ ─────────────────────────────────────────
+ 
+  /// Activa el micrófono, escucha el destino y busca la mejor coincidencia.
+  Future<void> _seleccionarDestinoPorVoz() async {
+    if (_lugaresEdificio.isEmpty) {
+      await _voz.hablar('No hay lugares configurados.');
+      return;
+    }
+ 
+    // Primero hablar y esperar que termine el audio (hablar() espera el
+    // aviso del motor TTS). Sin otra espera acá: la deja VozService.escuchar
+    // (ver _preguntarYEscuchar).
+    // Pedido nuevo: cualquier conversación anterior que siga en curso se
+    // retira (ver _turnoVoz).
+    final turno = ++_turnoVoz;
+    _pedidoDesde = DateTime.now();
+    // El pedido termina cuando termina ESTE turno; si arrancó otro, el dueño
+    // de la marca es el nuevo.
+    void cerrarPedido() {
+      if (turno == _turnoVoz) _pedidoDesde = null;
+    }
+
+    await _voz.hablar('¿A dónde vas?');
+
+    // Solo ahora activar el indicador visual de escucha
+    if (!mounted || turno != _turnoVoz) {
+      cerrarPedido();
+      return;
+    }
+    setState(() => _escuchando = true);
+
+    await _voz.escuchar(
+      timeout: const Duration(seconds: 8),
+      // La primera interpretación del reconocedor que nombra algún lugar
+      // (ver VozService.escuchar).
+      entiende: (t) {
+        final n = _normalizar(t);
+        return _mencionaBano(n) ||
+            BuscadorLugares.candidatos(n, _lugaresEdificio.where(_puedeLlegarA))
+                .isNotEmpty;
+      },
+      onEscuchando: (activo) {
+        if (mounted && turno == _turnoVoz) {
+          setState(() => _escuchando = activo);
+        }
+      },
+      onResultado: (textoReconocido) async {
+        if (!mounted || turno != _turnoVoz) return;
+        setState(() => _escuchando = false);
+ 
+        // Resuelve el pedido: con nombres repetidos elige el del piso más
+        // cercano, y si pidió "baño" sin aclarar, pregunta cuál.
+        final LugarInteres? destino;
+        try {
+          destino = await _resolverPedido(_normalizar(textoReconocido));
+        } finally {
+          cerrarPedido();
+        }
+        // Mientras se resolvía pudo arrancar otro pedido, o el usuario pudo
+        // dejar este (dijo que no, o cortó la escucha): en los dos casos no
+        // hay nada más que hacer ni que decir.
+        if (!mounted || turno != _turnoVoz || _pedidoCancelado) return;
+ 
+        if (destino != null) {
+          await _establecerDestino(destino);
+        } else {
+          await _voz.hablar('No encontré "$textoReconocido". Intentá de nuevo.');
+        }
+      },
+      onError: (error) async {
+        cerrarPedido();
+        if (!mounted || turno != _turnoVoz) return;
+        setState(() => _escuchando = false);
+        // La cortó el propio usuario con un toque: no es "no te escuché".
+        if (error == VozService.errorCancelado) return;
+        await _voz.hablar('No te escuché. Intentá de nuevo.');
+      },
+    );
+  }
+ 
+  /// Busca el lugar cuyo nombre tenga mayor similitud con el texto reconocido.
+  LugarInteres? _buscarMejorCoincidencia(String texto) {
+    final textoNorm = _normalizar(texto);
+    // Se busca en todo el edificio, sólo entre los lugares alcanzables.
+    final lugares = _lugaresEdificio.where(_puedeLlegarA).toList();
+ 
+    // Búsqueda exacta primero
+    for (final lugar in lugares) {
+      if (_normalizar(lugar.nombre) == textoNorm) return lugar;
+    }
+ 
+    // Búsqueda por contención. Con menos de 3 letras no: "a", "e" o "va" (lo
+    // que deja una palabra corta mal reconocida) están dentro de casi
+    // cualquier nombre, y se iba a un lugar al azar sin preguntar. Un texto
+    // vacío coincidía con el primer lugar de la lista.
+    if (textoNorm.length >= 3) {
+      for (final lugar in lugares) {
+        final nombreNorm = _normalizar(lugar.nombre);
+        if (nombreNorm.contains(textoNorm) || textoNorm.contains(nombreNorm)) {
+          return lugar;
+        }
+      }
+    }
+ 
+    // Búsqueda por palabras individuales
+    final palabras = textoNorm.split(' ').where((p) => p.length > 2).toList();
+    LugarInteres? mejorCandidato;
+    int mejorPuntaje = 0;
+ 
+    for (final lugar in lugares) {
+      final nombreNorm = _normalizar(lugar.nombre);
+      int puntaje = 0;
+      for (final palabra in palabras) {
+        if (nombreNorm.contains(palabra)) puntaje++;
+      }
+      if (puntaje > mejorPuntaje) {
+        mejorPuntaje = puntaje;
+        mejorCandidato = lugar;
+      }
+    }
+ 
+    return mejorPuntaje > 0 ? mejorCandidato : null;
+  }
+ 
+  /// Minúsculas, sin tildes ni signos. Una sola definición, compartida con
+  /// la búsqueda por palabras clave.
+  String _normalizar(String texto) => BuscadorLugares.normalizar(texto);
+ 
+  // ─── SELECCIÓN DE DESTINO POR LISTA (fallback táctil) ─────────────────────
+ 
+  void _seleccionarDestinoLista() async {
+    // Nombres únicos de todo el edificio (alcanzables). Los lugares con el
+    // mismo nombre en distintos pisos aparecen una sola vez: al elegirlo se
+    // va al del piso más cercano.
+    final grupos = <String, List<LugarInteres>>{};
+    for (final l in _lugaresEdificio.where(_puedeLlegarA)) {
+      grupos.putIfAbsent(_normalizar(l.nombre), () => []).add(l);
+    }
+    if (grupos.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No hay lugares de interes configurados')),
+        );
+      }
+      return;
+    }
+    final claves = grupos.keys.toList()
+      ..sort((a, b) => grupos[a]!.first.nombre
+          .toLowerCase()
+          .compareTo(grupos[b]!.first.nombre.toLowerCase()));
+
+    String pisosDe(List<LugarInteres> ls) {
+      final nums = <int?>{for (final l in ls) _numeroPisoDe(l)};
+      final textos = nums.map((n) {
+        final t = n == null ? 'Sin número' : PisoUtil.nombre(n);
+        return n != null && n == _numeroPisoActual ? '$t (acá)' : t;
+      }).toList();
+      return textos.join(' · ');
+    }
+
+    // La lista se muestra visualmente; no leer todos los nombres por voz
+ 
+    final seleccion = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿A dónde querés ir?'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: claves.length,
+            itemBuilder: (context, i) {
+              final ls = grupos[claves[i]]!;
+              final l = ls.first;
+              return ListTile(
+                leading: Icon(
+                  !l.esEscalera
+                      ? Icons.place
+                      : (l.esAscensor ? Icons.elevator : Icons.stairs),
+                  color: l.esEscalera ? Colors.orange : Colors.purple,
+                ),
+                title: Text(l.nombre, style: const TextStyle(fontSize: 18)),
+                subtitle: Text(pisosDe(ls)),
+                onTap: () => Navigator.pop(ctx, claves[i]),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar'),
+          ),
+        ],
+      ),
+    );
+ 
+    if (seleccion != null && mounted) {
+      // Misma resolución que por voz: si tocó un "Baño" sin género y el
+      // edificio tiene de hombres y de mujeres, se pregunta cuál.
+      final turno = ++_turnoVoz;
+      final destino = await _resolverPedido(seleccion);
+      if (!mounted || turno != _turnoVoz || _pedidoCancelado) return;
+      if (destino != null) await _establecerDestino(destino);
+    }
+  }
+ 
+  void _cancelarNavegacion() {
+    if (mounted) {
+      _soltarDestino();
+      _turnoVoz++; // si había un pedido a medio conversar, se retira
+      _pedidoDesde = null;
+      _voz.hablar('Navegación cancelada.');
+    }
+  }
+
+  /// Deja la pantalla sin destino y sin nada pendiente de la navegación. Lo
+  /// usan la cancelación y el destino al que no se puede llegar (ver
+  /// _manejarSinCamino), que no tiene que cortar un pedido de voz en curso.
+  void _soltarDestino() {
+    setState(() {
+      _destinoSeleccionado = null;
+      _escaleraObjetivo = null;
+      _llegoAEscalera = false;
+      _llegoADestino = false;
+      _orientador = null;
+      _sinEscaleraDisponible = false;
+      _ciclosEnLlegada = 0;
+      _rutaActual = null;
+      _estadoRuta = '';
+    });
+    _generacionRuta++;
+    _maniobrasAnunciadas.clear();
+    _giroComprometido = null;
+    _fueraDeRutaDesde = null;
+    _celdaUltimoCalculo = null;
+    _primeraInstruccionPendiente = false;
+    _indicacionRutaNuevaPendiente = false;
+    _avisoSinCaminoPendiente = false;
+    _sinCaminoAvisado = false;
+    _voz.reiniciarFiltroInstrucciones();
+  }
+
+  /// Punto de entrada accesible: tocar CUALQUIER parte de la pantalla inicia la
+  /// selección de destino por voz. Pensado para personas ciegas: no hay que
+  /// buscar un botón chico. Los controles con su propio onTap (lista, cancelar,
+  /// barra de micrófono, botón de centrar) siguen funcionando porque capturan
+  /// el toque primero; arrastrar o hacer zoom en el mapa no cuenta como toque,
+  /// así que desplazar el mapa nunca abre la selección. Si ya se estaba escuchando (o el estado quedó trabado), el toque lo
+  /// detiene para poder reintentar sin quedar bloqueado.
+  void _iniciarSeleccionDestinoPorPantalla() {
+    if (_escuchando) {
+      _voz.detenerEscucha();
+      if (mounted) setState(() => _escuchando = false);
+      return;
+    }
+    _seleccionarDestinoPorVoz();
+  }
+ 
+  // ─── INSTRUCCIONES POR VOZ (OUTPUT) ───────────────────────────────────────
+ 
+  /// Distancia tal como se dice en voz. Cerca se dice al metro (es lo que
+  /// importa para frenar a tiempo); lejos se redondea de a 5 m, porque el
+  /// error del posicionamiento BLE es de ese orden y no tiene sentido fingir
+  /// precisión.
+  String _distanciaParaVoz(double metros) {
+    if (metros < 1.5) return 'un metro';
+    if (metros < 10) return '${metros.round()} metros';
+    return '${(metros / 5).round() * 5} metros';
+  }
+
+  /// Distancia escrita en la tarjeta ("1 metro", "7 metros").
+  String _distanciaEnPantalla(double metros) {
+    final n = metros.round();
+    return n == 1 ? '1 metro' : '$n metros';
+  }
+
+  /// Indicación de guiado de ESTE instante, lista para decir: el texto
+  /// completo y la clave (la indicación sin la distancia) con la que el
+  /// filtro de voz decide si es "la misma" que la anterior. Null si todavía
+  /// no hay con qué calcularla (sin brújula, sin posición, sin destino, sin
+  /// ruta) o si ya se llegó.
+  ({String texto, String clave})? _indicacionParaVoz() {
+    final heading = _orientacion.heading;
+    if (heading == null || _posicionFinal == null || _destinoSeleccionado == null) {
+      return null;
+    }
+    // Ya llegó (a la escalera o al destino): no más indicaciones de giro.
+    if (_llegoAEscalera || _llegoADestino) return null;
+    final tramo = _tramoDeGuiado();
+    if (tramo == null) return null;
+    final indicacion = OrientacionService.calcularIndicacion(
+      headingUsuario: heading,
+      posicionUsuario: tramo.desde,
+      posicionDestino: tramo.hacia,
+      rotacionMapa: _rotacionMapaEfectiva,
+      metrosX: widget.escalaX,
+      metrosY: widget.escalaY,
+    );
+    // Los metros sólo se dicen cuando hay que AVANZAR ("Seguí derecho, 5
+    // metros"). En un giro o una vuelta se dice sólo la orden ("Girá a la
+    // derecha"): pegada a un giro, la distancia se entiende como "girá
+    // dentro de 5 metros". Se anuncia recién cuando el usuario ya quedó
+    // orientado y la indicación pasa a "Seguí derecho".
+    //
+    // La estabilidad se mide sobre la indicación (clave); la distancia se
+    // dice actualizada al momento de hablar.
+    final texto = indicacion.instruccion == 'Seguí derecho'
+        ? '${indicacion.instruccion}, ${_distanciaParaVoz(indicacion.distanciaMetros)}'
+        : indicacion.instruccion;
+    return (texto: texto, clave: indicacion.instruccion);
+  }
+
+  /// Calcula la indicación de giro actual y la manda a la voz.
+  /// Se invoca desde el loop de posicionamiento (NO desde build()) para que
+  /// hablar() no sea un efecto colateral del repintado del widget y para que
+  /// el filtro de confirmaciones de VozService reciba un ritmo estable.
+  void _actualizarInstruccionVoz() {
+    // Con un pedido de destino en curso no se dan indicaciones (ver
+    // _pedidoDesde).
+    if (_pedidoEnCurso) return;
+    final ind = _indicacionParaVoz();
+    if (ind == null) return;
+
+    if (_primeraInstruccionPendiente) {
+      // Primera indicación del destino: se espera a que exista la ruta (sin
+      // ella no hay indicación, ver _tramoDeGuiado) y se dice sin filtro. Si
+      // el motor está ocupado con otra frase, se reintenta en el próximo
+      // ciclo.
+      if (_rutaActual == null) return;
+      if (_voz.hablarInstruccionYa(ind.texto, clave: ind.clave)) {
+        _primeraInstruccionPendiente = false;
+        _indicacionRutaNuevaPendiente = false;
+      }
+      return;
+    }
+
+    if (_indicacionRutaNuevaPendiente) {
+      // La ruta cambió de fondo: sin filtro y con la prioridad de un giro
+      // (corta un "Seguí derecho" a medio decir). Si el motor está con una
+      // frase que no se corta, se reintenta en el próximo ciclo.
+      if (_voz.hablarUrgente(ind.texto, clave: ind.clave)) {
+        _indicacionRutaNuevaPendiente = false;
+      }
+      return;
+    }
+
+    _voz.hablarSiCambio(ind.texto, clave: ind.clave);
+  }
+
+  /// Tramo que hay que indicar: hacia la próxima esquina del camino pintado
+  /// (sigue las cuadrículas) y medido desde el camino mientras el usuario
+  /// esté a menos de [SeguidorRuta.toleranciaProyeccionMetros] de él (ver
+  /// [SeguidorRuta.guia] para el porqué). Null sin ruta.
+  ///
+  /// SIN RUTA NO HAY INDICACIÓN: antes se apuntaba desde la posición
+  /// directo al destino. Con un destino al que no se llega caminando eso
+  /// daba indicaciones sin sentido, a través de las paredes (ver "SIN CAMINO
+  /// HASTA EL OBJETIVO"). Y antes de la primera ruta no hace falta: se
+  /// calcula en milisegundos y su primera indicación sale sin filtro.
+  TramoGuiado? _tramoDeGuiado() {
+    final pos = _posicionFinal;
+    if (pos == null) return null;
+    final ruta = _rutaActual;
+    if (ruta != null && ruta.isNotEmpty) {
+      // La indicación se calcula desde donde el usuario ESTÁ (la posición
+      // medida más lo que avanzó mientras se la medía) y, si ya se le dijo
+      // que doble en una esquina, como si ya estuviera en ella.
+      var comprometido = _giroComprometido;
+      if (comprometido != null &&
+          DateTime.now().difference(comprometido.desde) >= _maxCompromisoGiro) {
+        comprometido = null;
+        _giroComprometido = null;
+      }
+      return SeguidorRuta.guia(
+        ruta,
+        pos,
+        _grilla,
+        avanceMetros: _avancePorAtrasoMetros,
+        comprometida: comprometido?.esquina,
+      );
+    }
+    return null;
+  }
+
+  /// ¿Esta maniobra ya se anunció (a ese nivel o más) hace poco?
+  bool _maniobraYaAnunciada(Maniobra m, int nivel, DateTime ahora) {
+    _maniobrasAnunciadas
+        .removeWhere((a) => ahora.difference(a.cuando) > _noRepetirManiobra);
+    return _maniobrasAnunciadas.any((a) =>
+        a.nivel >= nivel &&
+        a.giro == m.giro &&
+        _distanciaMetros(a.esquina, m.esquina) <= _mismaManiobraMetros);
+  }
+
+  /// Cómo se nombra lo que hay al final de la ruta, para el aviso previo de
+  /// llegada: "llegás a Kiosco", "está la escalera".
+  String _fraseFinDeRuta() {
+    if (_esTramoEntrePisos) {
+      return 'está ${_escaleraObjetivo?.medioConArticulo ?? 'la escalera'}';
+    }
+    final d = _destinoSeleccionado!;
+    return d.esEscalera ? 'está ${d.medioConArticulo}' : 'llegás a ${d.nombre}';
+  }
+
+  /// Guarda la posición filtrada del ciclo (últimos
+  /// [_ventanaAcercamientoSeg] segundos) para medir el ritmo de acercamiento.
+  void _registrarPosicion(DateTime t, Offset p) {
+    _historialPosicion.add((t: t, p: p));
+    final limiteMs = (_ventanaAcercamientoSeg * 1000).round();
+    while (_historialPosicion.length > 1 &&
+        t.difference(_historialPosicion.first.t).inMilliseconds > limiteMs) {
+      _historialPosicion.removeAt(0);
+    }
+  }
+
+  void _actualizarVelocidadAcercamiento({required bool adquiriendo}) {
+    _velocidadAcercamientoMs = _medirVelocidadAcercamiento(adquiriendo);
+  }
+
+  /// Ritmo (m/s) con el que el punto del mapa se acerca a la próxima
+  /// esquina: cuánto avanzó en los últimos [_ventanaAcercamientoSeg]
+  /// segundos a lo largo del tramo que lleva a ella. Lo que se mueve de
+  /// costado no cuenta. Ver "GIROS ANTICIPADOS".
+  ///
+  /// Se mide sobre la posición filtrada, que es continua, y no sobre la
+  /// restringida a zonas transitables, que salta de lado cuando la medición
+  /// atraviesa una zona.
+  double _medirVelocidadAcercamiento(bool adquiriendo) {
+    // Mientras la posición se acomoda (adquisición) se mueve sin que el
+    // usuario camine. Y quieto, el punto sigue un rato yendo hacia donde
+    // quedó el usuario (viene atrasado): eso tampoco es avanzar.
+    if (adquiriendo) return 0.0;
+    if (_movimiento.disponible &&
+        _movimiento.estado == EstadoMovimiento.quieto) {
+      return 0.0;
+    }
+    final ruta = _rutaActual;
+    final pos = _posicionFinal;
+    if (ruta == null || ruta.length < 2 || pos == null) return 0.0;
+    if (_historialPosicion.length < 2) return 0.0;
+    final a = _historialPosicion.first;
+    final b = _historialPosicion.last;
+    final seg = b.t.difference(a.t).inMilliseconds / 1000.0;
+    if (seg < _historiaMinimaAcercamientoSeg) return 0.0;
+
+    // Dirección del tramo en el que está el usuario, hacia su esquina.
+    final tramo = SeguidorRuta.guia(ruta, pos, _grilla);
+    final ux = (tramo.hacia.dx - tramo.desde.dx) * _grilla.metrosX;
+    final uy = (tramo.hacia.dy - tramo.desde.dy) * _grilla.metrosY;
+    final largo = sqrt(ux * ux + uy * uy);
+    if (largo < 1e-6) return 0.0;
+
+    final avance = ((b.p.dx - a.p.dx) * _grilla.metrosX * ux +
+            (b.p.dy - a.p.dy) * _grilla.metrosY * uy) /
+        largo;
+    final v = avance / seg;
+    // Por debajo del mínimo es ruido del BLE, no alguien caminando.
+    if (v < _acercamientoMinMs) return 0.0;
+    return min(v, _acercamientoMaxMs);
+  }
+
+  /// Lo próximo que hay que hacer sobre la ruta y desde qué distancia se
+  /// anuncia (ver "GIROS ANTICIPADOS" arriba). Null sin ruta o lejos de ella.
+  ///  - [falta]: distancia REAL estimada a la esquina: la medida, menos lo
+  ///    que el usuario ya avanzó y la posición todavía no muestra (el atraso).
+  ///  - [umbralGiro] / [umbralAviso]: caminando, cada aviso sale cuando al
+  ///    usuario le falta su anticipo en segundos para llegar a la esquina, al
+  ///    ritmo al que viene. Quieto no hay ritmo: se usa la distancia. Las dos
+  ///    cosas no se mezclan (antes la distancia era un piso también
+  ///    caminando, y con anticipos cortos tapaba al tiempo).
+  ///  - [piso]: el aviso previo sólo se da desde acá. Para un giro, si
+  ///    todavía falta un trecho hasta el punto donde se va a decir el giro;
+  ///    para el final de la ruta, hasta que quede a tiro del anuncio de
+  ///    llegada, que tiene su propia lógica.
+  ({
+    Maniobra maniobra,
+    double falta,
+    double umbralGiro,
+    double umbralAviso,
+    double piso,
+  })? _proximaManiobra() {
+    final ruta = _rutaActual;
+    final pos = _posicionFinal;
+    if (ruta == null || ruta.length < 2 || pos == null) return null;
+    final maniobra = SeguidorRuta.proximaManiobra(
+      ruta,
+      pos,
+      _grilla,
+      posicionFina: _posicionPermitida,
+    );
+    if (maniobra == null) return null;
+
+    final v = _velocidadAcercamientoMs;
+    final caminando = v > 0;
+    final umbralGiro = caminando
+        ? v * _ajustes.anticipoGiro.valor
+        : _ajustes.distanciaGiroQuieto.valor;
+    return (
+      maniobra: maniobra,
+      falta: max(0.0, maniobra.metros - _avancePorAtrasoMetros),
+      umbralGiro: umbralGiro,
+      umbralAviso: caminando
+          ? v * _ajustes.anticipoAviso.valor
+          : _distAvisoQuietoMetros,
+      piso: maniobra.esFinal
+          ? _radioLlegadaMetros + 0.5
+          : umbralGiro + _separacionAvisoGiroMetros,
+    );
+  }
+
+  /// true si el aviso previo o el giro de la próxima esquina, o la llegada,
+  /// tocan dentro de [segundos] al ritmo al que viene el usuario y todavía
+  /// no se dijeron. Ver "ESTÁS EN…".
+  bool _maniobraPorAnunciar(double segundos) {
+    final p = _proximaManiobra();
+    if (p == null) return false;
+    final ahora = DateTime.now();
+    final faltaLuego =
+        max(0.0, p.falta - _velocidadAcercamientoMs * segundos);
+    if (!p.maniobra.esFinal &&
+        faltaLuego <= p.umbralGiro &&
+        !_maniobraYaAnunciada(p.maniobra, 2, ahora)) {
+      return true;
+    }
+    if (faltaLuego <= p.umbralAviso &&
+        p.falta >= p.piso &&
+        !_maniobraYaAnunciada(p.maniobra, 1, ahora)) {
+      return true;
+    }
+    return p.maniobra.esFinal && faltaLuego <= p.piso;
+  }
+
+  /// Anuncia, ANTES de llegar, lo próximo que hay que hacer sobre la ruta
+  /// (ver "GIROS ANTICIPADOS" arriba). Se llama en cada ciclo de posición.
+  void _anunciarManiobras() {
+    if (_pedidoEnCurso) return;
+    if (_destinoSeleccionado == null || _llegoADestino || _llegoAEscalera) {
+      return;
+    }
+    // Primero va la primera indicación de la ruta, o la de una ruta que
+    // cambió de fondo (necesitan brújula; sin brújula no van a salir nunca,
+    // así que no se las espera).
+    if ((_primeraInstruccionPendiente || _indicacionRutaNuevaPendiente) &&
+        _orientacion.heading != null) {
+      return;
+    }
+    final proxima = _proximaManiobra();
+    if (proxima == null) return;
+    final (:maniobra, :falta, :umbralGiro, :umbralAviso, :piso) = proxima;
+
+    // Sólo si el usuario viene caminando PARA ESE LADO. Si está mirando para
+    // otro (recién dobló y todavía no se acomodó, o se dio vuelta), primero
+    // tiene que enderezarse, y de eso se ocupa la indicación común. Sin
+    // brújula no se puede saber: se anuncia igual.
+    final heading = _orientacion.heading;
+    if (heading != null) {
+      final tramo = SeguidorRuta.guia(_rutaActual!, _posicionFinal!, _grilla);
+      final ind = OrientacionService.calcularIndicacion(
+        headingUsuario: heading,
+        posicionUsuario: tramo.desde,
+        posicionDestino: tramo.hacia,
+        rotacionMapa: _rotacionMapaEfectiva,
+        metrosX: widget.escalaX,
+        metrosY: widget.escalaY,
+      );
+      if (ind.instruccion != 'Seguí derecho') return;
+    }
+
+    final ahora = DateTime.now();
+
+    // ── 2) El giro ──────────────────────────────────────────────────────────
+    if (!maniobra.esFinal && falta <= umbralGiro) {
+      if (_maniobraYaAnunciada(maniobra, 2, ahora)) return;
+      final clave = maniobra.giro == SentidoGiro.derecha
+          ? 'Girá a la derecha'
+          : 'Girá a la izquierda';
+      if (_voz.hablarUrgente(clave, clave: clave)) {
+        HapticFeedback.mediumImpact();
+        _maniobrasAnunciadas.add((
+          esquina: maniobra.esquina,
+          giro: maniobra.giro,
+          nivel: 2,
+          cuando: ahora,
+        ));
+        _giroComprometido = (esquina: maniobra.esquina, desde: ahora);
+      }
+      return;
+    }
+
+    // ── 1) El aviso previo ──────────────────────────────────────────────────
+    // Entre [piso] y [umbralAviso] (ver _proximaManiobra).
+    if (falta <= umbralAviso && falta >= piso) {
+      if (_maniobraYaAnunciada(maniobra, 1, ahora)) return;
+      final distancia = _distanciaParaVoz(falta);
+      final texto = maniobra.esFinal
+          ? 'En $distancia, ${_fraseFinDeRuta()}'
+          : 'En $distancia, girá a la '
+              '${maniobra.giro == SentidoGiro.derecha ? 'derecha' : 'izquierda'}';
+      // Se registra como "Seguí derecho": es lo que el usuario tiene que
+      // hacer hasta la esquina, y así el filtro no agrega atrás un "Seguí
+      // derecho, N metros" que diría lo mismo.
+      if (_voz.hablarInstruccionYa(texto, clave: 'Seguí derecho')) {
+        _maniobrasAnunciadas.add((
+          esquina: maniobra.esquina,
+          giro: maniobra.giro,
+          nivel: 1,
+          cuando: ahora,
+        ));
+      }
+    }
+  }
+
+  // ── ESTÁS EN… ─────────────────────────────────────────────────────────────
+  //
+  // "Estás en <punto clave>" chocaba con las indicaciones: los puntos clave
+  // suelen estar en las esquinas, y el anuncio salía justo cuando tocaba el
+  // "Girá a la izquierda", que tenía que esperarlo o lo cortaba a la mitad.
+  // Ahora las indicaciones tienen prioridad siempre:
+  //  • Se dice al final del ciclo, después de las indicaciones: si alguna
+  //    habló en el mismo ciclo, el motor está ocupado y espera.
+  //  • Guiando, tampoco arranca si una indicación toca mientras dura la
+  //    frase: la primera de la ruta, la de un cambio de fondo, una del
+  //    filtro de voz (nueva o la repetición), el aviso previo o el giro de
+  //    la próxima esquina, o la llegada. Ni mientras se orienta al llegar.
+  //  • Es una frase secundaria (VozService.hablarSecundaria): si igual llega
+  //    una indicación mientras suena, la corta enseguida.
+  // Se reintenta en cada ciclo mientras el punto clave siga coincidiendo; si
+  // el usuario ya se fue, no se dice.
+
+  void _anunciarPuntoClave() {
+    final p = _fpAnuncioPendiente;
+    if (p == null) return;
+    if (_pedidoEnCurso || _escuchando || _orientador != null) return;
+    final texto = 'Estás en ${p.etiqueta}.';
+    final guiando =
+        _destinoSeleccionado != null && !_llegoADestino && !_llegoAEscalera;
+    if (guiando && _indicacionPorSalir(_voz.duracionEstimada(texto))) return;
+    if (_voz.hablarSecundaria(texto)) {
+      _fpAnunciados[p.etiqueta] =
+          (centro: p.centro, cuando: DateTime.now(), seAlejo: false);
+      _fpAnuncioPendiente = null;
+    }
+  }
+
+  /// true si alguna indicación de guiado toca dentro de [margen] (ver
+  /// "ESTÁS EN…").
+  bool _indicacionPorSalir(Duration margen) {
+    // La primera indicación y la de un cambio de fondo necesitan brújula y
+    // ruta: sin eso no van a salir, y no se las espera.
+    if ((_primeraInstruccionPendiente || _indicacionRutaNuevaPendiente) &&
+        _orientacion.heading != null &&
+        _rutaActual != null) {
+      return true;
+    }
+    if (_voz.indicacionCerca(margen)) return true;
+    return _maniobraPorAnunciar(margen.inMilliseconds / 1000);
+  }
+
+  // ─── WIDGETS ──────────────────────────────────────────────────────────────
+ 
+  Widget _buildOrientacion() {
+    // Si la brújula no está disponible, mostrar mensaje informativo en lugar
+    // de ocultar silenciosamente el widget (el TTS ya lo anunció en _iniciarBrujula).
+    if (!_compassDisponible) {
+      return Semantics(
+        label: 'Brújula no disponible. Las instrucciones de giro pueden ser menos precisas.',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: TemaApp.fondoAdvertencia,
+            borderRadius: BorderRadius.circular(TemaApp.radiusChip),
+            border: Border.all(color: TemaApp.advertencia.withValues(alpha: 0.6), width: 1),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.compass_calibration, color: TemaApp.advertencia, size: 20),
+              const SizedBox(width: 6),
+              Text(
+                'Brújula no disponible',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: TemaApp.advertencia,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final headingRaw = _orientacion.heading;
+    if (headingRaw == null) return const SizedBox.shrink();
+
+    // _buildOrientacion muestra la dirección del dispositivo relativa al plano:
+    // restamos rotacionMapa para que "arriba en pantalla" sea el Norte del plano.
+    // Este valor compensado es el correcto para el icono y la etiqueta de texto,
+    // NO para calcularIndicacion() (que recibe el heading crudo de la brújula).
+    final heading = ((headingRaw - _rotacionMapaEfectiva) % 360 + 360) % 360;
+
+    final direccion = OrientacionService.direccionCardinal(heading);
+
+    // Item 2: Semantics con label descriptivo para TalkBack/VoiceOver.
+    return Semantics(
+      label: 'Orientación: $direccion, ${heading.toStringAsFixed(0)} grados',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: TemaApp.acentoSuave,
+          borderRadius: BorderRadius.circular(TemaApp.radiusChip),
+          border: Border.all(color: TemaApp.acento.withValues(alpha: 0.4), width: 1),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Bug 3 fix: usar siempre Icons.navigation (flecha arriba) y rotar
+            // heading/360 en sentido HORARIO (positivo). Antes se usaba -heading
+            // (antihorario) + ícono variable, que daba dirección opuesta/aleatoria.
+            AnimatedRotation(
+              turns: heading / 360,
+              duration: const Duration(milliseconds: 250),
+              // Item 9: ícono de brújula 28 px.
+              child: const Icon(Icons.navigation, color: TemaApp.acento, size: 24),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              direccion,
+              style: const TextStyle(
+                // Item 9: texto de dirección 18 sp.
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: TemaApp.acento,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              '${heading.toStringAsFixed(0)}°',
+              style: const TextStyle(
+                // Item 9: grados 16 sp (piso absoluto).
+                fontSize: 13,
+                color: TemaApp.textoSecundario,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+ 
+  /// Tarjeta fija para los estados de llegada (escalera / destino).
+  /// [anunciar]: si el lector de pantalla la lee sola al cambiar. No en la
+  /// orientación, donde cambia mientras gira y ya habla la voz.
+  Widget _buildTarjetaEstado({
+    required IconData icono,
+    required String titulo,
+    required String subtitulo,
+    required Color acento,
+    bool anunciar = true,
+  }) {
+    return Semantics(
+      liveRegion: anunciar,
+      label: '$titulo. $subtitulo',
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        decoration: BoxDecoration(
+          color: TemaApp.fondoCard,
+          borderRadius: BorderRadius.circular(TemaApp.radiusCard),
+          border: Border.all(color: acento.withValues(alpha: 0.6), width: 1.5),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 56, height: 56,
+              decoration: BoxDecoration(
+                color: acento.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icono, color: acento, size: 36),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    titulo,
+                    style: const TextStyle(
+                      color: TemaApp.textoBlanco,
+                      fontSize: TemaApp.spInstruccion,
+                      fontWeight: FontWeight.w800,
+                      height: 1.1,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitulo,
+                    style: TextStyle(
+                      color: acento.withValues(alpha: 0.9),
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Tarjeta mientras se orienta al usuario hacia el lugar al llegar: cuánto
+  /// le falta girar, con la brújula del momento.
+  Widget _buildTarjetaOrientacion(OrientadorLlegada orientador) {
+    final heading = _orientacion.heading;
+    final giro = heading == null
+        ? null
+        : OrientacionService.diferenciaAngular(
+            orientador.rumboObjetivo, heading);
+    final deFrente =
+        giro != null && giro.abs() <= OrientadorLlegada.toleranciaGrados;
+    final nombre = _llegoAEscalera
+        ? (_escaleraObjetivo?.medioConArticulo ?? 'la escalera')
+        : (_destinoSeleccionado?.nombre ?? '');
+    return _buildTarjetaEstado(
+      icono: giro == null || deFrente
+          ? Icons.arrow_upward_rounded
+          : giro.abs() >= OrientadorLlegada.vueltaGrados
+              ? Icons.u_turn_left_rounded
+              : giro > 0
+                  ? Icons.turn_right_rounded
+                  : Icons.turn_left_rounded,
+      titulo: giro == null
+          ? 'Buscando la dirección'
+          : deFrente
+              ? 'De frente'
+              : OrientadorLlegada.textoGiro(giro),
+      subtitulo: 'Hacia $nombre',
+      acento: TemaApp.instruccionAccent,
+      anunciar: false,
+    );
+  }
+
+  Widget _buildIndicacionGiro() {
+    final orientador = _orientador;
+    if (orientador != null) return _buildTarjetaOrientacion(orientador);
+    if (_llegoADestino && _destinoSeleccionado != null) {
+      return _buildTarjetaEstado(
+        icono: Icons.flag_rounded,
+        titulo: 'Llegaste',
+        subtitulo: _destinoSeleccionado!.nombre,
+        acento: TemaApp.instruccionAccent,
+      );
+    }
+    if (_llegoAEscalera) {
+      final sig = _siguientePisoNumero;
+      final enAscensor = _escaleraObjetivo?.esAscensor ?? false;
+      return _buildTarjetaEstado(
+        icono: enAscensor ? Icons.elevator_rounded : Icons.stairs_rounded,
+        titulo: '${_subiendo ? 'Subí' : 'Bajá'} '
+            '${enAscensor ? 'por el ascensor' : 'la escalera'}'
+            '${sig != null ? ' a ${PisoUtil.nombre(sig)}' : ''}',
+        subtitulo: 'Al llegar, mantené apretada la pantalla',
+        acento: Colors.orange,
+      );
+    }
+
+    final heading = _orientacion.heading;
+    final tramo = _destinoSeleccionado == null ? null : _tramoDeGuiado();
+    if (heading == null || tramo == null) {
+      return const SizedBox.shrink();
+    }
+ 
+    final indicacion = OrientacionService.calcularIndicacion(
+      headingUsuario: heading,
+      posicionUsuario: tramo.desde,
+      posicionDestino: tramo.hacia,
+      rotacionMapa: _rotacionMapaEfectiva,
+      metrosX: widget.escalaX,
+      metrosY: widget.escalaY,
+    );
+
+    // La instrucción por voz se dispara en _actualizarInstruccionVoz() desde el
+    // loop de posicionamiento, no acá: build() debe ser libre de efectos.
+
+    // Item 2: Semantics con descripción completa para lectores de pantalla.
+    return Semantics(
+      label: '${indicacion.instruccion}, ${_distanciaEnPantalla(indicacion.distanciaMetros)}',
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        decoration: BoxDecoration(
+          color: TemaApp.instruccion,
+          borderRadius: BorderRadius.circular(TemaApp.radiusCard),
+          border: Border.all(color: TemaApp.instruccionAccent.withValues(alpha: 0.4), width: 1),
+          boxShadow: [
+            BoxShadow(
+              color: TemaApp.instruccionAccent.withValues(alpha: 0.15),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 56, height: 56,
+              decoration: BoxDecoration(
+                color: TemaApp.instruccionAccent.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(
+                indicacion.instruccion == 'Seguí derecho'
+                    ? Icons.arrow_upward_rounded
+                    : indicacion.instruccion == 'Date la vuelta'
+                        ? Icons.u_turn_left_rounded
+                        : indicacion.giroNecesario > 0
+                            ? Icons.turn_right_rounded
+                            : Icons.turn_left_rounded,
+                color: TemaApp.instruccionAccent,
+                size: 36,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    indicacion.instruccion,
+                    style: const TextStyle(
+                      color: TemaApp.textoBlanco,
+                      fontSize: TemaApp.spInstruccion,
+                      fontWeight: FontWeight.w800,
+                      height: 1.1,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _distanciaEnPantalla(indicacion.distanciaMetros),
+                    style: TextStyle(
+                      color: TemaApp.instruccionAccent.withValues(alpha: 0.85),
+                      fontSize: TemaApp.spDistancia,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+ 
+  // ─── MAPA DESPLAZABLE ─────────────────────────────────────────────────────
+
+  /// Tamaño del plano a zoom 1.
+  ///
+  /// El plano mide metrosX × metrosY a [_pixelesPorMetro] (proporción real:
+  /// las celdas de 1 m quedan cuadradas). Si a esa escala no llena la
+  /// [pantalla], se agranda hasta llenarla. Se usa el tamaño de la PANTALLA y
+  /// no el del recuadro del mapa porque el recuadro cambia de alto cuando
+  /// aparecen o desaparecen la tarjeta de giro o el aviso de "buscando
+  /// ubicación", y eso cambiaría la escala del plano.
+  Size _calcularTamPlano(Size pantalla, GrillaNav grilla) {
+    final mx = grilla.metrosX > 0 ? grilla.metrosX : 1.0;
+    final my = grilla.metrosY > 0 ? grilla.metrosY : 1.0;
+    final llenarPantalla = min(pantalla.width / mx, pantalla.height / my);
+    final ppm = max(_pixelesPorMetro, llenarPantalla);
+    return Size(mx * ppm, my * ppm);
+  }
+
+  /// Zoom mínimo: el plano entero entra en el recuadro.
+  double _zoomMinimo(Size viewport, Size plano) =>
+      min(viewport.width / plano.width, viewport.height / plano.height);
+
+  // ── LÍMITES DE LA VISTA ──
+  //
+  // El plano tiene bordes (no es un mapa infinito como Google Maps), así que
+  // la vista nunca muestra afuera del plano. Se decide EJE POR EJE:
+  //  - si en ese eje el plano (con el zoom actual) es más grande que el
+  //    recuadro, el borde del plano no puede despegarse del borde del
+  //    recuadro: cuando el usuario se acerca a un borde y ese lado ya se ve
+  //    entero, la vista deja de centrarlo en esa dirección. Si se aleja del
+  //    borde, hacia donde todavía queda plano por ver, vuelve a centrarlo;
+  //  - si en ese eje el plano entra entero, queda centrado en ese eje.
+  //
+  // La misma regla vale para el seguimiento automático, el botón de centrar
+  // y el arrastre a mano (ver _corregirVista), así se comportan igual.
+
+  /// Traslación permitida en un eje. [t] = traslación pedida, [vista] = largo
+  /// del recuadro, [plano] = largo del plano ya multiplicado por el zoom.
+  double _limitarEje(double t, double vista, double plano) {
+    if (plano <= vista) return (vista - plano) / 2;
+    return t.clamp(vista - plano, 0.0).toDouble();
+  }
+
+  /// Se llama cada vez que cambia la vista (dedo, inercia, cámara). Si la
+  /// vista quedó mostrando afuera del plano, la corrige. El InteractiveViewer
+  /// no limita nada por su cuenta (boundaryMargin infinito): su límite propio
+  /// deja el plano pegado arriba a la izquierda cuando entra entero en un eje.
+  void _corregirVista() {
+    final viewport = _viewportMapa;
+    final plano = _tamPlano;
+    if (viewport == null || plano == null) return;
+    final m = _transformMapa.value;
+    final zoom = m.getMaxScaleOnAxis();
+    if (zoom <= 0) return;
+    final t = m.getTranslation();
+    final tx = _limitarEje(t.x, viewport.width, plano.width * zoom);
+    final ty = _limitarEje(t.y, viewport.height, plano.height * zoom);
+    // Sólo se reescribe si hace falta: escribir el valor vuelve a disparar
+    // este mismo listener, y con la vista ya válida no hace nada.
+    if ((tx - t.x).abs() < 0.01 && (ty - t.y).abs() < 0.01) return;
+    _transformMapa.value = m.clone()
+      ..setEntry(0, 3, tx)
+      ..setEntry(1, 3, ty);
+  }
+
+  /// La persona arrastró o hizo zoom: el mapa deja de seguirla y la cámara
+  /// suelta el control (si no, pelearía con el dedo).
+  void _dejarDeSeguir() {
+    _detenerCamara();
+    if (_seguirUsuario && mounted) setState(() => _seguirUsuario = false);
+  }
+
+  /// Zoom de la escala base: [_pixelesPorMetro] en pantalla, salvo que a esa
+  /// escala el plano entero entre en el recuadro: ahí, el que lo llena.
+  ///
+  /// ANTES era siempre zoom 1. Pero en un piso chico el plano se agranda
+  /// hasta llenar la PANTALLA ([_calcularTamPlano]), y el recuadro del mapa
+  /// es más chico que la pantalla (barra de arriba, márgenes, avisos). A zoom
+  /// 1 el plano quedaba un poco más grande que el recuadro: al llegar la
+  /// primera posición la vista pasaba del plano entero y centrado a uno
+  /// recortado y corrido hacia un costado.
+  double _zoomEscalaBase(Size viewport, Size plano) {
+    final mx = _grilla.metrosX > 0 ? _grilla.metrosX : 1.0;
+    final pixelesPorMetroPlano = plano.width / mx;
+    return max(
+      _pixelesPorMetro / pixelesPorMetroPlano,
+      _zoomMinimo(viewport, plano),
+    );
+  }
+
+  /// Centra el mapa en la posición del usuario. Conserva el zoom, salvo que
+  /// esté más alejado que la escala base ([_zoomEscalaBase]): ahí vuelve a
+  /// ella.
+  void _centrarEnUsuario({bool animado = true}) {
+    // Mirando otro piso el usuario no está en ese plano: no hay qué centrar.
+    if (_otroPiso != null) return;
+    final pos = _posicionFinal;
+    final viewport = _viewportMapa;
+    final plano = _tamPlano;
+    if (pos == null || viewport == null || plano == null) return;
+    // Si la cámara ya va hacia un zoom, se respeta ese y no el de este frame
+    // (que está a mitad de camino).
+    final zoomActual = _camaraZoomObjetivo ?? _transformMapa.value.getMaxScaleOnAxis();
+    final zoom = max(zoomActual, _zoomEscalaBase(viewport, plano))
+        .clamp(_zoomMinimo(viewport, plano), _zoomMaximo)
+        .toDouble();
+    final punto = Offset(pos.dx * plano.width, pos.dy * plano.height);
+    _moverVistaA(punto, zoom, animado: animado);
+  }
+
+  /// Muestra el plano entero, centrado.
+  void _verMapaCompleto({bool animado = false}) {
+    final viewport = _viewportMapa;
+    final plano = _tamPlano;
+    if (viewport == null || plano == null) return;
+    _moverVistaA(
+      Offset(plano.width / 2, plano.height / 2),
+      _zoomMinimo(viewport, plano),
+      animado: animado,
+    );
+  }
+
+  /// Lleva la cámara a [punto] (coordenadas del plano, a zoom 1) con el
+  /// [zoom] pedido. Animado: sólo fija el objetivo y el resorte la lleva.
+  void _moverVistaA(Offset punto, double zoom, {required bool animado}) {
+    if (!animado) {
+      _detenerCamara();
+      _aplicarVista(punto, zoom);
+      return;
+    }
+    // Si la cámara estaba quieta, arranca desde lo que se ve ahora.
+    if (_camaraFoco == null || _camaraZoom == null) {
+      final actual = _vistaActual();
+      if (actual == null) return;
+      _camaraFoco = actual.foco;
+      _camaraZoom = actual.zoom;
+    }
+    _camaraFocoObjetivo = punto;
+    _camaraZoomObjetivo = zoom;
+    if (!_tickerCamara.isActive) {
+      _ultimoTickCamara = null;
+      _tickerCamara.start();
+    }
+  }
+
+  /// Un frame del resorte: recorre la fracción 1 − e^(−dt/τ) de lo que falta.
+  /// Usa el dt real del frame, así se mueve igual a 60 Hz que a 120 Hz o si
+  /// se saltea algún frame.
+  void _onTickCamara(Duration transcurrido) {
+    final foco = _camaraFoco;
+    final zoom = _camaraZoom;
+    final focoObj = _camaraFocoObjetivo;
+    final zoomObj = _camaraZoomObjetivo;
+    if (foco == null || zoom == null || focoObj == null || zoomObj == null) {
+      _detenerCamara();
+      return;
+    }
+    final previo = _ultimoTickCamara;
+    _ultimoTickCamara = transcurrido;
+    final dt = previo == null
+        ? 1 / 60
+        : ((transcurrido - previo).inMicroseconds / 1e6)
+            .clamp(0.0, 0.1)
+            .toDouble();
+    final k = 1 - exp(-dt / _tauCamaraSeg);
+
+    final nuevoFoco = Offset.lerp(foco, focoObj, k)!;
+    final nuevoZoom = zoom + (zoomObj - zoom) * k;
+
+    // ¿Llegó? (menos de medio píxel en pantalla y zoom prácticamente igual)
+    final faltaPx = (focoObj - nuevoFoco).distance * nuevoZoom;
+    final faltaZoom = (zoomObj - nuevoZoom).abs();
+    if (faltaPx < 0.5 && faltaZoom < 0.002) {
+      _aplicarVista(focoObj, zoomObj);
+      _detenerCamara();
+      return;
+    }
+    _camaraFoco = nuevoFoco;
+    _camaraZoom = nuevoZoom;
+    _aplicarVista(nuevoFoco, nuevoZoom);
+  }
+
+  void _detenerCamara() {
+    if (_tickerCamara.isActive) _tickerCamara.stop();
+    _ultimoTickCamara = null;
+    _camaraFoco = null;
+    _camaraZoom = null;
+    _camaraFocoObjetivo = null;
+    _camaraZoomObjetivo = null;
+  }
+
+  /// Punto del plano que hoy está en el centro de la vista, y el zoom.
+  ({Offset foco, double zoom})? _vistaActual() {
+    final viewport = _viewportMapa;
+    if (viewport == null) return null;
+    final m = _transformMapa.value;
+    final zoom = m.getMaxScaleOnAxis();
+    if (zoom <= 0) return null;
+    final t = m.getTranslation();
+    return (
+      foco: Offset(
+        (viewport.width / 2 - t.x) / zoom,
+        (viewport.height / 2 - t.y) / zoom,
+      ),
+      zoom: zoom,
+    );
+  }
+
+  /// Pone [punto] (coordenadas del plano a zoom 1) en el centro de la vista
+  /// con [zoom], respetando los límites de la vista (ver _limitarEje): cerca
+  /// de un borde el punto queda corrido del centro en vez de mostrar negro.
+  void _aplicarVista(Offset punto, double zoom) {
+    final viewport = _viewportMapa;
+    final plano = _tamPlano;
+    if (viewport == null || plano == null) return;
+    final tx = _limitarEje(
+        viewport.width / 2 - zoom * punto.dx, viewport.width, plano.width * zoom);
+    final ty = _limitarEje(viewport.height / 2 - zoom * punto.dy,
+        viewport.height, plano.height * zoom);
+    // Matriz armada a mano (escala + traslación): evita Matrix4.translate y
+    // Matrix4.scale, que figuran como obsoletos en las versiones nuevas.
+    _transformMapa.value = Matrix4.identity()
+      ..setEntry(0, 0, zoom)
+      ..setEntry(1, 1, zoom)
+      ..setEntry(0, 3, tx)
+      ..setEntry(1, 3, ty);
+  }
+
+  /// Botón redondo sobre el mapa para volver a centrarlo en el usuario y
+  /// reactivar el seguimiento. Se resalta (relleno de color) cuando el mapa
+  /// NO está siguiendo al usuario, que es cuando hace falta.
+  ///
+  /// Mirando otro piso, el mismo botón vuelve al piso del usuario.
+  Widget _buildBotonCentrar() {
+    final enOtroPiso = _otroPiso != null;
+    final siguiendo = _seguirUsuario && !enOtroPiso;
+    return Semantics(
+      button: true,
+      label: enOtroPiso
+          ? 'Volver a tu piso'
+          : 'Centrar el mapa en tu ubicación',
+      child: Material(
+        color: siguiendo ? TemaApp.fondoCard : TemaApp.acento,
+        shape: CircleBorder(
+          side: BorderSide(
+            color: TemaApp.acento.withValues(alpha: 0.6),
+            width: 1.5,
+          ),
+        ),
+        elevation: 4,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () {
+            if (enOtroPiso) {
+              _volverAMiPiso();
+              return;
+            }
+            setState(() => _seguirUsuario = true);
+            if (_posicionFinal != null) {
+              _centrarEnUsuario();
+            } else {
+              // Todavía sin ubicación: se muestra el plano entero y, apenas
+              // haya posición, el seguimiento lo centra solo.
+              _verMapaCompleto(animado: true);
+            }
+          },
+          child: SizedBox(
+            width: TemaApp.targetTactil,
+            height: TemaApp.targetTactil,
+            child: Icon(
+              siguiendo
+                  ? Icons.my_location_rounded
+                  : Icons.location_searching_rounded,
+              color: siguiendo ? TemaApp.acento : TemaApp.fondo,
+              size: 28,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ─── VER OTROS PISOS ──────────────────────────────────────────────────────
+
+  /// Muestra en el mapa el piso [piso] (sólo para mirar).
+  Future<void> _verPiso(PisoInfo piso) async {
+    if (piso.id == widget.pisoId) {
+      _volverAMiPiso();
+      return;
+    }
+    if (_otroPiso?.info.id == piso.id) return;
+    _pisoCargando = piso.id;
+    final vista = _cachePisos[piso.id] ?? await _leerVistaPiso(piso);
+    // Se descarta si mientras tanto se tocó otro piso o se eligió destino.
+    if (!mounted || vista == null || _pisoCargando != piso.id) return;
+    _pisoCargando = null;
+    _cachePisos[piso.id] = vista;
+    _detenerCamara();
+    setState(() {
+      _otroPiso = vista;
+      _seguirUsuario = false;
+      // El LayoutBuilder del mapa arma la vista inicial del piso nuevo
+      // (el plano entero) en el próximo frame.
+      _vistaMapaInicializada = false;
+    });
+  }
+
+  /// Vuelve a mostrar el piso del usuario, centrado en él.
+  void _volverAMiPiso() {
+    _pisoCargando = null;
+    if (_otroPiso == null) return;
+    _detenerCamara();
+    setState(() {
+      _otroPiso = null;
+      _seguirUsuario = true;
+      _vistaMapaInicializada = false;
+    });
+  }
+
+  /// Lee de la base lo que hace falta para DIBUJAR un piso. Null si falla.
+  Future<_VistaPiso?> _leerVistaPiso(PisoInfo piso) async {
+    try {
+      final beacons =
+          await DatabaseHelper.instance.obtenerBeaconsPorPiso(piso.id);
+      final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(piso.id);
+      final lugares =
+          await DatabaseHelper.instance.obtenerLugaresPorPiso(piso.id);
+      return _VistaPiso(
+        info: piso,
+        grilla: GrillaNav(
+          metrosX: piso.escalaX,
+          metrosY: piso.escalaY,
+          tamCeldaMetros: piso.tamCeldaMetros,
+        ),
+        beacons: {for (final b in beacons) b.mac: b},
+        zonas: zonas,
+        lugares: lugares,
+      );
+    } catch (e) {
+      debugPrint('[Ver piso] No se pudo cargar ${piso.nombreVisible}: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo abrir ${piso.nombreVisible}')),
+        );
+      }
+      return null;
+    }
+  }
+
+  /// Fila de botones de piso. Sólo sin destino elegido y si el edificio
+  /// tiene más de un piso descargado. El piso del usuario lleva el ícono de
+  /// ubicación; el que se está viendo va relleno.
+  Widget _buildSelectorPisos() {
+    final pisos = _pisosEdificio.values.toList();
+    final vistoId = _otroPiso?.info.id ?? widget.pisoId;
+    return Container(
+      height: 60,
+      decoration: const BoxDecoration(
+        color: TemaApp.fondoCard,
+        border: Border(bottom: BorderSide(color: Color(0xFF21262D))),
+      ),
+      child: Row(
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(left: 14, right: 6),
+            child: Icon(Icons.layers_rounded,
+                color: TemaApp.textoSecundario, size: 22),
+          ),
+          Expanded(
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(4, 8, 12, 8),
+              itemCount: pisos.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, i) {
+                final p = pisos[i];
+                final esMio = p.id == widget.pisoId;
+                final visto = p.id == vistoId;
+                final etiqueta = p.numero != null
+                    ? PisoUtil.etiquetaCorta(p.numero!)
+                    : p.nombre;
+                final colorTexto =
+                    visto ? TemaApp.fondo : TemaApp.textoBlanco;
+                return Semantics(
+                  button: true,
+                  selected: visto,
+                  label: 'Ver ${p.nombreVisible}${esMio ? ', tu piso' : ''}',
+                  excludeSemantics: true,
+                  child: Material(
+                    color: visto ? TemaApp.acento : TemaApp.fondoSurface,
+                    borderRadius: BorderRadius.circular(12),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => _verPiso(p),
+                      child: Container(
+                        constraints: const BoxConstraints(minWidth: 52),
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        alignment: Alignment.center,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (esMio) ...[
+                              Icon(Icons.my_location_rounded,
+                                  size: 16,
+                                  color: visto ? TemaApp.fondo : TemaApp.acento),
+                              const SizedBox(width: 6),
+                            ],
+                            Text(
+                              etiqueta,
+                              style: TextStyle(
+                                color: colorTexto,
+                                fontSize: 17,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Cartel sobre el mapa mientras se mira otro piso, para que quede claro
+  /// que no es donde está el usuario.
+  Widget _buildCartelOtroPiso(_VistaPiso vista) {
+    final mio = _pisosEdificio[widget.pisoId]?.nombreVisible;
+    return Semantics(
+      liveRegion: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: TemaApp.fondoCard.withValues(alpha: 0.92),
+          borderRadius: BorderRadius.circular(TemaApp.radiusButton),
+          border: Border.all(color: TemaApp.advertencia.withValues(alpha: 0.7)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.visibility_rounded,
+                color: TemaApp.advertencia, size: 18),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                'Viendo ${vista.info.nombreVisible}'
+                '${mio != null ? ' · estás en $mio' : ''}',
+                style: const TextStyle(
+                  color: TemaApp.textoBlanco,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBarraMicrofono() {
+    final bool escuchando = _escuchando;
+    return Semantics(
+      label: escuchando ? 'Escuchando, hablá ahora' : 'Tocá aquí y decí el destino',
+      button: true,
+      child: GestureDetector(
+        onTap: escuchando ? null : _seleccionarDestinoPorVoz,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          width: double.infinity,
+          height: 100,
+          decoration: BoxDecoration(
+            color: escuchando
+                ? const Color(0xFF1A0A00)
+                : TemaApp.fondoCard,
+            border: Border(
+              top: BorderSide(
+                color: escuchando ? TemaApp.advertencia : TemaApp.acento,
+                width: 2,
+              ),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: escuchando
+                      ? TemaApp.advertencia.withValues(alpha: 0.15)
+                      : TemaApp.acento.withValues(alpha: 0.12),
+                  border: Border.all(
+                    color: escuchando ? TemaApp.advertencia : TemaApp.acento,
+                    width: 2,
+                  ),
+                ),
+                child: Icon(
+                  escuchando ? Icons.hearing_rounded : Icons.mic_rounded,
+                  color: escuchando ? TemaApp.advertencia : TemaApp.acento,
+                  size: 30,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    escuchando ? 'Escuchando...' : 'TOCÁ Y HABLÁ',
+                    style: TextStyle(
+                      color: escuchando ? TemaApp.advertencia : TemaApp.acento,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                  Text(
+                    escuchando
+                        ? 'Decí el nombre del lugar'
+                        : _esTramoEntrePisos
+                            ? 'Mantené apretado para cambiar de piso'
+                            : 'Tocá en cualquier parte de la pantalla',
+                    style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 14),
+                  ),
+                ],
+              ),
+              if (escuchando) ...[
+                const SizedBox(width: 16),
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    color: TemaApp.advertencia,
+                    strokeWidth: 2.5,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+ 
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      data: TemaApp.tema,
+      child: Scaffold(
+        backgroundColor: TemaApp.fondo,
+        appBar: AppBar(
+          backgroundColor: TemaApp.fondoCard,
+          foregroundColor: TemaApp.textoBlanco,
+          elevation: 0,
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(1),
+            child: Container(height: 1, color: const Color(0xFF21262D)),
+          ),
+          title: Row(
+            children: [
+              Container(
+                width: 8, height: 8,
+                decoration: BoxDecoration(
+                  color: TemaApp.acento,
+                  shape: BoxShape.circle,
+                  boxShadow: [BoxShadow(color: TemaApp.acento.withValues(alpha: 0.6), blurRadius: 8, spreadRadius: 1)],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                _nombrePiso ?? 'Navegación',
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: TemaApp.textoBlanco),
+              ),
+            ],
+          ),
+          actions: [
+            // Sólo en la app del admin: regular los ajustes del edificio
+            // caminando (ver AjustesNavegacion). El usuario no los cambia.
+            if (EntornoApp.esAdmin)
+              Semantics(
+                label: 'Ajustes de navegación',
+                button: true,
+                child: SizedBox(
+                  width: TemaApp.targetTactil,
+                  height: TemaApp.targetTactil,
+                  child: IconButton(
+                    icon: const Icon(Icons.tune_rounded, color: TemaApp.textoSecundario),
+                    tooltip: 'Ajustes de navegación',
+                    onPressed: () => mostrarPanelAjustesNavegacion(context),
+                  ),
+                ),
+              ),
+            if (_destinoSeleccionado != null)
+              Semantics(
+                label: 'Cancelar navegación',
+                button: true,
+                child: SizedBox(
+                  width: TemaApp.targetTactil,
+                  height: TemaApp.targetTactil,
+                  child: IconButton(
+                    icon: const Icon(Icons.close_rounded, color: TemaApp.textoSecundario),
+                    tooltip: 'Cancelar navegación',
+                    onPressed: _cancelarNavegacion,
+                  ),
+                ),
+              ),
+          ],
+        ),
+
+        body: Semantics(
+          label: 'Tocá en cualquier parte de la pantalla para elegir tu destino por voz',
+          onLongPressHint: 'cambiar de piso',
+          explicitChildNodes: true,
+          // Dos gestos sobre toda la pantalla:
+          //  - toque corto  → elegir destino por voz (como siempre);
+          //  - mantener ~1 s → cambiar de piso (salto al piso siguiente).
+          // Se usa RawGestureDetector para poder fijar la duración del
+          // mantener: la de GestureDetector (0.5 s) es demasiado corta y un
+          // toque apoyado sin querer podría cargar otro piso.
+          //
+          // CONVIVENCIA CON EL MAPA DESPLAZABLE: ninguno de los dos gestos
+          // choca con arrastrar o hacer zoom. Si el dedo se mueve más de unos
+          // pocos píxeles antes de que pase el segundo, Flutter descarta el
+          // toque y el mantener, y el movimiento queda para el mapa.
+          // Se descartó el doble toque para cambiar de piso por dos motivos:
+          // obliga a que cada toque simple espere ~0,3 s (por si viene un
+          // segundo toque) y con TalkBack el doble toque lo usa el lector.
+          // El mantener, con TalkBack, es "doble toque sostenido".
+          child: RawGestureDetector(
+            // translucent deja pasar los eventos a los hijos (mapa, botones,
+            // barra de micrófono), que capturan sus propios toques y gestos.
+            behavior: HitTestBehavior.translucent,
+            gestures: <Type, GestureRecognizerFactory>{
+              TapGestureRecognizer:
+                  GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+                () => TapGestureRecognizer(),
+                (r) => r.onTap = _iniciarSeleccionDestinoPorPantalla,
+              ),
+              LongPressGestureRecognizer: GestureRecognizerFactoryWithHandlers<
+                  LongPressGestureRecognizer>(
+                () => LongPressGestureRecognizer(duration: _duracionMantener),
+                (r) => r.onLongPress = _cambiarDePiso,
+              ),
+            },
+            child: Column(
+              children: [
+            // Panel de destino + brújula
+            Container(
+              padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+              decoration: BoxDecoration(
+                color: TemaApp.fondoCard,
+                border: const Border(bottom: BorderSide(color: Color(0xFF21262D))),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _destinoSeleccionado != null
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.place_rounded, color: TemaApp.poi, size: 20),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      _esTramoEntrePisos &&
+                                              _numeroPisoDe(_destinoSeleccionado!) != null
+                                          ? '${_destinoSeleccionado!.nombre} · '
+                                              '${PisoUtil.nombre(_numeroPisoDe(_destinoSeleccionado!)!)}'
+                                          : _destinoSeleccionado!.nombre,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 17,
+                                        color: TemaApp.textoBlanco,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (_estadoRuta.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 2, left: 26),
+                                  child: Text(
+                                    _estadoRuta,
+                                    style: const TextStyle(fontSize: 13, color: TemaApp.textoSecundario),
+                                  ),
+                                ),
+                            ],
+                          )
+                        : Text(
+                            'Tocá la pantalla para elegir destino',
+                            style: TextStyle(fontSize: 15, color: TemaApp.textoSecundario),
+                          ),
+                  ),
+                  const SizedBox(width: 8),
+                  _buildOrientacion(),
+                  Semantics(
+                    label: _destinoSeleccionado != null ? 'Cambiar destino' : 'Seleccionar destino desde lista',
+                    button: true,
+                    child: SizedBox(
+                      width: TemaApp.targetTactil,
+                      height: TemaApp.targetTactil,
+                      child: IconButton(
+                        icon: Icon(
+                          _destinoSeleccionado != null ? Icons.edit_location_alt_rounded : Icons.format_list_bulleted_rounded,
+                          color: TemaApp.acento,
+                          size: 28,
+                        ),
+                        tooltip: 'Seleccionar destino desde lista',
+                        onPressed: _seleccionarDestinoLista,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Selector de piso para mirar otros pisos (sólo sin destino).
+            if (_destinoSeleccionado == null && _pisosEdificio.length > 1)
+              _buildSelectorPisos(),
+
+            // Indicacion de giro
+            if (_destinoSeleccionado != null) _buildIndicacionGiro(),
+
+            // Banner buscando ubicación
+            if (_posicionFinal == null && _escaneando)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                color: TemaApp.acentoSuave,
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 20, height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        color: TemaApp.acento,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      'Buscando tu ubicación...',
+                      style: const TextStyle(fontSize: 15, color: TemaApp.acento, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+
+            // Mapa
+            Expanded(
+              child: Container(
+                margin: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF21262D), width: 1),
+                ),
+                clipBehavior: Clip.antiAlias,
+                // Mapa desplazable: escala fija + zoom/arrastre (ver
+                // _pixelesPorMetro). Arrastrar no compite con el toque de
+                // toda la pantalla: si el dedo se mueve, no cuenta como toque.
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final viewport =
+                        Size(constraints.maxWidth, constraints.maxHeight);
+                    // Piso que se dibuja: el del usuario, o el que se está
+                    // mirando con el selector de pisos.
+                    final otro = _otroPiso;
+                    final grillaVista = otro?.grilla ?? _grilla;
+                    final plano = _calcularTamPlano(
+                        MediaQuery.sizeOf(context), grillaVista);
+                    // Si el recuadro cambió de tamaño (aparece o se va la
+                    // tarjeta de giro, el aviso de "buscando ubicación"...),
+                    // se revisan los límites con el tamaño nuevo.
+                    final cambioTamano =
+                        _viewportMapa != viewport || _tamPlano != plano;
+                    _viewportMapa = viewport;
+                    _tamPlano = plano;
+                    if (cambioTamano && _vistaMapaInicializada) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) _corregirVista();
+                      });
+                    }
+
+                    // Vista inicial (al abrir y al cambiar de piso mirado):
+                    // centrada en el usuario si ya se lo ubicó y es su piso;
+                    // si no, el plano entero.
+                    if (!_vistaMapaInicializada) {
+                      _vistaMapaInicializada = true;
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (!mounted) return;
+                        if (_posicionFinal != null && _otroPiso == null) {
+                          _centrarEnUsuario(animado: false);
+                        } else {
+                          _verMapaCompleto();
+                        }
+                      });
+                    }
+
+                    return Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        InteractiveViewer(
+                          transformationController: _transformMapa,
+                          constrained: false,
+                          minScale: _zoomMinimo(viewport, plano),
+                          maxScale: _zoomMaximo,
+                          // Sin límite propio: los bordes los pone
+                          // _corregirVista (ver "LÍMITES DE LA VISTA").
+                          boundaryMargin:
+                              const EdgeInsets.all(double.infinity),
+                          onInteractionStart: (_) => _dejarDeSeguir(),
+                          // RepaintBoundary: mientras la cámara se mueve sólo
+                          // cambia la matriz de la vista; el plano, la grilla
+                          // y los marcadores ya pintados se reusan tal cual
+                          // en cada frame en vez de volver a dibujarse.
+                          child: RepaintBoundary(
+                            child: SizedBox(
+                              width: plano.width,
+                              height: plano.height,
+                              child: MapaWidget(
+                                // Una clave por piso: al cambiar de piso se
+                                // arma un mapa nuevo en vez de reciclar el
+                                // anterior con la imagen de otro.
+                                key: ValueKey(otro?.info.id ?? widget.pisoId),
+                                rutaImagen:
+                                    otro?.info.rutaImagen ?? widget.rutaImagen,
+                                beacons: otro?.beacons ?? _beaconsEnElMapa,
+                                zonas: otro?.zonas ?? _zonas,
+                                lugares: otro?.lugares ?? _lugares,
+                                // En otro piso no se dibuja al usuario ni la
+                                // ruta: no está ahí.
+                                posicionUsuario:
+                                    otro == null ? _posicionFinal : null,
+                                modoEdicion: false,
+                                mostrarGrilla: true,
+                                grilla: grillaVista,
+                                ruta: otro == null ? _rutaActual : null,
+                                headingUsuario: otro == null &&
+                                        _orientacion.heading != null
+                                    ? ((_orientacion.heading! -
+                                                    _rotacionMapaEfectiva) %
+                                                360 +
+                                            360) %
+                                        360
+                                    : null,
+                              ),
+                            ),
+                          ),
+                        ),
+                        if (otro != null)
+                          Positioned(
+                            top: 10,
+                            left: 10,
+                            right: 10,
+                            child: Align(
+                              alignment: Alignment.topLeft,
+                              child: _buildCartelOtroPiso(otro),
+                            ),
+                          ),
+                        Positioned(
+                          right: 12,
+                          bottom: 12,
+                          child: _buildBotonCentrar(),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ),
+
+            // Estado beacons colapsable
+            Semantics(
+              liveRegion: true,
+              child: Theme(
+                data: TemaApp.tema.copyWith(dividerColor: Colors.transparent),
+                child: ExpansionTile(
+                  tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
+                  minTileHeight: 38,
+                  leading: Icon(Icons.sensors_rounded, color: TemaApp.acento, size: 18),
+                  title: Text(
+                    _estadoScan,
+                    style: const TextStyle(fontSize: 14, color: TemaApp.textoSecundario),
+                  ),
+                  children: [
+                    if (_posicionFinal != null)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        child: Text(
+                          'Beacons activos: ${_beaconsEnElMapa.values.where((b) => b.rssiFiltrado > _umbralRSSI).length} / ${_beaconsEnElMapa.length} configurados',
+                          style: const TextStyle(fontSize: 14, color: TemaApp.textoSecundario),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Barra de micrófono
+            _buildBarraMicrofono(),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Baño pedido por el usuario.
+enum _GeneroBano { hombres, mujeres }
+
+/// Una opción de destino con lo lejos que queda: pisos de diferencia y, si
+/// está en este piso, metros de camino (null en otro piso).
+typedef _OpcionMedida = ({LugarInteres lugar, int pisos, double? metros});
+
+/// Lo necesario para DIBUJAR un piso que no es el del usuario (ver
+/// "VER OTROS PISOS SIN NAVEGAR" en la pantalla de navegación).
+class _VistaPiso {
+  final PisoInfo info;
+  final GrillaNav grilla;
+  final Map<String, BeaconMarcado> beacons;
+  final List<ZonaNoTransitable> zonas;
+  final List<LugarInteres> lugares;
+
+  const _VistaPiso({
+    required this.info,
+    required this.grilla,
+    required this.beacons,
+    required this.zonas,
+    required this.lugares,
+  });
+}
