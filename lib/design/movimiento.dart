@@ -1,4 +1,4 @@
-import 'package:flutter/animation.dart';
+import 'package:flutter/widgets.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Movimiento de BlindRoute
@@ -11,6 +11,34 @@ import 'package:flutter/animation.dart';
 // fundido mínimo. Nada de esto corre en la navegación en vivo, donde
 // importan la legibilidad y la voz.
 abstract final class MovimientoApp {
+  // ── Movimiento reducido ─────────────────────────────────────────────────
+
+  /// Si hay que evitar las animaciones: "Quitar animaciones" del teléfono
+  /// (MediaQuery.disableAnimations). La fase 3 le suma el interruptor propio
+  /// de Ajustes; los componentes preguntan sólo acá, así no hay que tocarlos
+  /// de nuevo. Con movimiento reducido, los controles saltan al estado nuevo
+  /// sin resorte.
+  static bool reducido(BuildContext context) =>
+      MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+
+  // ── Respuesta al toque (fase 2) ─────────────────────────────────────────
+  // Al presionar, lo levantado pasa a hundido (de golpe hasta la fase 3, que
+  // anima el paso) y los botones se achican apenas: es la respuesta que se
+  // siente bajo el dedo. Curva de salida fuerte: arranca rápido, así
+  // responde en el primer cuadro, y se asienta sin rebote. Con movimiento
+  // reducido no escalan: queda sólo el cambio de relieve.
+
+  /// Cuánto dura el achique al presionar un botón, y la vuelta al soltar.
+  static const Duration presion = Duration(milliseconds: 120);
+
+  /// Curva del achique: cubic-bezier(0.23, 1, 0.32, 1). Más fuerte que
+  /// Curves.easeOutCubic, que se siente tarde.
+  static const Curve curvaPresion = Cubic(0.23, 1, 0.32, 1);
+
+  /// Escala de un botón presionado. Nunca menos: se nota sin que el botón
+  /// parezca otro.
+  static const double escalaPresion = 0.97;
+
   // ── Duraciones ──────────────────────────────────────────────────────────
 
   /// Cambio de estado de un control: presionar, seleccionar, prender.
@@ -46,14 +74,14 @@ abstract final class MovimientoApp {
 
   // ── Resorte ─────────────────────────────────────────────────────────────
 
-  /// Resorte corto para controles, como la pieza del control segmentado:
-  /// 0,3 s con un rebote apenas perceptible. Es el mismo modelo que
-  /// spring(duration:bounce:) de SwiftUI.
-  static final SpringDescription resorteControl =
-      SpringDescription.withDurationAndBounce(
-        duration: const Duration(milliseconds: 300),
-        bounce: 0.15,
-      );
+  /// Resorte de la pieza del control segmentado, el de la tabla del prompt
+  /// (sección 5.2): amortiguado justo (ζ = 40 / (2·√(400·1)) = 1), así llega
+  /// sin pasarse ni rebotar. El de la v4 rebotaba (ζ ≈ 0,85).
+  static const SpringDescription resorteControl = SpringDescription(
+    mass: 1,
+    stiffness: 400,
+    damping: 40,
+  );
 
   // ── Transiciones ────────────────────────────────────────────────────────
 

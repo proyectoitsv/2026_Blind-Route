@@ -7,41 +7,52 @@ import 'formas.dart';
 // TemaApp: la API de antes, mientras dura la migración
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Es lo que había en lib/tema.dart, mudado acá sin cambiar nada de lo que se
-// ve: las pantallas que todavía no se migraron (fase 5) lo siguen usando tal
-// cual, y lib/tema.dart quedó como un export de este archivo para no tener
-// que tocarlas.
+// Es lo que había en lib/tema.dart, mudado acá: las pantallas que todavía no
+// se migraron (fase 5) lo siguen usando tal cual, y lib/tema.dart quedó como
+// un export de este archivo para no tener que tocarlas.
 //
-// Los colores ya no tienen valor propio: salen de ColoresApp, con los mismos
-// valores de antes. Las medidas y el ThemeData de abajo son los de antes y
-// difieren del sistema nuevo, por eso quedan acá: cuando se migre la última
-// pantalla, se borran este archivo y lib/tema.dart.
-//
-// Se sacaron los miembros que no usaba nadie (textoSobrePrimario, primario,
-// textoSobreFondoClaro, instruccionChip, beacon y los tamaños spBrujula,
-// spBrujulaGrados, spDestino y spEstado).
+// Los colores salen de ColoresApp, así que cuando cambia la paleta cambian
+// también estas pantallas, con la misma estructura. La paleta del relieve
+// (fase 2, v5) tiene dos niveles (fondo y superficie) y estas pantallas usan
+// tres (fondo, tarjeta y superficie): la tarjeta pasa a la superficie y lo que
+// iba encima de las tarjetas, a un escalón más claro (el gris del
+// separador), para que se siga viendo. Los colores "suaves" que la paleta
+// nueva no tiene (relleno de chips, de la instrucción y de los avisos) quedan
+// acá, con sus pares de contraste, que no cambian. Las medidas y el ThemeData
+// de abajo son los de antes y difieren del sistema nuevo: cuando se migre la
+// última pantalla, se borran este archivo y lib/tema.dart.
 //
 // No sumar usos nuevos: lo nuevo va con EstiloApp / ColoresApp,
-// TipografiaApp, FormasApp, EspaciadoApp, MovimientoApp y TemaBlindRoute
-// (lib/design/design.dart).
+// TipografiaApp, FormasApp, EspaciadoApp, MovimientoApp, RelieveApp y
+// TemaBlindRoute (lib/design/design.dart).
 abstract final class TemaApp {
   // ── Fondos ──────────────────────────────────────────────────────────────
   static const Color fondo = ColoresApp.fondo;
-  static const Color fondoCard = ColoresApp.tarjeta;
-  static const Color fondoPanel = ColoresApp.panel;
-  static const Color fondoSurface = ColoresApp.superficie;
+  static const Color fondoCard = ColoresApp.superficie;
+  static const Color fondoPanel = ColoresApp.superficie;
+
+  /// Lo que va encima de las tarjetas (pistas de deslizadores, chips sin
+  /// elegir, recuadros): un escalón más claro que la superficie, el gris del
+  /// separador. Encima: texto principal 12,29 · texto secundario 8,08 ·
+  /// acento 7,77.
+  static const Color fondoSurface = Color(0xFF2A313C);
 
   // ── Acento ──────────────────────────────────────────────────────────────
   static const Color acento = ColoresApp.acento;
-  static const Color acentoSuave = ColoresApp.acentoSuave;
+
+  /// Relleno de chips y elementos elegidos de las pantallas de antes. Acento
+  /// encima 7,08 · texto principal 11,21 · texto secundario 7,36.
+  static const Color acentoSuave = Color(0xFF003D47);
 
   // ── Textos ──────────────────────────────────────────────────────────────
   static const Color textoBlanco = ColoresApp.textoPrincipal;
   static const Color textoSecundario = ColoresApp.textoSecundario;
 
   // ── Instrucción de giro ─────────────────────────────────────────────────
-  static const Color instruccion = ColoresApp.exitoSuave;
-  static const Color instruccionAccent = ColoresApp.exito;
+  /// Fondo de la tarjeta de instrucción. El verde encima da 8,70 y el texto
+  /// principal, 11,52.
+  static const Color instruccion = Color(0xFF0A3D28);
+  static const Color instruccionAccent = ColoresApp.hecho;
 
   // ── Ruta activa ─────────────────────────────────────────────────────────
   static const Color rutaActivaInicio = ColoresApp.mapaRutaInicio;
@@ -54,7 +65,10 @@ abstract final class TemaApp {
 
   // ── Advertencia ─────────────────────────────────────────────────────────
   static const Color advertencia = ColoresApp.advertencia;
-  static const Color fondoAdvertencia = ColoresApp.advertenciaSuave;
+
+  /// Fondo de los avisos de advertencia. La advertencia encima da 10,44 y el
+  /// texto principal, 15,07.
+  static const Color fondoAdvertencia = Color(0xFF2D1F00);
 
   // ── Mapa ────────────────────────────────────────────────────────────────
   static const Color guiaAlineacion = ColoresApp.mapaGuia;
@@ -74,9 +88,10 @@ abstract final class TemaApp {
   static const double radiusButton = FormasApp.radioBoton; // 14, el mismo
 
   // ── ThemeData de antes ──────────────────────────────────────────────────
-  // Idéntico al de lib/tema.dart; sólo los dos grises que estaban escritos a
-  // mano salen ahora de la paleta, con el mismo valor (separador #30363D y
-  // superficie #21262D).
+  // El de lib/tema.dart. Con la paleta del relieve, el borde de los campos
+  // pasa al gris de los bordes (antes, el separador: con el escalón nuevo
+  // quedaba del mismo color que el relleno) y los divisores, al escalón más
+  // claro.
   static ThemeData get tema => ThemeData(
     brightness: Brightness.dark,
     scaffoldBackgroundColor: fondo,
@@ -102,7 +117,7 @@ abstract final class TemaApp {
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
         backgroundColor: acento,
-        foregroundColor: fondo,
+        foregroundColor: ColoresApp.textoSobreAcento,
         minimumSize: const Size(0, targetTactil),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(radiusButton),
@@ -134,11 +149,11 @@ abstract final class TemaApp {
       fillColor: fondoSurface,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(radiusButton),
-        borderSide: const BorderSide(color: ColoresApp.separador),
+        borderSide: const BorderSide(color: ColoresApp.borde),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(radiusButton),
-        borderSide: const BorderSide(color: ColoresApp.separador),
+        borderSide: const BorderSide(color: ColoresApp.borde),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(radiusButton),
@@ -153,10 +168,7 @@ abstract final class TemaApp {
       textColor: textoBlanco,
       iconColor: acento,
     ),
-    dividerTheme: const DividerThemeData(
-      color: ColoresApp.superficie,
-      thickness: 1,
-    ),
+    dividerTheme: const DividerThemeData(color: fondoSurface, thickness: 1),
     snackBarTheme: SnackBarThemeData(
       backgroundColor: fondoSurface,
       contentTextStyle: const TextStyle(color: textoBlanco, fontSize: 15),

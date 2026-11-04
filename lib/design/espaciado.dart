@@ -13,6 +13,10 @@ abstract final class EspaciadoApp {
   /// Entre elementos chicos dentro de una tarjeta.
   static const double chico = 8;
 
+  /// Entre la insignia o el ícono de una fila y su texto, y alrededor del
+  /// texto de los botones.
+  static const double medio = 12;
+
   /// Entre las tarjetas de una grilla.
   static const double entreTarjetas = 12;
 

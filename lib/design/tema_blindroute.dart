@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'colores.dart';
 import 'espaciado.dart';
 import 'estilo.dart';
 import 'formas.dart';
@@ -12,21 +13,24 @@ import 'tipografia.dart';
 // Material 3 con identidad propia:
 //   · Sin Dynamic Color ni Material You: el esquema se arma a mano con la
 //     paleta. No sale de fromSeed ni de los colores del teléfono.
-//   · Sin el tinte de elevación de Material 3 (surfaceTint transparente): las
-//     tarjetas se separan del fondo por color, sin borde ni sombra.
+//   · Sin el tinte de elevación de Material 3 (surfaceTint transparente) ni
+//     sus sombras: el relieve (relieve.dart) lo ponen los componentes. Los
+//     widgets de Material sueltos quedan planos, con el borde de 1 px.
 //   · Inter en toda la escala (TipografiaApp).
 //
 // Las pantallas lo toman a medida que se migran (fase 5). Hasta entonces
-// siguen con TemaApp.tema, el de antes, que no cambió.
+// siguen con TemaApp.tema, el de antes, que toma los colores de la paleta.
 //
 // ─── Esquema de colores (roles de Material 3) ───
 //   surface                  fondo        fondo de las pantallas
-//   surfaceContainerLow      tarjeta      Card
-//   surfaceContainer         panel        barra de navegación, menús
-//   surfaceContainerHigh     superficie
-//   surfaceContainerHighest  separador    pistas de interruptor y de progreso
-//   secondaryContainer       superficie   botón tonal: relleno gris con texto
-//                                         en acento
+//   surfaceContainerLowest   hundido      lo hundido (campos)
+//   surfaceContainerLow …    superficie   tarjetas, barras, menús, hojas y
+//   surfaceContainerHigh                  diálogos
+//   surfaceContainerHighest  separador    pistas de progreso
+//   primary / secondary /    acento       el único acento: el verde y el
+//   tertiary                              violeta son sólo de la ruta, y
+//                                         así no se cuelan por un widget de
+//                                         Material
 //   outline                  borde        bordes de controles (≥ 3:1)
 //   outlineVariant           separador    divisores, decorativos
 //
@@ -34,6 +38,11 @@ import 'tipografia.dart';
 // materialTapTargetSize.padded lleva a 48 dp el área tocable de los
 // controles chicos (chips, casillas, botones de ícono) aunque el dibujo sea
 // menor. Los botones grandes miden 52 de alto.
+//
+// ─── Al presionar ───
+// Sin la onda de Material: una capa tenue de acento (ColoresApp.
+// opacidadPresion), que no baja ningún texto del mínimo. Los componentes no
+// la usan: responden con el relieve.
 abstract final class TemaBlindRoute {
   /// El tema oscuro, el principal. Se arma una sola vez.
   static final ThemeData oscuro = _armar(EstiloApp.oscuro);
@@ -43,29 +52,29 @@ abstract final class TemaBlindRoute {
       brightness: Brightness.dark,
       primary: e.acento,
       onPrimary: e.textoSobreAcento,
-      primaryContainer: e.acentoSuave,
+      primaryContainer: e.superficie,
       onPrimaryContainer: e.acento,
-      secondary: e.exito,
+      secondary: e.acento,
       onSecondary: e.textoSobreAcento,
       secondaryContainer: e.superficie,
-      onSecondaryContainer: e.acento,
-      tertiary: e.exito,
+      onSecondaryContainer: e.textoPrincipal,
+      tertiary: e.acento,
       onTertiary: e.textoSobreAcento,
-      tertiaryContainer: e.exitoSuave,
-      onTertiaryContainer: e.textoPrincipal,
+      tertiaryContainer: e.superficie,
+      onTertiaryContainer: e.acento,
       error: e.error,
       onError: e.textoSobreAcento,
       surface: e.fondo,
       onSurface: e.textoPrincipal,
       onSurfaceVariant: e.textoSecundario,
-      surfaceContainerLowest: e.fondo,
-      surfaceContainerLow: e.tarjeta,
-      surfaceContainer: e.panel,
+      surfaceContainerLowest: e.hundido,
+      surfaceContainerLow: e.superficie,
+      surfaceContainer: e.superficie,
       surfaceContainerHigh: e.superficie,
       surfaceContainerHighest: e.separador,
       outline: e.borde,
       outlineVariant: e.separador,
-      shadow: Colors.black,
+      shadow: e.sombraOscura,
       scrim: Colors.black,
       surfaceTint: Colors.transparent,
     );
@@ -76,11 +85,12 @@ abstract final class TemaBlindRoute {
     );
 
     // ── Botones ──
-    // FilledButton: el principal sólido (acento), para donde no va el
-    // degradado. FilledButton.tonal y ElevatedButton: secundario con relleno
-    // gris y texto en acento. OutlinedButton: contorno en borde. TextButton:
-    // texto en acento. Deshabilitados, el texto sigue legible (4,94 sobre la
-    // superficie): con baja visión importa poder leer qué está apagado.
+    // FilledButton: el principal (acento plano, texto oscuro). ElevatedButton
+    // y FilledButton.tonal: el secundario (superficie con borde y texto
+    // principal). OutlinedButton: sólo el borde. TextButton: texto en acento
+    // (las acciones de un diálogo). Deshabilitados, el texto sigue legible
+    // (9,10 sobre la superficie): con baja visión importa poder leer qué está
+    // apagado.
     const formaBoton = RoundedRectangleBorder(
       borderRadius: FormasApp.bordeBoton,
     );
@@ -90,6 +100,7 @@ abstract final class TemaBlindRoute {
       FormasApp.areaTactilMinima,
     );
     const rellenoBoton = EdgeInsets.symmetric(horizontal: 20);
+    final bordeControl = BorderSide(color: e.borde);
 
     OutlineInputBorder contornoCampo(Color color, [double ancho = 1]) =>
         OutlineInputBorder(
@@ -100,6 +111,9 @@ abstract final class TemaBlindRoute {
     bool seleccionado(Set<WidgetState> estados) =>
         estados.contains(WidgetState.selected);
 
+    // Capa al presionar o enfocar (ver ColoresApp.opacidadPresion).
+    final capaPresion = e.acento.withValues(alpha: ColoresApp.opacidadPresion);
+
     return ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
@@ -109,26 +123,38 @@ abstract final class TemaBlindRoute {
       extensions: <ThemeExtension<dynamic>>[e],
       scaffoldBackgroundColor: e.fondo,
       // Menús desplegables (DropdownButton) y Material sin color propio.
-      canvasColor: e.panel,
+      canvasColor: e.superficie,
       dividerColor: e.separador,
       hintColor: e.textoSecundario,
       materialTapTargetSize: MaterialTapTargetSize.padded,
       iconTheme: IconThemeData(color: e.textoPrincipal),
 
+      // Sin onda (ripple): al presionar queda sólo una capa tenue de acento.
+      // La onda es lo más reconocible de Material y la app tiene identidad
+      // propia.
+      splashFactory: NoSplash.splashFactory,
+      splashColor: Colors.transparent,
+      highlightColor: capaPresion,
+      hoverColor: capaPresion,
+      focusColor: capaPresion,
+
+      // Como la BarraSuperior: fondo liso y el título chico, centrado.
       appBarTheme: AppBarThemeData(
         backgroundColor: e.fondo,
         foregroundColor: e.textoPrincipal,
         elevation: 0,
         scrolledUnderElevation: 0,
         surfaceTintColor: Colors.transparent,
-        centerTitle: false,
-        titleTextStyle: TipografiaApp.titulo.copyWith(color: e.textoPrincipal),
+        centerTitle: true,
+        titleTextStyle: TipografiaApp.tituloBarra.copyWith(
+          color: e.textoPrincipal,
+        ),
         iconTheme: IconThemeData(color: e.textoPrincipal),
-        actionsIconTheme: IconThemeData(color: e.acento),
+        actionsIconTheme: IconThemeData(color: e.textoPrincipal),
       ),
 
       cardTheme: CardThemeData(
-        color: e.tarjeta,
+        color: e.superficie,
         elevation: 0,
         shadowColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
@@ -146,31 +172,32 @@ abstract final class TemaBlindRoute {
           minimumSize: tamanoBoton,
           padding: rellenoBoton,
           shape: formaBoton,
-          textStyle: TipografiaApp.destacado,
+          textStyle: TipografiaApp.boton,
         ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           backgroundColor: e.superficie,
-          foregroundColor: e.acento,
+          foregroundColor: e.textoPrincipal,
           disabledBackgroundColor: e.superficie,
           disabledForegroundColor: e.textoSecundario,
           elevation: 0,
+          side: bordeControl,
           minimumSize: tamanoBoton,
           padding: rellenoBoton,
           shape: formaBoton,
-          textStyle: TipografiaApp.destacado,
+          textStyle: TipografiaApp.boton,
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: e.acento,
+          foregroundColor: e.textoPrincipal,
           disabledForegroundColor: e.textoSecundario,
-          side: BorderSide(color: e.borde),
+          side: bordeControl,
           minimumSize: tamanoBoton,
           padding: rellenoBoton,
           shape: formaBoton,
-          textStyle: TipografiaApp.destacado,
+          textStyle: TipografiaApp.boton,
         ),
       ),
       textButtonTheme: TextButtonThemeData(
@@ -180,37 +207,39 @@ abstract final class TemaBlindRoute {
           minimumSize: tamanoBotonChico,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           shape: formaBoton,
-          textStyle: TipografiaApp.destacado,
+          textStyle: TipografiaApp.boton,
         ),
       ),
       floatingActionButtonTheme: FloatingActionButtonThemeData(
         backgroundColor: e.acento,
         foregroundColor: e.textoSobreAcento,
+        elevation: 0,
+        highlightElevation: 0,
       ),
 
-      // Seleccionado: acento sobre acento suave (5,87) y la tilde de
-      // Material, que marca el estado sin depender del color.
+      // Elegido: acento con el texto oscuro (11,47) y la tilde de Material,
+      // que marca el estado sin depender del color.
       segmentedButtonTheme: SegmentedButtonThemeData(
         style: SegmentedButton.styleFrom(
-          backgroundColor: e.superficie,
+          backgroundColor: e.hundido,
           foregroundColor: e.textoPrincipal,
-          selectedBackgroundColor: e.acentoSuave,
-          selectedForegroundColor: e.acento,
+          selectedBackgroundColor: e.acento,
+          selectedForegroundColor: e.textoSobreAcento,
           disabledForegroundColor: e.textoSecundario,
-          side: BorderSide(color: e.borde),
+          side: bordeControl,
           minimumSize: tamanoBotonChico,
           textStyle: texto.titleSmall,
         ),
       ),
 
-      // Chip común: acento sobre acento suave (5,87). Chip de filtro
-      // seleccionado: relleno de acento con texto oscuro (9,31) y tilde.
+      // Sin elegir: superficie con borde y texto principal (13,85). Elegido:
+      // acento con texto oscuro (11,47) y tilde.
       chipTheme: ChipThemeData(
-        backgroundColor: e.acentoSuave,
+        backgroundColor: e.superficie,
         selectedColor: e.acento,
         disabledColor: e.superficie,
         checkmarkColor: e.textoSobreAcento,
-        side: BorderSide.none,
+        side: bordeControl,
         shape: FormasApp.formaChip,
         labelStyle: TipografiaApp.subtitulo.copyWith(
           fontWeight: FontWeight.w500,
@@ -218,21 +247,28 @@ abstract final class TemaBlindRoute {
             if (estados.contains(WidgetState.disabled)) {
               return e.textoSecundario;
             }
-            return seleccionado(estados) ? e.textoSobreAcento : e.acento;
+            return seleccionado(estados)
+                ? e.textoSobreAcento
+                : e.textoPrincipal;
           }),
         ),
       ),
 
+      // Hundidos (sin la sombra interior, que la pone CampoTexto) y con el
+      // borde de 1 px; enfocados, borde de acento de 2.
       inputDecorationTheme: InputDecorationThemeData(
         filled: true,
-        fillColor: e.superficie,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        fillColor: e.hundido,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 14,
+        ),
         border: contornoCampo(e.borde),
         enabledBorder: contornoCampo(e.borde),
         disabledBorder: contornoCampo(e.separador),
-        focusedBorder: contornoCampo(e.acento, 2),
+        focusedBorder: contornoCampo(e.acento, FormasApp.grosorFoco),
         errorBorder: contornoCampo(e.error),
-        focusedErrorBorder: contornoCampo(e.error, 2),
+        focusedErrorBorder: contornoCampo(e.error, FormasApp.grosorFoco),
         labelStyle: WidgetStateTextStyle.resolveWith(
           (estados) => TipografiaApp.cuerpo.copyWith(
             color: estados.contains(WidgetState.error)
@@ -263,6 +299,7 @@ abstract final class TemaBlindRoute {
 
       listTileTheme: ListTileThemeData(
         textColor: e.textoPrincipal,
+        iconColor: e.acento,
         titleTextStyle: TipografiaApp.cuerpo.copyWith(color: e.textoPrincipal),
         subtitleTextStyle: TipografiaApp.subtitulo.copyWith(
           color: e.textoSecundario,
@@ -282,9 +319,11 @@ abstract final class TemaBlindRoute {
       ),
 
       bottomSheetTheme: BottomSheetThemeData(
-        backgroundColor: e.panel,
-        modalBackgroundColor: e.panel,
+        backgroundColor: e.superficie,
+        modalBackgroundColor: e.superficie,
         surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        modalElevation: 0,
         clipBehavior: Clip.antiAlias,
         shape: const RoundedRectangleBorder(borderRadius: FormasApp.bordeHoja),
         showDragHandle: true,
@@ -292,10 +331,14 @@ abstract final class TemaBlindRoute {
         dragHandleSize: FormasApp.manijaHoja,
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: e.panel,
+        backgroundColor: e.superficie,
         surfaceTintColor: Colors.transparent,
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.all(Radius.circular(FormasApp.radioHoja)),
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: const BorderRadius.all(
+            Radius.circular(FormasApp.radioHoja),
+          ),
+          side: bordeControl,
         ),
         titleTextStyle: TipografiaApp.titulo.copyWith(color: e.textoPrincipal),
         contentTextStyle: TipografiaApp.cuerpo.copyWith(
@@ -310,12 +353,20 @@ abstract final class TemaBlindRoute {
         actionTextColor: e.acento,
         closeIconColor: e.textoSecundario,
         behavior: SnackBarBehavior.floating,
-        shape: const RoundedRectangleBorder(borderRadius: FormasApp.bordeCampo),
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: FormasApp.bordeCampo,
+          side: bordeControl,
+        ),
       ),
       popupMenuTheme: PopupMenuThemeData(
-        color: e.panel,
+        color: e.superficie,
         surfaceTintColor: Colors.transparent,
-        shape: const RoundedRectangleBorder(borderRadius: FormasApp.bordeCampo),
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: FormasApp.bordeCampo,
+          side: bordeControl,
+        ),
         labelTextStyle: WidgetStateProperty.resolveWith(
           (estados) => TipografiaApp.cuerpo.copyWith(
             color: estados.contains(WidgetState.disabled)
@@ -329,15 +380,16 @@ abstract final class TemaBlindRoute {
           color: e.textoPrincipal,
           borderRadius: FormasApp.bordeCampo,
         ),
-        textStyle: TipografiaApp.nota.copyWith(color: e.fondo),
+        textStyle: TipografiaApp.nota.copyWith(color: e.textoSobreAcento),
       ),
 
-      // Pestaña activa en acento, las demás en gris (5,26 sobre el panel).
+      // Pestaña activa en acento, las demás en gris (9,10 sobre la
+      // superficie).
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: e.panel,
+        backgroundColor: e.superficie,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        indicatorColor: e.acentoSuave,
+        indicatorColor: e.hundido,
         iconTheme: WidgetStateProperty.resolveWith(
           (estados) => IconThemeData(
             color: seleccionado(estados) ? e.acento : e.textoSecundario,
@@ -359,11 +411,9 @@ abstract final class TemaBlindRoute {
       ),
 
       // ── Interruptores, deslizadores y progreso ──
-      // Apagado, el pulgar gris sobre la pista da 3,97 y el contorno de la
-      // pista, 3,31 o más contra cualquier fondo. Prendido, pulgar oscuro
-      // sobre acento (9,31). La pista del deslizador va en borde para que se
-      // vea entero el recorrido; la de progreso, en separador, para que el
-      // avance en acento resalte (6:1 contra la pista).
+      // Apagado: pista hundida con borde (4,41 sobre el fondo) y el pulgar
+      // gris (10,18). Prendido: pulgar oscuro sobre acento (11,47). La pista
+      // del deslizador va en borde para que se vea entero el recorrido.
       switchTheme: SwitchThemeData(
         thumbColor: WidgetStateProperty.resolveWith((estados) {
           if (estados.contains(WidgetState.disabled)) return null;
@@ -371,7 +421,7 @@ abstract final class TemaBlindRoute {
         }),
         trackColor: WidgetStateProperty.resolveWith((estados) {
           if (estados.contains(WidgetState.disabled)) return null;
-          return seleccionado(estados) ? e.acento : e.separador;
+          return seleccionado(estados) ? e.acento : e.hundido;
         }),
         trackOutlineColor: WidgetStateProperty.resolveWith((estados) {
           if (estados.contains(WidgetState.disabled)) return null;
@@ -386,7 +436,8 @@ abstract final class TemaBlindRoute {
       ),
       progressIndicatorTheme: ProgressIndicatorThemeData(
         color: e.acento,
-        linearTrackColor: e.separador,
+        linearTrackColor: e.hundido,
+        circularTrackColor: e.hundido,
       ),
     );
   }

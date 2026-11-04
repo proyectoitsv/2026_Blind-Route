@@ -40,6 +40,26 @@ abstract final class TipografiaApp {
   static TextStyle conCifrasTabulares(TextStyle estilo) =>
       estilo.copyWith(fontFeatures: cifrasTabulares);
 
+  // ── Letra grande ────────────────────────────────────────────────────────
+
+  /// Desde esta escala (medida en el cuerpo), los componentes se
+  /// reacomodan: el valor de una fila baja debajo del título, en vez de
+  /// pelearle el ancho. El corte cae entre el 115 % y el 130 % de los
+  /// ajustes del teléfono, también con la escala no lineal de Android 14 (el
+  /// cuerpo crece algo menos que el porcentaje elegido).
+  static const double escalaLetraGrande = 1.2;
+
+  /// Cuánto agranda el teléfono el texto, medido en el cuerpo (17). Desde
+  /// Android 14 la escala no es lineal (los tamaños grandes crecen menos),
+  /// por eso se mide en un tamaño concreto y no con un factor fijo.
+  static double escalaTexto(BuildContext context) =>
+      MediaQuery.textScalerOf(context).scale(cuerpo.fontSize!) /
+      cuerpo.fontSize!;
+
+  /// Si la letra del teléfono está agrandada (ver [escalaLetraGrande]).
+  static bool esLetraGrande(BuildContext context) =>
+      escalaTexto(context) >= escalaLetraGrande;
+
   // ── Títulos ─────────────────────────────────────────────────────────────
 
   /// (largeTitle) 34, bold. Título grande del encabezado de una pantalla.
@@ -70,6 +90,15 @@ abstract final class TipografiaApp {
     letterSpacing: -0.3,
   );
 
+  /// (navTitle) 14, semibold. Título centrado de la barra superior, chico
+  /// como en un editor: el título grande, si hace falta, va en el contenido.
+  static const TextStyle tituloBarra = TextStyle(
+    fontFamily: familia,
+    fontSize: 14,
+    fontWeight: FontWeight.w600,
+    height: 1.3,
+  );
+
   // ── Texto ───────────────────────────────────────────────────────────────
 
   /// (headline) 17, semibold. Cuerpo destacado: título de una fila, etiqueta
@@ -78,6 +107,14 @@ abstract final class TipografiaApp {
     fontFamily: familia,
     fontSize: 17,
     fontWeight: FontWeight.w600,
+    height: 1.3,
+  );
+
+  /// (button) 17, medium. Etiqueta de los botones.
+  static const TextStyle boton = TextStyle(
+    fontFamily: familia,
+    fontSize: 17,
+    fontWeight: FontWeight.w500,
     height: 1.3,
   );
 
@@ -161,7 +198,7 @@ abstract final class TipografiaApp {
     bodyLarge: cuerpo,
     bodyMedium: subtitulo,
     bodySmall: nota,
-    labelLarge: destacado,
+    labelLarge: boton,
     labelMedium: leyenda,
     labelSmall: leyenda,
   );
