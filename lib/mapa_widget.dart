@@ -1,0 +1,1448 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+import 'dart:io';
+import 'dart:async';
+import 'dart:math';
+import 'beacon_model.dart';
+import 'zona_model.dart';
+import 'poi_model.dart';
+import 'grilla_nav.dart';
+import 'asistente_trazo.dart';
+import 'tema.dart';
+/// Helpers de coordenadas/celdas compartidos por los painters.
+Offset _desnormalizar(Offset n, Size tam) =>
+    Offset(n.dx * tam.width, n.dy * tam.height);
+
+Rect _rectCelda(Offset centroNorm, GrillaNav grilla, Size tam) {
+  final rect = Rect.fromCenter(
+    center: _desnormalizar(centroNorm, tam),
+    width: grilla.tamCeldaX * tam.width,
+    height: grilla.tamCeldaY * tam.height,
+  );
+  // Recorte al plano: la última celda de cada eje puede ser PARCIAL (la escala
+  // rara vez es múltiplo exacto del lado de celda), así que su rectángulo se
+  // sale de la imagen si no se acota. Sin esto, la celda del usuario o la
+  // última celda de la ruta se pintan por fuera del borde del mapa.
+  return rect.intersect(Rect.fromLTWH(0, 0, tam.width, tam.height));
+}
+
+/// Dibuja una línea punteada entre [a] y [b].
+void _lineaPunteada(Canvas canvas, Offset a, Offset b, Paint paint,
+    {double paso = 8.0}) {
+  final d = b - a;
+  final dist = d.distance;
+  if (dist <= 0) return;
+  final ux = d.dx / dist, uy = d.dy / dist;
+  double t = 0;
+  bool pintar = true;
+  while (t < dist) {
+    final t1 = t;
+    final t2 = (t + paso / 2).clamp(0.0, dist);
+    if (pintar) {
+      canvas.drawLine(
+        Offset(a.dx + ux * t1, a.dy + uy * t1),
+        Offset(a.dx + ux * t2, a.dy + uy * t2),
+        paint,
+      );
+    }
+    t += paso / 2;
+    pintar = !pintar;
+  }
+}
+
+/// Dibuja una "mira" (retícula translúcida con cruz central) para marcar un
+/// punto con PRECISIÓN. El centro exacto queda libre —los brazos de la cruz no
+/// llegan a tocarse— para que el punto objetivo no quede tapado ni por el
+/// dibujo ni por el dedo. Doble trazo (halo blanco debajo + color encima) para
+/// que se lea sobre cualquier fondo del plano; pensado también para baja visión.
+void _dibujarMira(
+  Canvas canvas,
+  Offset centro, {
+  required double radio,
+  required Color color,
+  bool activo = false,
+  double alphaRelleno = 0.16,
+  double escala = 1.0,
+}) {
+  final gap = radio * 0.30; // hueco central: no se tapa el punto exacto
+  final brazo = radio * 1.30; // los brazos sobresalen del anillo (estilo mira)
+
+  // Relleno translúcido: deja ver el plano debajo.
+  canvas.drawCircle(
+    centro,
+    radio,
+    Paint()
+      ..color = color.withValues(alpha: activo ? alphaRelleno + 0.12 : alphaRelleno)
+      ..style = PaintingStyle.fill,
+  );
+
+  void trazo(Color c, double w) {
+    final p = Paint()
+      ..color = c
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = w
+      ..strokeCap = StrokeCap.round;
+    canvas.drawCircle(centro, radio, p); // anillo
+    // Cruz con hueco central.
+    canvas.drawLine(centro + Offset(-brazo, 0), centro + Offset(-gap, 0), p);
+    canvas.drawLine(centro + Offset(gap, 0), centro + Offset(brazo, 0), p);
+    canvas.drawLine(centro + Offset(0, -brazo), centro + Offset(0, -gap), p);
+    canvas.drawLine(centro + Offset(0, gap), centro + Offset(0, brazo), p);
+  }
+
+  trazo(Colors.white, (activo ? 4.0 : 3.0) * escala); // halo de contraste
+  trazo(color, (activo ? 2.4 : 1.8) * escala);
+
+  // Punto central exacto (con borde blanco).
+  final rp = (activo ? 2.6 : 2.0) * escala;
+  canvas.drawCircle(centro, rp, Paint()..color = color);
+  canvas.drawCircle(
+    centro,
+    rp,
+    Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0 * escala,
+  );
+}
+
+/// Painter de una sola mira centrada en su caja. Lo usa el marcador arrastrable
+/// de cada beacon (que es un widget Positioned, no parte del CustomPaint del
+/// mapa).
+class _MiraBeaconPainter extends CustomPainter {
+  final Color color;
+  final bool activo;
+  final bool edicion;
+
+  _MiraBeaconPainter({
+    required this.color,
+    required this.activo,
+    required this.edicion,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final centro = Offset(size.width / 2, size.height / 2);
+    final radio = edicion ? (activo ? 15.0 : 12.0) : 7.0;
+    if (activo) {
+      canvas.drawCircle(
+        centro,
+        radio + 9,
+        Paint()..color = color.withValues(alpha: 0.18),
+      );
+    }
+    _dibujarMira(canvas, centro, radio: radio, color: color, activo: activo);
+  }
+
+  @override
+  bool shouldRepaint(_MiraBeaconPainter old) =>
+      old.color != color || old.activo != activo || old.edicion != edicion;
+}
+
+/// Painter "estático" del mapa: grilla de 1 m × 1 m, zonas no transitables,
+/// celdas del camino y polígono en construcción. NO incluye la posición del
+/// usuario (esa se pinta en una capa aparte) para que el movimiento del usuario
+/// no obligue a repintar todo el mapa en cada actualización de posición.
+class _MapaPainter extends CustomPainter {
+  final List<ZonaNoTransitable> zonas;
+  final List<Offset> verticesEnCurso;
+  final Size tamanoImagen;
+  final GrillaNav grilla;
+  final List<Offset>? ruta;        // centros normalizados de las celdas del camino
+  final bool mostrarGrilla;
+
+  /// Puntos de la medición de escala (violeta). 1 a 3 puntos.
+  final List<Offset> puntosMedicion;
+
+  /// Centro normalizado de la celda seleccionada en modo calibración (amarillo).
+  final Offset? celdaResaltada;
+
+  /// Centros normalizados de las celdas que ya tienen calibraciones (pin ✓).
+  final List<Offset> celdasCalibradas;
+
+  /// Índice del vértice de [verticesEnCurso] que el operador está arrastrando
+  /// en este momento (se resalta más grande), o null si no hay ninguno.
+  final int? verticeArrastrado;
+
+  /// Guías de alineación activas del asistente de trazo (líneas rectas).
+  final List<GuiaTrazo> guias;
+
+  /// Punto donde se ancla la etiqueta con el ángulo imantado (normalmente el
+  /// punto que el operador está moviendo).
+  final Offset? guiaPunto;
+
+  /// Zoom con que se está viendo el mapa (ver [MapaWidget.escalaVista]).
+  final double escalaVista;
+
+  /// Factor para que trazos, manijas y textos de edición midan siempre lo
+  /// mismo en pantalla, sin importar el zoom. Por debajo de zoom 1 no achica.
+  double get _k => 1 / max(1.0, escalaVista);
+
+  _MapaPainter({
+    required this.zonas,
+    required this.verticesEnCurso,
+    required this.tamanoImagen,
+    required this.grilla,
+    this.ruta,
+    this.mostrarGrilla = false,
+    this.puntosMedicion = const [],
+    this.celdaResaltada,
+    this.celdasCalibradas = const [],
+    this.verticeArrastrado,
+    this.guias = const [],
+    this.guiaPunto,
+    this.escalaVista = 1.0,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // --- Grilla de 1 m × 1 m (rectangular: celdasX × celdasY) ---
+    // El plano se muestra con la proporción real (escalaX : escalaY), así que
+    // cada celda de 1 m se ve perfectamente cuadrada en pantalla. La última
+    // celda de cada eje puede ser parcial (media cuadrícula): se recorta al
+    // borde del plano para llenar todo el espacio.
+    if (mostrarGrilla) {
+      final w = tamanoImagen.width;
+      final h = tamanoImagen.height;
+      final paintGrilla = Paint()
+        ..color = Colors.black.withValues(alpha: 0.30)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0 * _k;
+      for (int i = 0; i <= grilla.celdasX; i++) {
+        final x = (i * grilla.tamCeldaX * w).clamp(0.0, w);
+        canvas.drawLine(Offset(x, 0), Offset(x, h), paintGrilla);
+      }
+      for (int j = 0; j <= grilla.celdasY; j++) {
+        final y = (j * grilla.tamCeldaY * h).clamp(0.0, h);
+        canvas.drawLine(Offset(0, y), Offset(w, y), paintGrilla);
+      }
+    }
+
+    // --- Celda seleccionada en modo calibración (amarillo 60%) ---
+    if (celdaResaltada != null) {
+      final paintCal = Paint()
+        ..color = Colors.amber.withValues(alpha: 0.60)
+        ..style = PaintingStyle.fill;
+      canvas.drawRect(_rectCelda(celdaResaltada!, grilla, tamanoImagen), paintCal);
+    }
+
+    // --- Zonas no transitables ---
+    // Item 6: rojo saturado (TemaApp.zonaRestringidaRelleno) con alpha 0.45
+    // y borde sólido 2.5 px para alta visibilidad en baja visión.
+    // Antes: Colors.red.withValues(alpha: 0.30) — poco contraste sobre plano.
+    final paintRelleno = Paint()
+      ..color = TemaApp.zonaRestringidaRelleno.withValues(alpha: 0.45)
+      ..style = PaintingStyle.fill;
+    final paintBorde = Paint()
+      ..color = TemaApp.zonaRestringidaBorde
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5 * _k;
+
+    for (final zona in zonas) {
+      if (zona.vertices.length < 2) continue;
+      final path = Path();
+      final primero = _desnormalizar(zona.vertices.first, tamanoImagen);
+      path.moveTo(primero.dx, primero.dy);
+      for (var i = 1; i < zona.vertices.length; i++) {
+        final p = _desnormalizar(zona.vertices[i], tamanoImagen);
+        path.lineTo(p.dx, p.dy);
+      }
+      path.close();
+      canvas.drawPath(path, paintRelleno);
+      canvas.drawPath(path, paintBorde);
+    }
+
+    // --- Celdas del camino hacia el destino ---
+    // ruta[0] = celda del usuario, ruta.last = destino. El color se intensifica
+    // hacia el destino para que la dirección del camino se vea claramente.
+    // Item 6: azul eléctrico (#1565C0 → #0D47A1) con alpha 0.75, reemplaza el
+    // gradiente verde que se confundía con el fondo y era invisible para baja visión.
+    if (ruta != null && ruta!.isNotEmpty) {
+      final n = ruta!.length;
+      for (int i = 0; i < n; i++) {
+        final t = n <= 1 ? 1.0 : i / (n - 1); // 0 = usuario, 1 = destino
+        final color = Color.lerp(
+          TemaApp.rutaActivaInicio, // azul eléctrico: cerca del usuario
+          TemaApp.rutaActivaFin,    // azul marino: en el destino
+          t,
+        )!.withValues(alpha: TemaApp.rutaActivaAlpha);
+        final paintRuta = Paint()
+          ..color = color
+          ..style = PaintingStyle.fill;
+        canvas.drawRect(_rectCelda(ruta![i], grilla, tamanoImagen), paintRuta);
+      }
+    }
+
+    // --- Polígono en construcción (modo edición de zonas) ---
+    // Muestra el área delimitada con relleno naranja semitransparente, contorno,
+    // línea de cierre punteada al primer vértice, y círculos numerados en cada punto.
+    if (verticesEnCurso.isNotEmpty) {
+      final path = Path();
+      final primero = _desnormalizar(verticesEnCurso.first, tamanoImagen);
+      path.moveTo(primero.dx, primero.dy);
+      for (var i = 1; i < verticesEnCurso.length; i++) {
+        final p = _desnormalizar(verticesEnCurso[i], tamanoImagen);
+        path.lineTo(p.dx, p.dy);
+      }
+
+      // Relleno del área en construcción (solo si hay ≥ 3 vértices).
+      if (verticesEnCurso.length >= 3) {
+        path.close();
+        final paintRelleno = Paint()
+          ..color = Colors.orange.withValues(alpha: 0.25)
+          ..style = PaintingStyle.fill;
+        canvas.drawPath(path, paintRelleno);
+      }
+
+      // Contorno del polígono en curso.
+      final pathContorno = Path();
+      pathContorno.moveTo(primero.dx, primero.dy);
+      for (var i = 1; i < verticesEnCurso.length; i++) {
+        final p = _desnormalizar(verticesEnCurso[i], tamanoImagen);
+        pathContorno.lineTo(p.dx, p.dy);
+      }
+      final paintContorno = Paint()
+        ..color = Colors.orange.withValues(alpha: 0.90)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0 * _k
+        ..strokeJoin = StrokeJoin.round;
+      canvas.drawPath(pathContorno, paintContorno);
+
+      // Línea de cierre punteada al primer vértice (visual hint de zona cerrable).
+      if (verticesEnCurso.length >= 2) {
+        final ultimo = _desnormalizar(verticesEnCurso.last, tamanoImagen);
+        final paintCierre = Paint()
+          ..color = Colors.orange.withValues(alpha: 0.55)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5 * _k
+          ..strokeCap = StrokeCap.round;
+        // Guiones entre el último punto y el primero.
+        _lineaPunteada(canvas, ultimo, primero, paintCierre, paso: 8.0 * _k);
+      }
+
+      // Círculos numerados en cada vértice. Funcionan como manijas de arrastre:
+      // el vértice que se está moviendo se dibuja más grande y con un halo,
+      // para que quede claro cuál agarró el dedo (que además lo tapa).
+      // Manijas de arrastre como MIRAS (retícula con cruz): el centro exacto
+      // del vértice queda visible bajo el dedo, así se lo ubica con precisión.
+      final tp = TextPainter(textDirection: TextDirection.ltr);
+      for (var i = 0; i < verticesEnCurso.length; i++) {
+        final c = _desnormalizar(verticesEnCurso[i], tamanoImagen);
+        final activo = verticeArrastrado == i;
+        final radio = (activo ? 15.0 : 11.0) * _k;
+        if (activo) {
+          canvas.drawCircle(c, radio + 9 * _k,
+              Paint()..color = Colors.orange.withValues(alpha: 0.22));
+        }
+        _dibujarMira(canvas, c,
+            radio: radio,
+            color: activo ? Colors.deepOrange : Colors.orange,
+            activo: activo,
+            escala: _k);
+        // Número del vértice, corrido arriba-derecha para no tapar el centro.
+        tp.text = TextSpan(
+          text: '${i + 1}',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: (activo ? 12 : 10) * _k,
+            fontWeight: FontWeight.bold,
+            shadows: [Shadow(color: Colors.black, blurRadius: 2 * _k)],
+          ),
+        );
+        tp.layout();
+        tp.paint(canvas, c + Offset(radio * 0.6, -radio - tp.height * 0.6));
+      }
+    }
+
+    // --- Medición de escala (violeta): puntos + líneas entre ellos ---
+    if (puntosMedicion.isNotEmpty) {
+      final paintLinea = Paint()
+        ..color = Colors.purple
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.0 * _k
+        ..strokeCap = StrokeCap.round;
+      // Líneas entre puntos consecutivos (largo y ancho).
+      for (int i = 1; i < puntosMedicion.length; i++) {
+        canvas.drawLine(
+          _desnormalizar(puntosMedicion[i - 1], tamanoImagen),
+          _desnormalizar(puntosMedicion[i], tamanoImagen),
+          paintLinea,
+        );
+      }
+      // Puntos: mira violeta para fijar cada extremo con precisión.
+      for (final p in puntosMedicion) {
+        final c = _desnormalizar(p, tamanoImagen);
+        _dibujarMira(canvas, c,
+            radio: 11.0 * _k, color: Colors.purple, escala: _k);
+      }
+    }
+
+    // --- Pines de celdas ya calibradas (✓ verde) ---
+    if (celdasCalibradas.isNotEmpty) {
+      final icono = Icons.check_circle;
+      final tp = TextPainter(textDirection: TextDirection.ltr);
+      for (final centro in celdasCalibradas) {
+        tp.text = TextSpan(
+          text: String.fromCharCode(icono.codePoint),
+          style: TextStyle(
+            fontSize: 18 * _k,
+            fontFamily: icono.fontFamily,
+            package: icono.fontPackage,
+            color: Colors.green[700],
+          ),
+        );
+        tp.layout();
+        final c = _desnormalizar(centro, tamanoImagen);
+        tp.paint(canvas, Offset(c.dx - tp.width / 2, c.dy - tp.height / 2));
+      }
+    }
+
+    // --- Guías del asistente de trazo (siempre por encima de todo) ---
+    _dibujarGuias(canvas, tamanoImagen);
+  }
+
+  /// Guías de alineación: rectas punteadas magenta que atraviesan el plano por
+  /// el punto de anclaje, más una etiqueta con el ángulo al que se imantó el
+  /// trazo. Es la señal visual de que la línea quedó perfectamente recta.
+  void _dibujarGuias(Canvas canvas, Size tam) {
+    if (guias.isEmpty) return;
+
+    final paintGuia = Paint()
+      ..color = TemaApp.guiaAlineacion.withValues(alpha: 0.90)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6 * _k
+      ..strokeCap = StrokeCap.round;
+
+    // Los ejes tienen escalas métricas distintas, así que la dirección de la
+    // guía (calculada en metros) hay que convertirla a normalizado antes de
+    // dibujarla, o una guía de 45° no se vería a 45°.
+    final mx = grilla.metrosX > 0 ? grilla.metrosX : 1.0;
+    final my = grilla.metrosY > 0 ? grilla.metrosY : 1.0;
+
+    canvas.save();
+    canvas.clipRect(Rect.fromLTWH(0, 0, tam.width, tam.height));
+    for (final g in guias) {
+      final rad = g.anguloGrados * pi / 180;
+      var ux = cos(rad) / mx;
+      var uy = sin(rad) / my;
+      final n = sqrt(ux * ux + uy * uy);
+      if (n == 0) continue;
+      ux = ux / n * 3.0; // 3 unidades normalizadas: cruza el plano entero
+      uy = uy / n * 3.0;
+      final a = _desnormalizar(Offset(g.ancla.dx - ux, g.ancla.dy - uy), tam);
+      final b = _desnormalizar(Offset(g.ancla.dx + ux, g.ancla.dy + uy), tam);
+      _lineaPunteada(canvas, a, b, paintGuia, paso: 10 * _k);
+    }
+    canvas.restore();
+
+    // Etiqueta con el ángulo, pegada al punto que se está moviendo.
+    final punto = guiaPunto;
+    if (punto == null) return;
+    final tp = TextPainter(
+      textDirection: TextDirection.ltr,
+      text: TextSpan(
+        text: guias.first.etiqueta,
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 11 * _k,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    )..layout();
+    final c = _desnormalizar(punto, tam);
+    final k = _k;
+    final ancho = tp.width + 12 * k, alto = tp.height + 6 * k;
+    // Si no entra a la derecha, la etiqueta se pasa al otro lado del punto.
+    var izq = c.dx + 14 * k;
+    if (izq + ancho > tam.width) izq = c.dx - 14 * k - ancho;
+    var arriba = c.dy - 30 * k;
+    if (arriba < 0) arriba = c.dy + 14 * k;
+    final rect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(izq, arriba, ancho, alto),
+      Radius.circular(4 * k),
+    );
+    canvas.drawRRect(rect, Paint()..color = TemaApp.guiaEtiqueta);
+    tp.paint(canvas, Offset(rect.left + 6 * k, rect.top + 3 * k));
+  }
+
+  @override
+  bool shouldRepaint(_MapaPainter old) =>
+      old.zonas != zonas ||
+      old.verticesEnCurso != verticesEnCurso ||
+      old.tamanoImagen != tamanoImagen ||
+      old.grilla != grilla ||
+      old.ruta != ruta ||
+      old.mostrarGrilla != mostrarGrilla ||
+      old.puntosMedicion != puntosMedicion ||
+      old.celdaResaltada != celdaResaltada ||
+      old.celdasCalibradas != celdasCalibradas ||
+      old.verticeArrastrado != verticeArrastrado ||
+      old.guias != guias ||
+      old.guiaPunto != guiaPunto ||
+      old.escalaVista != escalaVista;
+}
+
+/// Capa de la celda del usuario. Cuando la posición pasa a otra celda, el
+/// cuadrado se desliza hasta la nueva en vez de saltar.
+///
+/// Es SÓLO dibujo: la posición que usan la ruta, la voz y la cámara sigue
+/// siendo [MapaWidget.posicionUsuario], que llega ya resuelta. Esta capa no
+/// la cambia ni la demora; sólo decide por dónde pasa el cuadrado mientras
+/// cambia de celda. Al terminar queda exactamente donde quedaba antes.
+///
+/// Se mueve con el mismo "resorte" que la cámara de la navegación (ver
+/// `_tauCamaraSeg` en pantalla_naveg.dart): una posición nueva sólo cambia
+/// el objetivo y el cuadrado sigue sin cortes, aunque llegue a mitad de
+/// camino. Con una animación de duración fija, cada posición nueva la
+/// reiniciaba y el movimiento salía a los tirones.
+///
+/// El ticker corre sólo durante el deslizamiento y repinta sólo esta capa.
+class _CapaUsuario extends StatefulWidget {
+  final Offset posicionUsuario; // posición normalizada
+  final Size tamanoImagen;
+  final GrillaNav grilla;
+  final double? heading;
+  final double escalaVista;
+
+  const _CapaUsuario({
+    required this.posicionUsuario,
+    required this.tamanoImagen,
+    required this.grilla,
+    this.heading,
+    this.escalaVista = 1.0,
+  });
+
+  @override
+  State<_CapaUsuario> createState() => _CapaUsuarioState();
+}
+
+class _CapaUsuarioState extends State<_CapaUsuario>
+    with SingleTickerProviderStateMixin {
+  /// Constante de tiempo del deslizamiento (s): a los 0,1 s recorrió el 70 %
+  /// del camino y a los ~0,25 s llegó. Mucho más corta que la de la cámara
+  /// (0,22 s) para que el cuadrado no se atrase respecto de la posición.
+  static const double _tauSeg = 0.08;
+
+  late final Ticker _ticker;
+  Duration? _ultimoTick;
+
+  /// Centro (normalizado) del cuadrado tal como se dibuja ahora. Lo escucha
+  /// el painter: cada frame del deslizamiento repinta sin reconstruir nada.
+  late final ValueNotifier<Offset> _mostrada;
+
+  Offset get _objetivo => widget.grilla.centroDeCelda(widget.posicionUsuario);
+
+  @override
+  void initState() {
+    super.initState();
+    // La primera posición aparece directo en su celda, sin deslizarse.
+    _mostrada = ValueNotifier(_objetivo);
+    _ticker = createTicker(_onTick);
+  }
+
+  @override
+  void didUpdateWidget(_CapaUsuario old) {
+    super.didUpdateWidget(old);
+    if (_mostrada.value != _objetivo && !_ticker.isActive) {
+      _ultimoTick = null;
+      _ticker.start();
+    }
+  }
+
+  /// Un frame: recorre la fracción 1 − e^(−dt/τ) de lo que falta, con el dt
+  /// real del frame (igual a 60 Hz que a 120 Hz).
+  void _onTick(Duration transcurrido) {
+    final previo = _ultimoTick;
+    _ultimoTick = transcurrido;
+    final dt = previo == null
+        ? 1 / 60
+        : ((transcurrido - previo).inMicroseconds / 1e6)
+            .clamp(0.0, 0.1)
+            .toDouble();
+    final k = 1 - exp(-dt / _tauSeg);
+    final objetivo = _objetivo;
+    final nueva = Offset.lerp(_mostrada.value, objetivo, k)!;
+    // ¿Llegó? (menos de una décima de píxel del plano)
+    if (_desnormalizar(objetivo - nueva, widget.tamanoImagen).distance < 0.1) {
+      _mostrada.value = objetivo;
+      _ticker.stop();
+      return;
+    }
+    _mostrada.value = nueva;
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    _mostrada.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+        painter: _UsuarioPainter(
+          posicion: _mostrada,
+          tamanoImagen: widget.tamanoImagen,
+          grilla: widget.grilla,
+          heading: widget.heading,
+          escalaVista: widget.escalaVista,
+        ),
+      );
+}
+
+/// Painter liviano de la posición del usuario: pinta solo la celda actual y la
+/// flecha de orientación. Está en su propia capa para repintarse en cada tick
+/// de posición sin redibujar la grilla, zonas ni el camino.
+class _UsuarioPainter extends CustomPainter {
+  /// Centro normalizado del cuadrado a dibujar (ver [_CapaUsuario]). Durante
+  /// el deslizamiento cae entre dos celdas.
+  final ValueNotifier<Offset> posicion;
+  final Size tamanoImagen;
+  final GrillaNav grilla;
+  final double? heading;         // grados; 0 = Norte (arriba)
+
+  /// Zoom del contenedor (ver [MapaWidget.escalaVista]): el borde y la flecha
+  /// miden lo mismo en pantalla con cualquier zoom. La celda sigue a escala.
+  final double escalaVista;
+
+  _UsuarioPainter({
+    required this.posicion,
+    required this.tamanoImagen,
+    required this.grilla,
+    this.heading,
+    this.escalaVista = 1.0,
+  }) : super(repaint: posicion);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final k = 1 / max(1.0, escalaVista);
+    final rect = _rectCelda(posicion.value, grilla, tamanoImagen);
+    final paintUsuario = Paint()
+      ..color = TemaApp.posicionUsuario.withValues(alpha: 0.85)
+      ..style = PaintingStyle.fill;
+    canvas.drawRect(rect, paintUsuario);
+    final paintBordeUsuario = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0 * k;
+    canvas.drawRect(rect, paintBordeUsuario);
+    if (heading != null) _dibujarFlecha(canvas, rect.center, heading!, k);
+  }
+
+  /// Flecha blanca centrada en la celda del usuario que indica su orientación.
+  /// heading 0° = Norte = arriba. [k]: escala por el zoom del contenedor.
+  void _dibujarFlecha(
+      Canvas canvas, Offset centro, double headingGrados, double k) {
+    final paint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    canvas.save();
+    canvas.translate(centro.dx, centro.dy);
+    canvas.rotate(headingGrados * pi / 180);
+    canvas.scale(k);
+    final path = Path()
+      ..moveTo(0, -9)
+      ..lineTo(6, 6)
+      ..lineTo(0, 2)
+      ..lineTo(-6, 6)
+      ..close();
+    canvas.drawPath(path, paint);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_UsuarioPainter old) =>
+      old.posicion != posicion ||
+      old.tamanoImagen != tamanoImagen ||
+      old.grilla != grilla ||
+      old.heading != heading ||
+      old.escalaVista != escalaVista;
+}
+
+/// Widget del mapa reutilizable para configuración y navegación.
+class MapaWidget extends StatelessWidget {
+  final String rutaImagen;
+  final Map<String, BeaconMarcado> beacons;
+  final List<ZonaNoTransitable> zonas;
+  final List<LugarInteres> lugares; // NUEVO
+  final Offset? posicionUsuario;
+  final bool modoEdicion;
+  /// Toque sobre el plano (modo edición). Se entrega al LEVANTAR el dedo y
+  /// sólo si el gesto fue un toque: un arrastre no lo dispara.
+  final void Function(Offset normalizado)? onTapMapa;
+
+  /// Toque sobre un beacon, un lugar o una zona ya cargados. La pantalla de
+  /// configuración los pasa únicamente con el modo "Borrar" activo; si son
+  /// null, el toque sigue de largo hasta [onTapMapa].
+  final void Function(String mac)? onTapBeacon;
+  final void Function(LugarInteres lugar)? onTapLugar;
+  final void Function(ZonaNoTransitable zona)? onTapZona;
+
+  /// El dedo se apoyó sobre el marcador de un beacon / de un lugar. Sirve
+  /// para saber QUÉ se quiere arrastrar mirando el marcador que realmente se
+  /// tocó, en vez de adivinarlo por distancia a su posición. El movimiento
+  /// en sí sigue llegando por [onArrastreActualizar].
+  final void Function(String mac)? onAgarreBeacon;
+  final void Function(LugarInteres lugar)? onAgarreLugar;
+  final List<Offset> verticesEnCurso;
+
+  /// Camino calculado como lista de centros de celda (normalizados). Cada celda
+  /// se pinta sobre la grilla.
+  final List<Offset>? ruta;
+
+  /// Si es true, dibuja la grilla de 1 m × 1 m sobre el plano.
+  final bool mostrarGrilla;
+
+  /// Definición de la grilla (escala del piso). Determina el tamaño y la
+  /// cantidad de celdas que se pintan.
+  final GrillaNav grilla;
+
+  /// Heading en grados (0 = Norte, 90 = Este). Si es null la celda del usuario
+  /// se pinta sin flecha de orientación.
+  final double? headingUsuario;
+
+  /// Puntos de la medición de escala (violeta).
+  final List<Offset> puntosMedicion;
+
+  /// Callbacks de arrastre con **un solo dedo** sobre el plano. Los usan tanto
+  /// la medición de escala como el editor de zonas, para colocar y reacomodar
+  /// puntos (y el arrastre de beacons y lugares).
+  /// Si [onArrastreInicio] es no nulo, el arrastre se entrega a estos callbacks
+  /// en lugar de hacer pan del mapa. [onArrastreFin] no recibe posición: usar
+  /// la última reportada por [onArrastreActualizar].
+  final void Function(Offset normalizado)? onArrastreInicio;
+  final void Function(Offset normalizado)? onArrastreActualizar;
+  final void Function()? onArrastreFin;
+
+  /// Se llama cuando el gesto en curso se cancela porque el usuario apoyó un
+  /// segundo dedo (gesto de zoom). Permite descartar el punto o vértice recién
+  /// apoyado.
+  final void Function()? onArrastreCancelar;
+
+  /// Índice del vértice de [verticesEnCurso] que se está arrastrando (se
+  /// resalta como manija activa), o null.
+  final int? verticeArrastrado;
+
+  /// Guías activas del asistente de trazo (líneas rectas). Se dibujan como
+  /// rectas punteadas magenta que cruzan todo el plano.
+  final List<GuiaTrazo> guias;
+
+  /// Punto al que se pega la etiqueta con el ángulo imantado.
+  final Offset? guiaPunto;
+
+  /// Zoom con que el contenedor está mostrando el mapa (el InteractiveViewer
+  /// de la pantalla de configuración). Con él, las manijas, los trazos y los
+  /// marcadores se dibujan del mismo tamaño en pantalla con cualquier zoom.
+  /// Sin esto, a zoom 20 una manija de vértice medía cientos de píxeles y
+  /// tapaba justo lo que se quería dibujar (una pared fina). En 1 (por
+  /// defecto) todo se dibuja como siempre.
+  final double escalaVista;
+
+  /// Modo calibración: centro normalizado de la celda seleccionada (amarillo) y
+  /// centros de las celdas que ya tienen calibraciones guardadas (pin ✓).
+  final Offset? celdaResaltada;
+  final List<Offset> celdasCalibradas;
+
+  /// MAC del beacon que el operador está arrastrando ahora (modo beacons de la
+  /// configuración), o null. Se resalta como mira activa. El arrastre en sí lo
+  /// maneja el canal de un dedo ([onArrastreInicio]/…) de la pantalla de config.
+  final String? beaconArrastrado;
+
+  /// Id del lugar/escalera que el operador está arrastrando (modo lugares de
+  /// la configuración), o null. Se dibuja agrandado para que se vea cuál se
+  /// está moviendo.
+  final int? lugarArrastrado;
+
+  /// Lado (m) con el que se dibujan las escaleras. Una escalera típica mide
+  /// ~1 m de ancho: con celdas de 1 m, el ícono ocupa exactamente una celda.
+  static const double anchoEscaleraMetros = LugarInteres.anchoEscaleraMetros;
+
+  const MapaWidget({
+    super.key,
+    required this.rutaImagen,
+    required this.beacons,
+    required this.zonas,
+    required this.grilla,
+    this.lugares = const [],
+    this.posicionUsuario,
+    this.modoEdicion = false,
+    this.onTapMapa,
+    this.onTapBeacon,
+    this.onTapLugar,
+    this.onTapZona,
+    this.onAgarreBeacon,
+    this.onAgarreLugar,
+    this.verticesEnCurso = const [],
+    this.ruta,
+    this.mostrarGrilla = false,
+    this.headingUsuario,
+    this.puntosMedicion = const [],
+    this.onArrastreInicio,
+    this.onArrastreActualizar,
+    this.onArrastreFin,
+    this.onArrastreCancelar,
+    this.celdaResaltada,
+    this.celdasCalibradas = const [],
+    this.verticeArrastrado,
+    this.beaconArrastrado,
+    this.lugarArrastrado,
+    this.guias = const [],
+    this.guiaPunto,
+    this.escalaVista = 1.0,
+  });
+
+  /// Tamaño del plano renderizado dentro del [contenedor], conservando una
+  /// proporción ancho/alto. Si se pasa [aspectoForzado] (p. ej. la proporción
+  /// métrica escalaX : escalaY) se usa esa en lugar de la de la imagen, de modo
+  /// que las celdas de 1 m se vean cuadradas; la imagen se estira para llenar
+  /// la caja resultante.
+  static Size calcularTamanoContenido(Size contenedor, Size imagen,
+      {double? aspectoForzado}) {
+    final ratioContenedor = contenedor.width / contenedor.height;
+    final ratioImagen = (aspectoForzado != null && aspectoForzado > 0 && aspectoForzado.isFinite)
+        ? aspectoForzado
+        : imagen.width / imagen.height;
+    if (ratioImagen > ratioContenedor) {
+      final ancho = contenedor.width;
+      final alto = ancho / ratioImagen;
+      return Size(ancho, alto);
+    } else {
+      final alto = contenedor.height;
+      final ancho = alto * ratioImagen;
+      return Size(ancho, alto);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final contenedor = Size(constraints.maxWidth, constraints.maxHeight);
+
+        return FutureBuilder<Size>(
+          future: _tamanoImagenCacheado(rutaImagen),
+          initialData: _cacheTamano[rutaImagen],
+          builder: (context, snapshot) {
+            final tamanoImagen = snapshot.data ?? contenedor;
+            // Proporción métrica del piso (escalaX : escalaY). Renderizar el
+            // plano con esta proporción hace que cada celda de 1 m sea cuadrada.
+            final aspectoMetrico = (grilla.metrosX > 0 && grilla.metrosY > 0)
+                ? grilla.metrosX / grilla.metrosY
+                : null;
+            final tamanoRenderizado = calcularTamanoContenido(
+                contenedor, tamanoImagen,
+                aspectoForzado: aspectoMetrico);
+
+            final offsetX = (contenedor.width - tamanoRenderizado.width) / 2;
+            final offsetY = (contenedor.height - tamanoRenderizado.height) / 2;
+
+            // Marcadores (beacons, lugares) del mismo tamaño en pantalla con
+            // cualquier zoom del contenedor (ver [escalaVista]).
+            final k = 1 / max(1.0, escalaVista);
+
+            Widget mapa = Stack(
+              children: [
+                // Imagen del plano, estirada (BoxFit.fill) a la caja métrica para
+                // que coincida exactamente con la grilla y las capas superpuestas.
+                // RepaintBoundary: no se re-rasteriza cuando solo cambian las
+                // capas superpuestas (p. ej. la posición del usuario).
+                Positioned(
+                  left: offsetX,
+                  top: offsetY,
+                  width: tamanoRenderizado.width,
+                  height: tamanoRenderizado.height,
+                  child: RepaintBoundary(
+                    child: Image.file(
+                      File(rutaImagen),
+                      fit: BoxFit.fill,
+                      errorBuilder: (context, error, stackTrace) =>
+                          const Center(child: Text("Plano no disponible")),
+                    ),
+                  ),
+                ),
+
+                // Grilla + zonas + camino (con GestureDetector para borrar en modo edición)
+                Positioned(
+                  left: offsetX,
+                  top: offsetY,
+                  width: tamanoRenderizado.width,
+                  height: tamanoRenderizado.height,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTapUp: modoEdicion && onTapZona != null
+                        ? (details) {
+                            final local = details.localPosition;
+                            final dx = local.dx / tamanoRenderizado.width;
+                            final dy = local.dy / tamanoRenderizado.height;
+                            final puntoTocado = Offset(dx, dy);
+                            // Buscar si el toque cayó dentro de alguna zona existente
+                            for (final zona in zonas) {
+                              if (zona.vertices.length >= 3 &&
+                                  MapaWidget.puntoEnPoligono(puntoTocado, zona.vertices)) {
+                                onTapZona!(zona);
+                                return;
+                              }
+                            }
+                          }
+                        : null,
+                    child: RepaintBoundary(
+                      child: CustomPaint(
+                        painter: _MapaPainter(
+                          zonas: zonas,
+                          verticesEnCurso: verticesEnCurso,
+                          tamanoImagen: tamanoRenderizado,
+                          grilla: grilla,
+                          ruta: ruta,
+                          mostrarGrilla: mostrarGrilla,
+                          puntosMedicion: puntosMedicion,
+                          celdaResaltada: celdaResaltada,
+                          celdasCalibradas: celdasCalibradas,
+                          verticeArrastrado: verticeArrastrado,
+                          guias: guias,
+                          guiaPunto: guiaPunto,
+                          escalaVista: escalaVista,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+                // Beacons
+                ...beacons.values.map((b) {
+                  final activo = beaconArrastrado == b.mac;
+                  // Caja mayor en edición: aloja la mira y da un área de agarre
+                  // cómoda para arrastrar el beacon (el arrastre lo captura el
+                  // Listener de un dedo que envuelve al mapa).
+                  final caja = modoEdicion ? 48.0 : 22.0;
+                  final px =
+                      offsetX + b.posicion.dx * tamanoRenderizado.width - caja / 2;
+                  final py =
+                      offsetY + b.posicion.dy * tamanoRenderizado.height - caja / 2;
+                  final color = !modoEdicion
+                      ? Colors.black54
+                      : (activo ? Colors.deepOrange : Colors.red);
+                  return Positioned(
+                    left: px,
+                    top: py,
+                    child: Transform.scale(
+                      scale: k,
+                      child: Listener(
+                        behavior: HitTestBehavior.translucent,
+                        onPointerDown: modoEdicion && onAgarreBeacon != null
+                            ? (_) => onAgarreBeacon!(b.mac)
+                            : null,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          // Toque simple (antes era long-press): sólo llega con
+                          // el modo "Borrar" activo, así que no hay con qué
+                          // confundirlo.
+                          onTap: modoEdicion && onTapBeacon != null
+                              ? () => onTapBeacon!(b.mac)
+                              : null,
+                          child: SizedBox(
+                            width: caja,
+                            height: caja,
+                            child: CustomPaint(
+                              painter: _MiraBeaconPainter(
+                                color: color,
+                                activo: activo,
+                                edicion: modoEdicion,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+
+                // LUGARES DE INTERÉS (POIs) y ESCALERAS
+                ...lugares.map((lugar) {
+                  final arrastrado =
+                      lugarArrastrado != null && lugarArrastrado == lugar.id;
+
+                  // ESCALERA: cuadrado a escala real, centrado en su posición.
+                  // Mide [MapaWidget.anchoEscaleraMetros] de lado, convertido a
+                  // píxeles con la escala del piso en cada eje: con celdas de
+                  // 1 m ocupa exactamente una celda de la grilla.
+                  if (lugar.esEscalera) {
+                    final ancho = (tamanoRenderizado.width / grilla.metrosX *
+                            MapaWidget.anchoEscaleraMetros)
+                        .clamp(4.0, double.infinity);
+                    final alto = (tamanoRenderizado.height / grilla.metrosY *
+                            MapaWidget.anchoEscaleraMetros)
+                        .clamp(4.0, double.infinity);
+                    final cx = offsetX + lugar.posicion.dx * tamanoRenderizado.width;
+                    final cy = offsetY + lugar.posicion.dy * tamanoRenderizado.height;
+                    return Positioned(
+                      left: cx - ancho / 2,
+                      top: cy - alto / 2,
+                      width: ancho,
+                      height: alto,
+                      child: Listener(
+                        behavior: HitTestBehavior.opaque,
+                        onPointerDown: onAgarreLugar != null
+                            ? (_) => onAgarreLugar!(lugar)
+                            : null,
+                        child: GestureDetector(
+                          onTap:
+                              onTapLugar != null ? () => onTapLugar!(lugar) : null,
+                          child: Transform.scale(
+                            scale: arrastrado ? 1.35 : 1.0,
+                            child: _MarcadorEscalera(
+                              lugar: lugar,
+                              ancho: ancho,
+                              alto: alto,
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+
+                  // LUGAR COMÚN: pin de tamaño fijo con la punta en la posición.
+                  //
+                  // FIX (pin corrido respecto del lugar real): el marcador es
+                  // una columna [ícono, etiqueta] y su ANCHO es el de la
+                  // etiqueta, con el ícono centrado adentro. Antes se ubicaba
+                  // con `left = x - 14`, que sólo deja la punta sobre la
+                  // posición si la columna mide 28 px (el ícono solo). Con
+                  // cualquier nombre más largo que eso el pin quedaba dibujado
+                  // a la derecha del lugar real, la mitad del ancho de la
+                  // etiqueta: unos 50 px con "restaurante burger king". Por eso
+                  // costaba arrastrarlos: se agarraba el pin que se veía, pero
+                  // el lugar "estaba" bastante más a la izquierda.
+                  // Ahora la columna se ancla en x y se corre media columna
+                  // hacia la izquierda, sea cual sea su ancho.
+                  final px = offsetX + lugar.posicion.dx * tamanoRenderizado.width;
+                  final py =
+                      offsetY + lugar.posicion.dy * tamanoRenderizado.height - 28 * k;
+                  return Positioned(
+                    left: px,
+                    top: py,
+                    child: FractionalTranslation(
+                      translation: const Offset(-0.5, 0),
+                      child: Transform.scale(
+                        scale: k,
+                        alignment: Alignment.topCenter,
+                        child: Listener(
+                          // Agarre por el marcador que se ve (ícono o etiqueta).
+                          onPointerDown: onAgarreLugar != null
+                              ? (_) => onAgarreLugar!(lugar)
+                              : null,
+                          child: GestureDetector(
+                            onTap:
+                                onTapLugar != null ? () => onTapLugar!(lugar) : null,
+                            // Agrandado mientras se arrastra. La escala se ancla
+                            // cerca de la punta del ícono (la posición exacta);
+                            // la etiqueta cuelga por debajo de ese punto.
+                            child: Transform.scale(
+                              scale: arrastrado ? 1.35 : 1.0,
+                              alignment: const Alignment(0, 0.25),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.place,
+                                    color: modoEdicion
+                                        ? Colors.purple
+                                        : Colors.purple[700],
+                                    size: 28,
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 4, vertical: 1),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(alpha: 0.85),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      lugar.nombre,
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: modoEdicion
+                                            ? Colors.purple[800]
+                                            : Colors.purple[900],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+
+                // Celda del usuario (capa liviana propia: se repinta en cada
+                // tick de posición sin redibujar grilla/zonas/camino).
+                if (posicionUsuario != null)
+                  Positioned(
+                    // Con clave: la capa recuerda dónde está dibujado el
+                    // cuadrado, y si cambia la cantidad de beacons o lugares
+                    // de arriba no se tiene que confundir con otro hijo del
+                    // Stack y arrancar de cero.
+                    key: const ValueKey('capaUsuario'),
+                    left: offsetX,
+                    top: offsetY,
+                    width: tamanoRenderizado.width,
+                    height: tamanoRenderizado.height,
+                    child: IgnorePointer(
+                      child: RepaintBoundary(
+                        child: _CapaUsuario(
+                          posicionUsuario: posicionUsuario!,
+                          tamanoImagen: tamanoRenderizado,
+                          grilla: grilla,
+                          heading: headingUsuario,
+                          escalaVista: escalaVista,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            );
+
+            // Convierte una posición local del gesto a coordenada normalizada
+            // recortada a [0, 1].
+            Offset aNormalizado(Offset local) {
+              final dx = ((local.dx - offsetX) / tamanoRenderizado.width).clamp(0.0, 1.0);
+              final dy = ((local.dy - offsetY) / tamanoRenderizado.height).clamp(0.0, 1.0);
+              return Offset(dx, dy);
+            }
+
+            final bool hayArrastre = modoEdicion && onArrastreInicio != null;
+
+            if (modoEdicion && onTapMapa != null) {
+              mapa = GestureDetector(
+                // onTapUp y no onTapDown: onTapDown se dispara a los 100 ms de
+                // apoyar el dedo aunque después el gesto resulte ser un
+                // arrastre, y entonces al querer mover un marcador también se
+                // agregaba uno nuevo. onTapUp sólo llega si fue un toque.
+                onTapUp: (det) {
+                  final local = det.localPosition;
+                  final dx = (local.dx - offsetX) / tamanoRenderizado.width;
+                  final dy = (local.dy - offsetY) / tamanoRenderizado.height;
+                  if (dx >= 0 && dx <= 1 && dy >= 0 && dy <= 1) {
+                    onTapMapa!(Offset(dx, dy));
+                  }
+                },
+                child: mapa,
+              );
+            }
+
+            // Escala, zonas, beacons y lugares: un dedo coloca o arrastra; al
+            // apoyar un segundo dedo se cancela y el InteractiveViewer hace zoom. Usamos un
+            // Listener (eventos crudos de puntero) porque no compite en la arena
+            // de gestos con el zoom del InteractiveViewer.
+            if (hayArrastre) {
+              mapa = _ArrastreUnDedo(
+                aNormalizado: aNormalizado,
+                onInicio: onArrastreInicio!,
+                onActualizar: onArrastreActualizar,
+                onFin: onArrastreFin,
+                onCancelar: onArrastreCancelar,
+                child: mapa,
+              );
+            }
+
+            return mapa;
+          },
+        );
+      },
+    );
+  }
+
+  // Cache del tamaño de cada imagen por ruta. Evita re-resolver la imagen (y
+  // fugar ImageStreamListeners) en cada rebuild, que durante la navegación
+  // saturaba el hilo de UI y congelaba la pantalla.
+  static final Map<String, Size> _cacheTamano = {};
+  static final Map<String, Future<Size>> _cacheFuturo = {};
+
+  static Future<Size> _tamanoImagenCacheado(String ruta) {
+    return _cacheFuturo.putIfAbsent(ruta, () => _obtenerTamanoImagen(ruta));
+  }
+
+  static Future<Size> _obtenerTamanoImagen(String ruta) {
+    final completer = Completer<Size>();
+    final stream = FileImage(File(ruta)).resolve(const ImageConfiguration());
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (info, _) {
+        final size = Size(info.image.width.toDouble(), info.image.height.toDouble());
+        _cacheTamano[ruta] = size;
+        if (!completer.isCompleted) completer.complete(size);
+        stream.removeListener(listener); // liberar el listener: sin fuga
+      },
+      onError: (error, stackTrace) {
+        if (!completer.isCompleted) completer.completeError(error);
+        stream.removeListener(listener);
+      },
+    );
+    stream.addListener(listener);
+    return completer.future;
+  }
+
+  /// Ray-casting: determina si un punto está dentro de un polígono.
+  /// Público para que las pantallas puedan reusarlo (p. ej. la configuración,
+  /// para saber si un toque cayó sobre una zona ya creada).
+  static bool puntoEnPoligono(Offset punto, List<Offset> vertices) {
+    bool dentro = false;
+    int j = vertices.length - 1;
+    for (int i = 0; i < vertices.length; i++) {
+      final vi = vertices[i];
+      final vj = vertices[j];
+      if (((vi.dy > punto.dy) != (vj.dy > punto.dy)) &&
+          (punto.dx < (vj.dx - vi.dx) * (punto.dy - vi.dy) / (vj.dy - vi.dy) + vi.dx)) {
+        dentro = !dentro;
+      }
+      j = i;
+    }
+    return dentro;
+  }
+}
+
+/// Captura gestos de **un solo dedo** sobre el plano con eventos crudos de
+/// puntero (Listener): los puntos de la medición de escala y los vértices de
+/// las zonas prohibidas. Apoyar un **segundo dedo** cancela el gesto en
+/// curso y deja que el InteractiveViewer haga zoom. A diferencia de un
+/// GestureDetector con onPan*, el Listener no compite en la arena de gestos,
+/// así que convive con el zoom del InteractiveViewer y con los taps internos
+/// del mapa (p. ej. tocar una zona existente para borrarla).
+class _ArrastreUnDedo extends StatefulWidget {
+  final Offset Function(Offset local) aNormalizado;
+  final void Function(Offset normalizado) onInicio;
+  final void Function(Offset normalizado)? onActualizar;
+  final void Function()? onFin;
+  final void Function()? onCancelar;
+  final Widget child;
+
+  const _ArrastreUnDedo({
+    required this.aNormalizado,
+    required this.onInicio,
+    required this.onActualizar,
+    required this.onFin,
+    required this.onCancelar,
+    required this.child,
+  });
+
+  @override
+  State<_ArrastreUnDedo> createState() => _ArrastreUnDedoState();
+}
+
+class _ArrastreUnDedoState extends State<_ArrastreUnDedo> {
+  final Set<int> _punteros = {};
+  bool _midiendo = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (e) {
+        _punteros.add(e.pointer);
+        if (_punteros.length == 1) {
+          _midiendo = true;
+          widget.onInicio(widget.aNormalizado(e.localPosition));
+        } else if (_midiendo) {
+          // Segundo dedo: el gesto pasa a ser zoom. Cancelar la medición.
+          _midiendo = false;
+          widget.onCancelar?.call();
+        }
+      },
+      onPointerMove: (e) {
+        if (_midiendo && _punteros.length == 1) {
+          widget.onActualizar?.call(widget.aNormalizado(e.localPosition));
+        }
+      },
+      onPointerUp: (e) {
+        _punteros.remove(e.pointer);
+        if (_midiendo && _punteros.isEmpty) {
+          _midiendo = false;
+          widget.onFin?.call();
+        }
+      },
+      onPointerCancel: (e) {
+        _punteros.remove(e.pointer);
+        if (_midiendo && _punteros.isEmpty) {
+          _midiendo = false;
+          widget.onCancelar?.call();
+        }
+      },
+      child: widget.child,
+    );
+  }
+}
+
+
+/// Marcador de escalera a escala real ([ancho] × [alto] píxeles, que son
+/// [MapaWidget.anchoEscaleraMetros] en el plano). Dibuja los escalones y un
+/// triángulo en el borde de la entrada apuntando hacia afuera; la etiqueta
+/// con nombre y sentido (↑ sube, ↓ baja, ↕ ambas) cuelga debajo sin afectar
+/// el tamaño del cuadrado.
+class _MarcadorEscalera extends StatelessWidget {
+  final LugarInteres lugar;
+  final double ancho;
+  final double alto;
+  const _MarcadorEscalera({
+    required this.lugar,
+    required this.ancho,
+    required this.alto,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final sentido = lugar.sube && lugar.baja
+        ? '↕'
+        : lugar.sube
+            ? '↑'
+            : lugar.baja
+                ? '↓'
+                : '';
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Positioned.fill(
+          child: CustomPaint(
+            painter: _EscaleraPainter(
+              direccionEntrada: lugar.direccionEntrada,
+              esAscensor: lugar.esAscensor,
+            ),
+          ),
+        ),
+        // Etiqueta debajo del cuadrado, centrada y más ancha que él si hace
+        // falta (no se recorta ni desplaza el cuadrado).
+        Positioned(
+          top: alto + 2,
+          left: -60,
+          right: -60,
+          child: Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.85),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                '${lugar.nombre} $sentido'.trim(),
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orange[900],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Dibuja la escalera dentro de su cuadrado. Se trabaja en un marco local
+/// rotado según [direccionEntrada], donde la entrada queda siempre "arriba":
+/// los escalones son líneas horizontales y el triángulo va en el borde de
+/// arriba apuntando hacia afuera.
+///
+/// Un ASCENSOR usa el mismo cuadrado y el mismo triángulo de entrada (ahí es
+/// la puerta), pero en vez de escalones lleva dos flechas, arriba y abajo,
+/// que no rotan con la entrada.
+class _EscaleraPainter extends CustomPainter {
+  final double? direccionEntrada;
+  final bool esAscensor;
+  const _EscaleraPainter({
+    required this.direccionEntrada,
+    this.esAscensor = false,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final lado = min(size.width, size.height);
+    final radio = Radius.circular(lado * 0.12);
+
+    // Fondo y borde.
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, radio),
+      Paint()..color = const Color(0xFFE65100).withValues(alpha: 0.85),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect.deflate(0.5), radio),
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = max(1.0, lado * 0.05),
+    );
+
+    final medio = lado / 2;
+
+    // Ascensor: flechas arriba / abajo, en el marco de la pantalla (antes de
+    // rotar): siempre se leen derechas, mire para donde mire la puerta.
+    if (esAscensor) {
+      final cx = size.width / 2;
+      final cy = size.height / 2;
+      final a = medio * 0.34; // medio ancho de cada flecha
+      final h = medio * 0.42; // alto de cada flecha
+      final sep = medio * 0.14; // separación al centro
+      final flechas = Path()
+        // ▲
+        ..moveTo(cx, cy - sep - h)
+        ..lineTo(cx - a, cy - sep)
+        ..lineTo(cx + a, cy - sep)
+        ..close()
+        // ▼
+        ..moveTo(cx, cy + sep + h)
+        ..lineTo(cx - a, cy + sep)
+        ..lineTo(cx + a, cy + sep)
+        ..close();
+      canvas.drawPath(flechas, Paint()..color = Colors.white);
+    }
+
+    // Marco local centrado y rotado: la entrada queda hacia -y.
+    canvas.save();
+    canvas.translate(size.width / 2, size.height / 2);
+    if (direccionEntrada != null) canvas.rotate(direccionEntrada! * pi / 180);
+
+    // Escalones.
+    if (!esAscensor) {
+      final escalon = Paint()
+        ..color = Colors.white
+        ..strokeWidth = max(0.8, lado * 0.05)
+        ..strokeCap = StrokeCap.round;
+      const n = 4;
+      for (int i = 0; i < n; i++) {
+        final y = -medio * 0.45 + i * (medio * 1.2 / (n - 1));
+        canvas.drawLine(
+          Offset(-medio * 0.6, y),
+          Offset(medio * 0.6, y),
+          escalon,
+        );
+      }
+    }
+
+    // Triángulo de la entrada, sobresaliendo del borde.
+    if (direccionEntrada != null) {
+      final base = -medio;
+      final t = lado * 0.28;
+      final tri = Path()
+        ..moveTo(0, base - t)
+        ..lineTo(-t, base + t * 0.2)
+        ..lineTo(t, base + t * 0.2)
+        ..close();
+      canvas.drawPath(tri, Paint()..color = Colors.orange);
+      canvas.drawPath(
+        tri,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = max(0.8, lado * 0.03),
+      );
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_EscaleraPainter old) =>
+      old.direccionEntrada != direccionEntrada || old.esAscensor != esAscensor;
+}
