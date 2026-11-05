@@ -1,13 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'database.dart';
+import 'design/design.dart';
 import 'lista_pisos.dart';
 import 'pantalla_login_admin.dart';
 import 'pantalla_mapas_admin.dart';
 import 'supabase_config.dart';
 import 'supabase_service.dart';
-import 'tema.dart';
 
+/// Edificios cargados en este teléfono (app del administrador): la pantalla
+/// a la que se llega después del login. Tocar un edificio abre sus pisos.
+///
+/// ─── Sistema de diseño (fase 5.4 del rediseño) ───
+/// Va envuelta en AmbienteDiseno. Arriba, la barra con "Mapas publicados en
+/// la nube" y "Cerrar sesión" (con la nube configurada); cada edificio es una
+/// TarjetaLista y, abajo, "Agregar edificio" es el botón principal (antes, un
+/// botón flotante con un "+" sin nombre para TalkBack).
+///
+/// Un edificio se sigue eliminando deslizándolo hacia la izquierda, con la
+/// misma confirmación, ahora en una hoja (mostrarConfirmacion). Con TalkBack,
+/// que no deja deslizar, la tarjeta tiene la acción "Eliminar", que hace lo
+/// mismo; por eso TalkBack no lee "Deslizá para eliminar". "Nuevo edificio"
+/// es una hoja con el nombre (CampoTexto): si se guarda vacío, lo dice
+/// debajo del campo (antes no pasaba nada). Los avisos son los del sistema de
+/// diseño (mostrarAviso).
+///
+/// Hasta que se lee la base no se muestra nada: si no, "No hay edificios
+/// registrados" se vería (y TalkBack lo anunciaría) mientras se lee.
 class ListaEdificios extends StatefulWidget {
   const ListaEdificios({super.key});
 
@@ -18,6 +38,9 @@ class ListaEdificios extends StatefulWidget {
 class _ListaEdificiosState extends State<ListaEdificios> {
   List<Map<String, dynamic>> _edificios = [];
 
+  /// Si ya se leyó la base una vez.
+  bool _leida = false;
+
   @override
   void initState() {
     super.initState();
@@ -26,208 +49,304 @@ class _ListaEdificiosState extends State<ListaEdificios> {
 
   void _refrescarEdificios() async {
     final datos = await DatabaseHelper.instance.obtenerEdificios();
-    if (mounted) setState(() => _edificios = datos);
+    if (mounted) {
+      setState(() {
+        _edificios = datos;
+        _leida = true;
+      });
+    }
   }
 
-  Future<bool> _confirmarBorradoEdificio(BuildContext context, String nombre) async {
-    return await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: TemaApp.fondoCard,
-        title: const Text('¿Eliminar edificio?', style: TextStyle(color: TemaApp.textoBlanco)),
-        content: Text(
-          'Se eliminará "$nombre", incluyendo todos sus pisos y beacons. Esta acción es permanente.',
-          style: const TextStyle(color: TemaApp.textoSecundario),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('CANCELAR'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: TemaApp.zonaRestringidaBorde),
-            child: const Text('ELIMINAR TODO'),
-          ),
-        ],
-      ),
-    ) ?? false;
+  Future<bool> _confirmarBorradoEdificio(String nombre) => mostrarConfirmacion(
+    context,
+    titulo: '¿Eliminar edificio?',
+    mensaje:
+        'Se eliminará "$nombre", incluyendo todos sus pisos y beacons. Esta '
+        'acción es permanente.',
+    confirmar: 'Eliminar todo',
+    destructiva: true,
+    iconoConfirmar: Icons.delete_rounded,
+  );
+
+  /// Pide confirmar y elimina el edificio. Devuelve si se eliminó. Lo usan
+  /// deslizar la tarjeta y la acción "Eliminar" de TalkBack.
+  Future<bool> _eliminarEdificio(Map<String, dynamic> edificio) async {
+    final confirmado = await _confirmarBorradoEdificio(edificio['nombre']);
+    if (confirmado != true) return false;
+
+    // Un edificio arrastra a sus pisos. Antes de borrarlo, se quitan de la
+    // nube todos sus mapas publicados. Si alguno falla (offline o de otro
+    // dueño), se aborta y no se borra nada local, para no dejar mapas
+    // huérfanos.
+    if (SupabaseService.instance.configurado) {
+      final remoteIds = await DatabaseHelper.instance
+          .obtenerRemoteIdsDeEdificio(edificio['id']);
+      for (final remoteId in remoteIds) {
+        try {
+          await SupabaseService.instance.eliminarMapa(remoteId);
+        } catch (e) {
+          if (!mounted) return false;
+          _avisar(
+            'No se pudo quitar un mapa de la nube: $e\nNo se eliminó el '
+            'edificio.',
+            error: true,
+          );
+          return false;
+        }
+      }
+    }
+
+    await DatabaseHelper.instance.eliminarEdificioCompleto(edificio['id']);
+    if (!mounted) return true;
+    _avisar("Se eliminó ${edificio['nombre']} y todos sus datos");
+    return true;
   }
 
-  void _agregarEdificio() {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: TemaApp.fondoCard,
-        title: const Text('Nuevo Edificio', style: TextStyle(color: TemaApp.textoBlanco)),
-        content: TextField(
-          controller: controller,
-          style: const TextStyle(color: TemaApp.textoBlanco),
-          decoration: const InputDecoration(hintText: 'Nombre (ej: Facultad de Ingeniería)'),
+  /// La tarjeta del edificio eliminado sale de la lista enseguida (si se
+  /// deslizó, ya se fue y no puede volver a armarse) y la lista se vuelve a
+  /// leer.
+  void _sacarDeLaLista(Map<String, dynamic> edificio) {
+    setState(() {
+      _edificios = [
+        for (final otro in _edificios)
+          if (otro['id'] != edificio['id']) otro,
+      ];
+    });
+    _refrescarEdificios();
+  }
+
+  Future<void> _agregarEdificio() => mostrarHoja<void>(
+    context,
+    titulo: 'Nuevo edificio',
+    // Lo cierra "Cancelar" (o volver, o tocar afuera).
+    botonCerrar: false,
+    contenido: (context) => _NuevoEdificio(
+      alGuardar: (nombre) async {
+        await DatabaseHelper.instance.crearEdificio(nombre);
+        _refrescarEdificios();
+      },
+    ),
+  );
+
+  void _abrirPisos(Map<String, dynamic> edificio) {
+    Navigator.push(
+      context,
+      RutaApp<void>(
+        builder: (context) => ListaPisos(
+          edificioId: edificio['id'],
+          nombreEdificio: edificio['nombre'],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-          ElevatedButton(
-            onPressed: () async {
-              if (controller.text.isNotEmpty) {
-                await DatabaseHelper.instance.crearEdificio(controller.text);
-                _refrescarEdificios();
-                if (context.mounted) Navigator.pop(context);
-              }
-            },
-            child: const Text('Guardar'),
-          ),
-        ],
       ),
     );
   }
 
+  void _abrirMapasPublicados() {
+    Navigator.push(
+      context,
+      RutaApp<void>(builder: (_) => const PantallaMapasAdmin()),
+    );
+  }
+
+  Future<void> _cerrarSesion() async {
+    await Supabase.instance.client.auth.signOut();
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      RutaApp<void>(builder: (_) => const PantallaLoginAdmin()),
+    );
+  }
+
+  void _avisar(String msg, {bool error = false}) {
+    if (!mounted) return;
+    mostrarAviso(context, msg, error: error);
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        appBar: AppBar(
-          title: const Text('Blind Route — Edificios'),
-          actions: [
-            if (SupabaseConfig.configurado)
-              IconButton(
-                tooltip: 'Mapas publicados en la nube',
-                icon: const Icon(Icons.cloud_rounded),
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const PantallaMapasAdmin()),
-                  );
-                },
+    return AmbienteDiseno(
+      child: Builder(
+        builder: (context) {
+          final e = EstiloApp.de(context);
+          return Scaffold(
+            backgroundColor: e.fondo,
+            appBar: BarraSuperior(
+              titulo: 'Blind Route — Edificios',
+              acciones: [
+                if (SupabaseConfig.configurado)
+                  AccionBarra(
+                    icono: Icons.cloud_rounded,
+                    etiqueta: 'Mapas publicados en la nube',
+                    alPresionar: _abrirMapasPublicados,
+                  ),
+                if (SupabaseConfig.configurado)
+                  AccionBarra(
+                    icono: Icons.logout_rounded,
+                    etiqueta: 'Cerrar sesión',
+                    alPresionar: _cerrarSesion,
+                  ),
+              ],
+            ),
+            body: SafeArea(top: false, bottom: false, child: _cuerpo()),
+            bottomNavigationBar: _BarraAgregar(
+              texto: 'Agregar edificio',
+              icono: Icons.add_rounded,
+              alPresionar: _agregarEdificio,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _cuerpo() {
+    // Mientras se lee la base (un instante), el fondo vacío.
+    if (!_leida) return const SizedBox.shrink();
+    if (_edificios.isEmpty) {
+      // En el medio; si con letra grande no entra, se desplaza.
+      return const CustomScrollView(
+        slivers: [
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: EstadoPantalla(
+                icono: Icons.business_rounded,
+                titulo: 'No hay edificios registrados',
+                detalle: 'Tocá «Agregar edificio» para cargar el primero.',
               ),
-            if (SupabaseConfig.configurado)
-              IconButton(
-                tooltip: 'Cerrar sesión',
-                icon: const Icon(Icons.logout_rounded),
-                onPressed: () async {
-                  await Supabase.instance.client.auth.signOut();
-                  if (!context.mounted) return;
-                  Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const PantallaLoginAdmin()),
-                  );
-                },
-              ),
-          ],
+            ),
+          ),
+        ],
+      );
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.all(EspaciadoApp.margenLateral),
+      itemCount: _edificios.length,
+      separatorBuilder: (_, _) =>
+          const SizedBox(height: EspaciadoApp.entreTarjetas),
+      itemBuilder: (context, i) {
+        final edificio = _edificios[i];
+        final nombre = edificio['nombre'] as String;
+        return TarjetaLista(
+          key: ValueKey<Object?>(edificio['id']),
+          icono: Icons.business_rounded,
+          titulo: nombre,
+          subtitulo: 'Deslizá para eliminar',
+          // Con TalkBack no se desliza: está la acción "Eliminar".
+          etiquetaSemantica: nombre,
+          alTocar: () => _abrirPisos(edificio),
+          alEliminar: () => _eliminarEdificio(edificio),
+          alEliminada: () => _sacarDeLaLista(edificio),
+        );
+      },
+    );
+  }
+}
+
+/// El botón principal de la pantalla, abajo, sobre el fondo: lo que antes
+/// era el botón flotante.
+class _BarraAgregar extends StatelessWidget {
+  const _BarraAgregar({
+    required this.texto,
+    required this.icono,
+    required this.alPresionar,
+  });
+
+  final String texto;
+  final IconData icono;
+  final VoidCallback alPresionar;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          EspaciadoApp.margenLateral,
+          EspaciadoApp.medio,
+          EspaciadoApp.margenLateral,
+          EspaciadoApp.margenLateral,
         ),
-        body: _edificios.isEmpty
-            ? const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.business_outlined, size: 64, color: TemaApp.textoSecundario),
-                    SizedBox(height: 16),
-                    Text('No hay edificios registrados', style: TextStyle(color: TemaApp.textoSecundario, fontSize: 16)),
-                  ],
-                ),
-              )
-            : ListView.builder(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                itemCount: _edificios.length,
-                itemBuilder: (context, i) {
-                  final edificio = _edificios[i];
-                  return Dismissible(
-                    key: Key(edificio['id'].toString()),
-                    direction: DismissDirection.endToStart,
-                    confirmDismiss: (direction) async {
-                      final confirmado = await _confirmarBorradoEdificio(
-                          context, edificio['nombre']);
-                      if (confirmado != true) return false;
-
-                      // Un edificio arrastra a sus pisos. Antes de borrarlo,
-                      // se quitan de la nube todos sus mapas publicados. Si
-                      // alguno falla (offline o de otro dueño), se aborta y no
-                      // se borra nada local, para no dejar mapas huérfanos.
-                      if (SupabaseService.instance.configurado) {
-                        final remoteIds = await DatabaseHelper.instance
-                            .obtenerRemoteIdsDeEdificio(edificio['id']);
-                        for (final remoteId in remoteIds) {
-                          try {
-                            await SupabaseService.instance
-                                .eliminarMapa(remoteId);
-                          } catch (e) {
-                            if (!mounted) return false;
-                            ScaffoldMessenger.of(this.context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                    'No se pudo quitar un mapa de la nube: $e\nNo se eliminó el edificio.'),
-                              ),
-                            );
-                            return false;
-                          }
-                        }
-                      }
-
-                      await DatabaseHelper.instance
-                          .eliminarEdificioCompleto(edificio['id']);
-                      if (!mounted) return true;
-                      ScaffoldMessenger.of(this.context).showSnackBar(
-                        SnackBar(
-                            content: Text(
-                                "Se eliminó ${edificio['nombre']} y todos sus datos")),
-                      );
-                      return true;
-                    },
-                    background: Container(
-                      color: TemaApp.zonaRestringidaRelleno,
-                      alignment: Alignment.centerRight,
-                      padding: const EdgeInsets.only(right: 20),
-                      child: const Icon(Icons.delete_sweep, color: Colors.white, size: 28),
-                    ),
-                    onDismissed: (direction) => _refrescarEdificios(),
-                    child: Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: TemaApp.fondoCard,
-                        borderRadius: BorderRadius.circular(TemaApp.radiusCard),
-                        border: Border.all(color: const Color(0xFF21262D), width: 1),
-                      ),
-                      child: ListTile(
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                        leading: Container(
-                          width: 42, height: 42,
-                          decoration: BoxDecoration(
-                            color: TemaApp.acentoSuave,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: const Icon(Icons.business_rounded, color: TemaApp.acento, size: 22),
-                        ),
-                        title: Text(edificio['nombre'], style: const TextStyle(color: TemaApp.textoBlanco, fontWeight: FontWeight.w600, fontSize: 16)),
-                        subtitle: const Text('Deslizá para eliminar', style: TextStyle(color: TemaApp.textoSecundario, fontSize: 12)),
-                        trailing: const Icon(Icons.chevron_right_rounded, color: TemaApp.textoSecundario),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => ListaPisos(
-                                edificioId: edificio['id'],
-                                nombreEdificio: edificio['nombre'],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  );
-                },
-              ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: _agregarEdificio,
-          backgroundColor: TemaApp.acento,
-          foregroundColor: TemaApp.fondo,
-          child: const Icon(Icons.add),
+        child: BotonPrincipal(
+          texto: texto,
+          icono: icono,
+          alPresionar: alPresionar,
         ),
       ),
+    );
+  }
+}
+
+/// Lo que va en la hoja "Nuevo edificio": el nombre, "Cancelar" y
+/// "Guardar". Si se guarda vacío, lo dice debajo del campo. Mientras guarda,
+/// el campo y "Guardar" se deshabilitan: dos toques no cargan dos edificios.
+class _NuevoEdificio extends StatefulWidget {
+  const _NuevoEdificio({required this.alGuardar});
+
+  /// Guarda el edificio y vuelve a leer la lista.
+  final Future<void> Function(String nombre) alGuardar;
+
+  @override
+  State<_NuevoEdificio> createState() => _NuevoEdificioState();
+}
+
+class _NuevoEdificioState extends State<_NuevoEdificio> {
+  final TextEditingController _nombre = TextEditingController();
+  String? _error;
+  bool _guardando = false;
+
+  @override
+  void dispose() {
+    _nombre.dispose();
+    super.dispose();
+  }
+
+  Future<void> _guardar() async {
+    if (_nombre.text.isEmpty) {
+      setState(() => _error = 'Escribí el nombre del edificio.');
+      return;
+    }
+    setState(() => _guardando = true);
+    await widget.alGuardar(_nombre.text);
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        CampoTexto(
+          etiqueta: 'Nombre',
+          ayuda: 'Por ejemplo, Facultad de Ingeniería',
+          controlador: _nombre,
+          capitalizacion: TextCapitalization.sentences,
+          accionTeclado: TextInputAction.done,
+          habilitado: !_guardando,
+          error: _error,
+          // Escribir le borra el error.
+          alCambiar: (_) {
+            if (_error != null) setState(() => _error = null);
+          },
+          // "Listo": guarda.
+          alEnviar: (_) => _guardando ? null : _guardar(),
+        ),
+        // Más aire que el alcance de la luz de los botones: ninguna sombra
+        // cae sobre el error.
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        FilaBotones(
+          children: [
+            BotonSecundario(
+              texto: 'Cancelar',
+              alPresionar: () => Navigator.of(context).pop(),
+            ),
+            BotonPrincipal(
+              texto: 'Guardar',
+              expandido: false,
+              alPresionar: _guardando ? null : _guardar,
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

@@ -1,17 +1,14 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
 import 'package:blindroute/design/design.dart';
 import 'package:blindroute/lista_edificios.dart';
 import 'package:blindroute/pantalla_login_admin.dart';
-import 'package:blindroute/supabase_config.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'ayudas_pantallas.dart';
+import 'nube_falsa.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LOGIN DEL ADMINISTRADOR (fase 5.3 del rediseño)
@@ -26,51 +23,15 @@ import 'ayudas_pantallas.dart';
 //
 // ─── La nube de prueba ───
 // flutter_test contesta cualquier pedido con un 400 vacío, y antes del cuadro
-// siguiente: «Ingresando…» no llegaría a verse. Acá lo reemplaza una nube de
-// prueba (abajo, con HttpOverrides de dart:io: sin paquetes nuevos), puesta
-// antes de iniciar Supabase, que arma un cliente nuevo para cada pedido. Cada
-// pedido lo contesta el test, cuando quiere, como lo contestaría Supabase.
+// siguiente: «Ingresando…» no llegaría a verse. Acá contesta la nube de
+// prueba (nube_falsa.dart, la misma de los tests de las listas y de los mapas
+// publicados): cada pedido lo contesta el test, cuando quiere, como lo
+// contestaría Supabase.
 //
 // ─── Sin la lista de edificios ───
 // Al entrar se abre ListaEdificios, que lee la base del teléfono (en los
 // tests no anda). Ahí el test mira la ruta que se abre y no deja dibujar otro
 // cuadro: la lista no llega a armarse.
-
-/// Lo que contesta la nube de prueba a un pedido.
-typedef Respuesta = ({int estado, String cuerpo});
-
-/// Como contesta Supabase a un email o una contraseña que no van.
-const Respuesta _invalidas = (
-  estado: 400,
-  cuerpo:
-      '{"code":400,"error_code":"invalid_credentials",'
-      '"msg":"Invalid login credentials"}',
-);
-
-/// La sesión que da Supabase al entrar. El token no es un JWT: así no
-/// vence nunca y Supabase no intenta renovarlo.
-const Map<String, Object> _sesion = {
-  'access_token': 'token-de-prueba',
-  'token_type': 'bearer',
-  'expires_in': 3600,
-  'refresh_token': 'renovacion-de-prueba',
-  'user': {
-    'id': 'admin-de-prueba',
-    'aud': 'authenticated',
-    'email': 'admin@ejemplo.com',
-    'created_at': '2026-11-05T00:00:00Z',
-    'app_metadata': <String, Object>{},
-    'user_metadata': <String, Object>{},
-  },
-};
-
-/// Como contesta Supabase a un email y una contraseña que van, y al salir.
-Future<Respuesta> _entra(String metodo, Uri url) async =>
-    url.path.endsWith('/token')
-    ? (estado: 200, cuerpo: jsonEncode(_sesion))
-    : (estado: 204, cuerpo: '');
-
-final _NubeDePrueba _nube = _NubeDePrueba();
 
 /// Escribe el email y la contraseña.
 Future<void> _escribir(
@@ -112,26 +73,21 @@ void _revisarEntrada(ObservadorRutas observador, BuildContext contexto) {
 void main() {
   setUpAll(() async {
     await cargarInter();
-    HttpOverrides.global = _nube;
-    SharedPreferences.setMockInitialValues({});
-    await Supabase.initialize(
-      url: SupabaseConfig.url,
-      publishableKey: SupabaseConfig.anonKey,
-    );
+    await iniciarSupabaseDePrueba();
   });
 
   setUp(() {
     AjustesMovimiento.instancia.reiniciarParaTests();
-    _nube
-      ..pedidos.clear()
-      ..contestar = (metodo, url) async => _invalidas;
+    nubeFalsa
+      ..reiniciar()
+      ..contestar = (metodo, url) async => credencialesInvalidas;
   });
 
   // Si un test entró y falló antes de salir, sale acá: los demás empiezan
   // sin sesión (si no, el login entraría directo).
   tearDown(() async {
     if (Supabase.instance.client.auth.currentSession != null) {
-      _nube.contestar = _entra;
+      nubeFalsa.contestar = contestarSesion;
       await Supabase.instance.client.auth.signOut();
     }
   });
@@ -264,7 +220,7 @@ void main() {
       expect(tester.getSemantics(error), isSemantics(isLiveRegion: true));
     }
     // Ni la nube ni un SnackBar.
-    expect(_nube.pedidos, isEmpty);
+    expect(nubeFalsa.pedidos, isEmpty);
     expect(find.byType(SnackBar), findsNothing);
     await expectLater(tester, meetsGuideline(textContrastGuideline));
 
@@ -278,7 +234,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(errorEmail, findsNothing);
     expect(errorContrasena, findsOneWidget);
-    expect(_nube.pedidos, isEmpty);
+    expect(nubeFalsa.pedidos, isEmpty);
     // Y al revés.
     await tester.enterText(campos.first, '');
     await tester.enterText(campos.last, 'una clave');
@@ -288,7 +244,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(errorEmail, findsOneWidget);
     expect(errorContrasena, findsNothing);
-    expect(_nube.pedidos, isEmpty);
+    expect(nubeFalsa.pedidos, isEmpty);
     semantica.dispose();
   });
 
@@ -298,13 +254,13 @@ void main() {
     final semantica = tester.ensureSemantics();
     await armarPantalla(tester, const PantallaLoginAdmin());
     final respuesta = Completer<Respuesta>();
-    _nube.contestar = (metodo, url) => respuesta.future;
+    nubeFalsa.contestar = (metodo, url) => respuesta.future;
     await _escribir(tester, 'admin@ejemplo.com', 'una clave');
     await tester.tap(find.text('Ingresar'));
     await tester.pump();
 
     // Esperando a la nube.
-    expect(_nube.pedidos, ['POST /auth/v1/token']);
+    expect(nubeFalsa.pedidos, ['POST /auth/v1/token']);
     expect(find.text('Ingresando…'), findsOneWidget);
     expect(find.text('Ingresar'), findsNothing);
     final boton = tester.widget<BotonPrincipal>(find.byType(BotonPrincipal));
@@ -330,7 +286,7 @@ void main() {
     expect(find.text('Ingresando…'), findsOneWidget);
 
     // Supabase no lo deja entrar: el error, debajo de la contraseña.
-    respuesta.complete(_invalidas);
+    respuesta.complete(credencialesInvalidas);
     await tester.pumpAndSettle();
     final error = find.text('Invalid login credentials');
     expect(error, findsOneWidget);
@@ -367,7 +323,7 @@ void main() {
     await tester.enterText(find.byType(TextField).last, 'otra clave');
     await tester.pump();
     expect(error, findsNothing);
-    expect(_nube.pedidos, hasLength(1));
+    expect(nubeFalsa.pedidos, hasLength(1));
     semantica.dispose();
   });
 
@@ -397,13 +353,13 @@ void main() {
     expect(teclado['autocorrect'], isFalse);
     expect(teclado['enableSuggestions'], isFalse);
     expect((teclado['autofill'] as Map)['hints'], [AutofillHints.password]);
-    expect(_nube.pedidos, isEmpty);
+    expect(nubeFalsa.pedidos, isEmpty);
 
     // «Listo»: ingresa.
     await tester.enterText(campos.last, 'una clave');
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pumpAndSettle();
-    expect(_nube.pedidos, ['POST /auth/v1/token']);
+    expect(nubeFalsa.pedidos, ['POST /auth/v1/token']);
     expect(find.text('Invalid login credentials'), findsOneWidget);
   });
 
@@ -412,8 +368,9 @@ void main() {
       'va; con la sesión guardada, entra directo', (tester) async {
     final observador = await armarPantalla(tester, const PantallaLoginAdmin());
     final respuesta = Completer<Respuesta>();
-    _nube.contestar = (metodo, url) =>
-        url.path.endsWith('/token') ? respuesta.future : _entra(metodo, url);
+    nubeFalsa.contestar = (metodo, url) => url.path.endsWith('/token')
+        ? respuesta.future
+        : contestarSesion(metodo, url);
     await _escribir(tester, 'admin@ejemplo.com', 'una clave');
     await tester.tap(find.text('Ingresar'));
     await tester.pump();
@@ -422,7 +379,9 @@ void main() {
     // Supabase lo deja entrar. Desde acá no se dibuja otro cuadro (la lista
     // de edificios leería la base del teléfono): idle sólo deja terminar lo
     // que estaba esperando a la nube.
-    respuesta.complete(await _entra('POST', Uri(path: '/auth/v1/token')));
+    respuesta.complete(
+      await contestarSesion('POST', Uri(path: '/auth/v1/token')),
+    );
     await tester.idle();
     expect(
       Supabase.instance.client.auth.currentSession?.user.email,
@@ -444,7 +403,7 @@ void main() {
     // Supabase no termina nunca: va con el de verdad (runAsync), como el
     // tearDown.
     await tester.runAsync(() => Supabase.instance.client.auth.signOut());
-    expect(_nube.pedidos.last, 'POST /auth/v1/logout');
+    expect(nubeFalsa.pedidos.last, 'POST /auth/v1/logout');
     expect(Supabase.instance.client.auth.currentSession, isNull);
   });
 
@@ -467,7 +426,7 @@ void main() {
       isSemantics(isLiveRegion: true),
     );
     expect(find.byType(ProgressIndicator), findsNothing);
-    expect(_nube.pedidos, isEmpty);
+    expect(nubeFalsa.pedidos, isEmpty);
     await expectLater(tester, meetsGuideline(textContrastGuideline));
 
     await armarPantalla(
@@ -485,123 +444,4 @@ void main() {
     );
     semantica.dispose();
   });
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// La nube de prueba
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Lo justo de HttpClient (dart:io) para el cliente de http que usa Supabase:
-// abre el pedido, se traga lo que se manda y, al cerrarlo, espera a que el
-// test conteste. Lo que no se usa cae en noSuchMethod.
-
-/// La nube de prueba: cada pedido lo contesta [contestar].
-class _NubeDePrueba extends HttpOverrides {
-  /// Los pedidos que llegaron: método y camino ("POST /auth/v1/token").
-  final List<String> pedidos = [];
-
-  /// Cómo se contesta un pedido.
-  Future<Respuesta> Function(String metodo, Uri url) contestar =
-      (metodo, url) async => _invalidas;
-
-  @override
-  HttpClient createHttpClient(SecurityContext? context) => _Cliente(this);
-}
-
-class _Cliente implements HttpClient {
-  _Cliente(this._nube);
-
-  final _NubeDePrueba _nube;
-
-  @override
-  Future<HttpClientRequest> openUrl(String method, Uri url) async =>
-      _Pedido(_nube, method, url);
-
-  @override
-  void close({bool force = false}) {}
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => null;
-}
-
-class _Pedido implements HttpClientRequest {
-  _Pedido(this._nube, this.method, this.uri);
-
-  final _NubeDePrueba _nube;
-
-  @override
-  final String method;
-
-  @override
-  final Uri uri;
-
-  @override
-  final HttpHeaders headers = _Cabeceras();
-
-  @override
-  Future<void> addStream(Stream<List<int>> stream) => stream.drain<void>();
-
-  @override
-  Future<HttpClientResponse> close() async {
-    _nube.pedidos.add('$method ${uri.path}');
-    final respuesta = await _nube.contestar(method, uri);
-    return _Respuesta(respuesta.estado, utf8.encode(respuesta.cuerpo));
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => null;
-}
-
-class _Respuesta extends Stream<List<int>> implements HttpClientResponse {
-  _Respuesta(this.statusCode, this._cuerpo);
-
-  final List<int> _cuerpo;
-
-  @override
-  final int statusCode;
-
-  @override
-  int get contentLength => _cuerpo.length;
-
-  @override
-  final HttpHeaders headers = _Cabeceras();
-
-  @override
-  bool get isRedirect => false;
-
-  @override
-  List<RedirectInfo> get redirects => const [];
-
-  @override
-  bool get persistentConnection => false;
-
-  @override
-  String get reasonPhrase => '';
-
-  @override
-  StreamSubscription<List<int>> listen(
-    void Function(List<int> event)? onData, {
-    Function? onError,
-    void Function()? onDone,
-    bool? cancelOnError,
-  }) => Stream<List<int>>.value(_cuerpo).listen(
-    onData,
-    onError: onError,
-    onDone: onDone,
-    cancelOnError: cancelOnError,
-  );
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => null;
-}
-
-/// Las cabeceras: las del pedido no se guardan; las de la respuesta dicen
-/// que es JSON.
-class _Cabeceras implements HttpHeaders {
-  @override
-  void forEach(void Function(String name, List<String> values) action) =>
-      action('content-type', ['application/json; charset=utf-8']);
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => null;
 }

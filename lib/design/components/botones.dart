@@ -597,7 +597,9 @@ BorderSide _bordeControl(EstiloApp e, Set<WidgetState> estados) {
 
 /// Botón redondo de ícono: 36 dp de dibujo, levantado (el relieve chico) y
 /// con borde, adentro de un área tocable de 48. Es el de las barras (volver,
-/// acciones, cerrar una hoja). El ícono va en texto principal (13,85).
+/// acciones, cerrar una hoja). El ícono va en texto principal (13,85) o, si
+/// es [destructivo] (eliminar), en rojo (5,31 sobre la superficie, 5,94
+/// hundido al presionar).
 ///
 /// [etiqueta] es lo que dice TalkBack y lo que aparece al mantenerlo
 /// apretado.
@@ -607,6 +609,7 @@ class BotonRedondo extends StatelessWidget {
     required this.icono,
     required this.etiqueta,
     required this.alPresionar,
+    this.destructivo = false,
   });
 
   final IconData icono;
@@ -615,13 +618,16 @@ class BotonRedondo extends StatelessWidget {
   /// null: deshabilitado.
   final VoidCallback? alPresionar;
 
+  /// Una acción que borra algo: el ícono en rojo.
+  final bool destructivo;
+
   @override
   Widget build(BuildContext context) {
     final e = EstiloApp.de(context);
     final habilitado = alPresionar != null;
     const tamano = Size.square(FormasApp.botonRedondo);
     final estilo = _estiloBase(
-      texto: e.textoPrincipal,
+      texto: destructivo ? e.error : e.textoPrincipal,
       textoDeshabilitado: e.textoSecundario,
       tamano: tamano,
       relleno: EdgeInsets.zero,
