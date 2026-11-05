@@ -2555,6 +2555,362 @@ void main() {
     });
   });
 
+  // ── Tarjeta de una lista ────────────────────────────────────────────────
+
+  group('tarjeta de lista', () {
+    const eliminar = CustomSemanticsAction(label: 'Eliminar');
+
+    /// Lo que dice TalkBack, en orden (sin los nodos que no dicen nada).
+    List<String> orden(WidgetTester tester) => tester.semantics
+        .simulatedAccessibilityTraversal()
+        .map((nodo) => nodo.getSemanticsData().label)
+        .where((etiqueta) => etiqueta.isNotEmpty)
+        .toList();
+
+    testWidgets('levantada y con borde; se lee de una vez (con su etiqueta) y '
+        'se toca entera; la acción va aparte, después, y tocarla no la hunde', (
+      tester,
+    ) async {
+      final semantica = tester.ensureSemantics();
+      final toques = <String>[];
+      await armar(
+        tester,
+        TarjetaLista(
+          icono: Icons.layers_rounded,
+          titulo: 'Planta baja',
+          subtitulo: 'Deslizá para eliminar',
+          etiquetaSemantica: 'Planta baja',
+          acciones: [
+            BotonRedondo(
+              icono: Icons.edit_rounded,
+              etiqueta: 'Cambiar número de Planta baja',
+              alPresionar: () => toques.add('número'),
+            ),
+          ],
+          alTocar: () => toques.add('tarjeta'),
+        ),
+      );
+      final tarjeta = find.byType(TarjetaLista);
+      final d = relieveDe(tester, tarjeta);
+      expect(d.elevacion, 1);
+      expect(d.color, ColoresApp.superficie);
+      expect(d.radio, FormasApp.bordeTarjeta);
+      expect(d.borde.color, ColoresApp.borde);
+      expect(find.byType(CuadroIcono), findsOneWidget);
+      expect(find.byIcon(Icons.chevron_right_rounded), findsOneWidget);
+      expect(orden(tester), ['Planta baja', 'Cambiar número de Planta baja']);
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Planta baja')),
+        isSemantics(label: 'Planta baja', isButton: true, hasTapAction: true),
+      );
+      // Sin alEliminar, sin la acción ni el deslizar.
+      expect(
+        tester
+            .getSemantics(find.bySemanticsLabel('Planta baja'))
+            .getSemanticsData()
+            .customSemanticsActionIds,
+        anyOf(isNull, isEmpty),
+      );
+      expect(find.byType(Dismissible), findsNothing);
+
+      // Se toca en el texto y en el borde.
+      await tester.tapAt(tester.getCenter(find.text('Planta baja')));
+      await tester.tapAt(
+        tester.getRect(tarjeta).bottomLeft + const Offset(8, -8),
+      );
+      expect(toques, ['tarjeta', 'tarjeta']);
+
+      // Presionada la acción, la tarjeta no se hunde.
+      final accion = await tester.startGesture(
+        tester.getCenter(find.byTooltip('Cambiar número de Planta baja')),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(relieveDe(tester, tarjeta).elevacion, 1);
+      await accion.up();
+      await tester.pumpAndSettle();
+      expect(toques, ['tarjeta', 'tarjeta', 'número']);
+
+      // Presionada la tarjeta, sí.
+      final dedo = await tester.startGesture(
+        tester.getCenter(find.text('Planta baja')),
+      );
+      await tester.pumpAndSettle();
+      expect(relieveDe(tester, tarjeta).elevacion, -1);
+      expect(relieveDe(tester, tarjeta).color, ColoresApp.hundido);
+      await dedo.up();
+      await tester.pumpAndSettle();
+      expect(relieveDe(tester, tarjeta).elevacion, 1);
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      semantica.dispose();
+    });
+
+    testWidgets('el subtítulo en ámbar, algo para mirar; con la letra al '
+        '200 %, sin el cuadro del ícono y la acción debajo del texto', (
+      tester,
+    ) async {
+      await armar(
+        tester,
+        TarjetaLista(
+          icono: Icons.layers_rounded,
+          titulo: 'Entrepiso',
+          subtitulo: 'Sin número de piso',
+          tonoSubtitulo: TonoDato.advertencia,
+          acciones: [
+            BotonRedondo(
+              icono: Icons.edit_rounded,
+              etiqueta: 'Cambiar número de Entrepiso',
+              alPresionar: () {},
+            ),
+          ],
+          alTocar: () {},
+        ),
+        escala: 2,
+      );
+      expect(tester.takeException(), isNull);
+      expect(
+        tester.widget<Text>(find.text('Sin número de piso')).style!.color,
+        ColoresApp.advertencia,
+      );
+      expect(find.byType(CuadroIcono), findsNothing);
+      expect(
+        tester.getRect(find.byTooltip('Cambiar número de Entrepiso')).top,
+        greaterThan(tester.getRect(find.text('Sin número de piso')).bottom),
+      );
+    });
+
+    testWidgets('con alEliminar: el tacho («Eliminar Planta baja», en rojo, '
+        'después de la tarjeta) y la acción «Eliminar» de TalkBack piden '
+        'confirmar y, si se confirma, avisan que se eliminó', (tester) async {
+      final semantica = tester.ensureSemantics();
+      var confirmar = false;
+      var pedidos = 0;
+      var eliminada = 0;
+      await armar(
+        tester,
+        TarjetaLista(
+          key: const ValueKey<String>('pb'),
+          icono: Icons.layers_rounded,
+          titulo: 'Planta baja',
+          alTocar: () {},
+          alEliminar: () async {
+            pedidos++;
+            return confirmar;
+          },
+          alEliminada: () => eliminada++,
+        ),
+      );
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Planta baja')),
+        isSemantics(isButton: true, customActions: [eliminar]),
+      );
+      tester.semantics.customAction(
+        find.semantics.byLabel('Planta baja'),
+        eliminar,
+      );
+      await tester.pumpAndSettle();
+      expect((pedidos, eliminada), (1, 0));
+      confirmar = true;
+      tester.semantics.customAction(
+        find.semantics.byLabel('Planta baja'),
+        eliminar,
+      );
+      await tester.pumpAndSettle();
+      expect((pedidos, eliminada), (2, 1));
+
+      // El tacho: un botón aparte, después de la tarjeta, en rojo.
+      expect(orden(tester), ['Planta baja', 'Eliminar Planta baja']);
+      final tacho = find.byTooltip('Eliminar Planta baja');
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Eliminar Planta baja')),
+        isSemantics(isButton: true, isEnabled: true, hasTapAction: true),
+      );
+      final estilo = tester
+          .widget<FilledButton>(
+            find.descendant(of: tacho, matching: find.byType(FilledButton)),
+          )
+          .style!;
+      expect(estilo.foregroundColor!.resolve({}), ColoresApp.error);
+      await tester.tap(tacho);
+      await tester.pumpAndSettle();
+      expect((pedidos, eliminada), (3, 2));
+      confirmar = false;
+      await tester.tap(tacho);
+      await tester.pumpAndSettle();
+      expect((pedidos, eliminada), (4, 2));
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      semantica.dispose();
+    });
+
+    testWidgets('los botones van al lado del texto si le dejan 140 dp; si no, '
+        'debajo, alineados con el texto, con el tacho aparte en la otra '
+        'punta', (tester) async {
+      final semantica = tester.ensureSemantics();
+      Widget tarjeta(String titulo, {required bool conAcciones}) =>
+          TarjetaLista(
+            key: ValueKey<String>(titulo),
+            icono: Icons.layers_rounded,
+            titulo: titulo,
+            alTocar: () {},
+            acciones: [
+              if (conAcciones) ...[
+                BotonRedondo(
+                  icono: Icons.navigation_rounded,
+                  etiqueta: 'Probar navegación en $titulo',
+                  alPresionar: () {},
+                ),
+                BotonRedondo(
+                  icono: Icons.edit_rounded,
+                  etiqueta: 'Cambiar número de $titulo',
+                  alPresionar: () {},
+                ),
+              ],
+            ],
+            alEliminar: () async => false,
+          );
+      await armar(
+        tester,
+        Column(
+          children: [
+            tarjeta('Hospital', conAcciones: false),
+            tarjeta('Piso 1', conAcciones: true),
+          ],
+        ),
+      );
+      // Sólo el tacho: al lado del texto.
+      final hospital = tester.getRect(find.text('Hospital'));
+      final tachoHospital = tester.getRect(find.byTooltip('Eliminar Hospital'));
+      expect(tachoHospital.center.dy, closeTo(hospital.center.dy, 12));
+      expect(tachoHospital.left, greaterThan(hospital.right));
+      // Tres botones: debajo; el primero, con su dibujo alineado con el texto
+      // (36 en el medio de 48); el tacho, en la otra punta.
+      final piso = tester.getRect(find.text('Piso 1'));
+      final probar = tester.getRect(
+        find.byTooltip('Probar navegación en Piso 1'),
+      );
+      final tachoPiso = tester.getRect(find.byTooltip('Eliminar Piso 1'));
+      expect(probar.top, greaterThan(piso.bottom));
+      expect(probar.left + 6, moreOrLessEquals(piso.left));
+      expect(tachoPiso.top, moreOrLessEquals(probar.top));
+      final tarjetaPiso = tester.getRect(
+        find.widgetWithText(TarjetaLista, 'Piso 1'),
+      );
+      expect(
+        tachoPiso.right,
+        moreOrLessEquals(tarjetaPiso.right - EspaciadoApp.rellenoTarjeta),
+      );
+      expect(orden(tester), [
+        'Hospital',
+        'Eliminar Hospital',
+        'Piso 1',
+        'Probar navegación en Piso 1',
+        'Cambiar número de Piso 1',
+        'Eliminar Piso 1',
+      ]);
+      semantica.dispose();
+    });
+
+    for (final reducido in [false, true]) {
+      testWidgets('deslizada${reducido ? ', con movimiento reducido,' : ''}: '
+          'detrás, el tacho y «Eliminar» en rojo sobre lo hundido; sin '
+          'confirmar, vuelve; confirmada, se va'
+          '${reducido ? ' sin cerrar el lugar de a poco' : ''}', (
+        tester,
+      ) async {
+        var confirmar = false;
+        var visible = true;
+        await armar(
+          tester,
+          StatefulBuilder(
+            builder: (context, setState) => visible
+                ? TarjetaLista(
+                    key: const ValueKey<String>('pb'),
+                    icono: Icons.layers_rounded,
+                    titulo: 'Planta baja',
+                    alTocar: () {},
+                    alEliminar: () async => confirmar,
+                    alEliminada: () => setState(() => visible = false),
+                  )
+                : const SizedBox.shrink(),
+          ),
+          sinAnimaciones: reducido,
+        );
+        final tarjeta = find.byType(TarjetaLista);
+        final lugar = tester.getRect(tarjeta);
+
+        // A mitad de camino.
+        final dedo = await tester.startGesture(tester.getCenter(tarjeta));
+        await dedo.moveBy(const Offset(-40, 0));
+        await tester.pump();
+        await dedo.moveBy(const Offset(-100, 0));
+        await tester.pump();
+        final texto = tester.widget<Text>(find.text('Eliminar'));
+        expect(texto.style!.color, ColoresApp.error);
+        expect(
+          tester
+              .widget<Icon>(
+                find.descendant(
+                  of: find.ancestor(
+                    of: find.text('Eliminar'),
+                    matching: find.byType(Row),
+                  ),
+                  matching: find.byIcon(Icons.delete_rounded),
+                ),
+              )
+              .color,
+          ColoresApp.error,
+        );
+        final fondo =
+            tester
+                    .widget<DecoratedBox>(
+                      find
+                          .ancestor(
+                            of: find.text('Eliminar'),
+                            matching: find.byType(DecoratedBox),
+                          )
+                          .first,
+                    )
+                    .decoration
+                as DecoracionRelieve;
+        expect(fondo.elevacion, -1);
+        expect(fondo.color, ColoresApp.hundido);
+        expect(
+          contraste(ColoresApp.error, ColoresApp.hundido),
+          greaterThan(4.5),
+        );
+        // Soltada despacio pasado el 40 %: pide confirmar; no, y vuelve.
+        await dedo.moveBy(const Offset(-60, 0));
+        await tester.pump(const Duration(seconds: 1));
+        await dedo.up();
+        await tester.pumpAndSettle();
+        expect(tester.getRect(tarjeta), lugar);
+        expect(visible, isTrue);
+
+        // Confirmada: se va.
+        confirmar = true;
+        await tester.timedDrag(
+          tarjeta,
+          const Offset(-250, 0),
+          const Duration(seconds: 1),
+        );
+        await tester.pump();
+        await tester.pump();
+        if (reducido) {
+          // Sin deslizarse ni cerrar el lugar de a poco: ya se fue.
+          expect(visible, isFalse);
+        } else {
+          // Todavía se está yendo.
+          expect(visible, isTrue);
+          await tester.pumpAndSettle();
+          expect(visible, isFalse);
+        }
+        await tester.pump();
+        expect(tarjeta, findsNothing);
+      });
+    }
+  });
+
   // ── Galería y pantallas de referencia ───────────────────────────────────
 
   group('galería', () {

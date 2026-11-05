@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'design/design.dart';
 import 'supabase_service.dart';
-import 'tema.dart';
 
 /// Pantalla de administración de los mapas publicados en la nube. A diferencia
 /// de la lista de edificios (que es local de cada teléfono), esta lee TODOS los
@@ -9,6 +9,17 @@ import 'tema.dart';
 ///
 /// - Los mapas de la cuenta logueada aparecen primero, marcados como "Tuyo".
 /// - Sólo se pueden borrar los propios (el servidor rechaza el resto).
+///
+/// ─── Sistema de diseño (fase 5.5 del rediseño) ───
+/// Va envuelta en AmbienteDiseno, como el catálogo del usuario
+/// (pantalla_mapas_online.dart), que es su modelo: la barra con "Volver a
+/// cargar la lista" (con TalkBack no se puede tirar hacia abajo), los dos
+/// grupos con su EncabezadoSeccion ("Tus mapas" y "Otros administradores") y
+/// cada mapa en una TarjetaMapaAdmin (abajo). Cargando, sin conexión (con
+/// "Reintentar") y sin mapas: EstadoPantalla, quieto (sin nada que gire), que
+/// TalkBack anuncia. Eliminar un mapa se confirma en una hoja
+/// (mostrarConfirmacion) y los avisos son los del sistema de diseño
+/// (mostrarAviso).
 class PantallaMapasAdmin extends StatefulWidget {
   const PantallaMapasAdmin({super.key});
 
@@ -84,297 +95,433 @@ class _PantallaMapasAdminState extends State<PantallaMapasAdmin> {
   }
 
   Future<void> _eliminar(MapaPublicadoResumen mapa) async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Eliminar de la nube'),
-        content: Text(
+    final confirmar = await mostrarConfirmacion(
+      context,
+      titulo: 'Eliminar de la nube',
+      mensaje:
           'Se quitará "${mapa.pisoNombre}" del catálogo. Los usuarios ya no '
           'podrán descargarlo.\n\n¿Continuar?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Eliminar'),
-          ),
-        ],
-      ),
+      confirmar: 'Eliminar',
+      destructiva: true,
+      iconoConfirmar: Icons.delete_rounded,
     );
-    if (confirmar != true) return;
+    if (!confirmar) return;
 
     setState(() => _enProgreso.add(mapa.id));
     try {
       await SupabaseService.instance.eliminarMapa(mapa.id);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('"${mapa.pisoNombre}" eliminado')),
-      );
+      _avisar('"${mapa.pisoNombre}" eliminado');
       await _cargar();
     } catch (e) {
       if (!mounted) return;
       setState(() => _enProgreso.remove(mapa.id));
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al eliminar: $e')),
-      );
+      _avisar('Error al eliminar: $e', error: true);
     }
   }
 
+  void _avisar(String msg, {bool error = false}) {
+    if (!mounted) return;
+    mostrarAviso(context, msg, error: error);
+  }
+
+  // ── UI ──────────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        appBar: AppBar(title: const Text('Mapas publicados')),
-        body: RefreshIndicator(
-          onRefresh: _cargar,
-          color: TemaApp.acento,
-          backgroundColor: TemaApp.fondoCard,
-          child: _construirCuerpo(),
-        ),
+    return AmbienteDiseno(
+      child: Builder(
+        builder: (context) {
+          final e = EstiloApp.de(context);
+          return Scaffold(
+            backgroundColor: e.fondo,
+            appBar: BarraSuperior(
+              titulo: 'Mapas publicados',
+              acciones: [
+                if (SupabaseService.instance.configurado)
+                  AccionBarra(
+                    icono: Icons.refresh_rounded,
+                    etiqueta: 'Volver a cargar la lista',
+                    alPresionar: _cargando ? null : _cargar,
+                  ),
+              ],
+            ),
+            body: SafeArea(top: false, child: _cuerpo(e)),
+          );
+        },
       ),
     );
   }
 
-  Widget _construirCuerpo() {
+  Widget _cuerpo(EstiloApp e) {
     if (_cargando) {
-      return const Center(
-        child: CircularProgressIndicator(color: TemaApp.acento),
+      return _enElMedio(
+        const EstadoPantalla(
+          icono: Icons.hourglass_empty_rounded,
+          titulo: 'Cargando mapas…',
+        ),
       );
     }
 
     if (_error != null) {
-      return _mensajeCentrado(
-        icono: Icons.cloud_off_rounded,
-        titulo: 'No hay conexión con la nube',
-        detalle: _error!,
+      return _conRecarga(
+        e,
+        _enElMedio(
+          EstadoPantalla(
+            icono: Icons.cloud_off_rounded,
+            titulo: 'No hay conexión con la nube',
+            detalle: _error,
+            accion: SupabaseService.instance.configurado
+                ? BotonSecundario(
+                    texto: 'Reintentar',
+                    icono: Icons.refresh_rounded,
+                    alPresionar: _cargar,
+                  )
+                : null,
+          ),
+        ),
       );
     }
 
     if (_items.isEmpty) {
-      return _mensajeCentrado(
-        icono: Icons.map_outlined,
-        titulo: 'Todavía no hay mapas publicados',
-        detalle: 'Publicá un piso desde la configuración para verlo acá.',
+      return _conRecarga(
+        e,
+        _enElMedio(
+          const EstadoPantalla(
+            icono: Icons.map_rounded,
+            titulo: 'Todavía no hay mapas publicados',
+            detalle: 'Publicá un piso desde la configuración para verlo acá.',
+          ),
+        ),
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: _items.length,
-      itemBuilder: (context, i) {
-        final item = _items[i];
-        if (item is String) return _encabezado(item);
-        return _tarjeta(item as MapaPublicadoResumen);
-      },
-    );
-  }
-
-  Widget _encabezado(String texto) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
-      child: Text(
-        texto,
-        style: const TextStyle(
-          color: TemaApp.acento,
-          fontWeight: FontWeight.w700,
-          fontSize: 14,
-          letterSpacing: 0.3,
+    return _conRecarga(
+      e,
+      ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(
+          EspaciadoApp.margenLateral,
+          EspaciadoApp.margenLateral,
+          EspaciadoApp.margenLateral,
+          EspaciadoApp.entreSecciones,
         ),
+        itemCount: _items.length,
+        itemBuilder: _item,
       ),
     );
   }
 
-  Widget _tarjeta(MapaPublicadoResumen mapa) {
-    final propio = _esPropio(mapa);
-    final borrando = _enProgreso.contains(mapa.id);
+  /// [estado] en el medio de la pantalla. Si con letra grande no entra, se
+  /// desplaza (y se puede tirar hacia abajo aunque entre).
+  Widget _enElMedio(Widget estado) => CustomScrollView(
+    physics: const AlwaysScrollableScrollPhysics(),
+    slivers: [
+      SliverFillRemaining(hasScrollBody: false, child: Center(child: estado)),
+    ],
+  );
 
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      decoration: BoxDecoration(
-        color: TemaApp.fondoCard,
-        borderRadius: BorderRadius.circular(TemaApp.radiusCard),
-        border: Border.all(color: const Color(0xFF21262D)),
+  /// Tirar hacia abajo vuelve a cargar la lista.
+  Widget _conRecarga(EstiloApp e, Widget hijo) => RefreshIndicator(
+    onRefresh: _cargar,
+    color: e.acento,
+    backgroundColor: e.superficie,
+    child: hijo,
+  );
+
+  /// El encabezado de un grupo o la tarjeta de un mapa, con su aire: 28 antes
+  /// de cada grupo (menos el primero), 12 entre el encabezado y su primer
+  /// mapa y entre mapa y mapa.
+  Widget _item(BuildContext context, int i) {
+    final item = _items[i];
+    if (item is String) {
+      return Padding(
+        padding: EdgeInsets.only(
+          top: i == 0 ? 0 : EspaciadoApp.entreSecciones,
+          bottom: EspaciadoApp.medio,
+        ),
+        child: EncabezadoSeccion(titulo: item),
+      );
+    }
+    final mapa = item as MapaPublicadoResumen;
+    final sigueOtroMapa =
+        i + 1 < _items.length && _items[i + 1] is MapaPublicadoResumen;
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: sigueOtroMapa ? EspaciadoApp.entreTarjetas : 0,
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: [
-            _miniatura(mapa),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+      child: TarjetaMapaAdmin(
+        mapa: mapa,
+        propio: _esPropio(mapa),
+        eliminando: _enProgreso.contains(mapa.id),
+        urlImagen: mapa.imagenPath.isEmpty
+            ? null
+            : SupabaseService.instance.urlImagen(mapa.imagenPath),
+        alEliminar: () => _eliminar(mapa),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tarjeta de un mapa publicado
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Como la del catálogo del usuario (TarjetaMapa, pantalla_mapas_online.dart):
+// levantada (radio 20) y sin borde, porque el botón de adentro lleva el suyo.
+// Arriba, la miniatura del plano en un cuadro hundido (la imagen de la nube;
+// mientras llega o si no llega, el ícono de un mapa, sin nada que gire), el
+// edificio en gris, el nombre del piso, cuántos beacons y calibraciones tiene
+// y, si es de la cuenta, la marca "Tuyo" en un chip hundido (sin cian: la v5
+// lo guarda para lo elegido).
+//
+// Abajo, en uno propio, "Eliminar" (secundario, en rojo, nunca en cian). En
+// uno de otro administrador, en lugar del botón, una línea con el candado
+// que dice por qué no se puede eliminar (antes, sólo el candado, que TalkBack
+// no leía). Mientras se elimina, en lugar del botón va un recuadro hundido y
+// quieto que dice "Eliminando…" y que TalkBack anuncia.
+//
+// ─── TalkBack ───
+// La parte de arriba se lee de una vez ("Facultad de Ingeniería, Planta
+// baja, 4 beacons y 12 calibraciones, Tuyo"), y en uno ajeno, junto con por
+// qué no se elimina. El botón dice de qué piso es: "Eliminar Planta baja de
+// la nube".
+//
+// Sólo muestra y avisa el toque: la carga y el borrado los hace la pantalla.
+// Así se puede probar sin la nube.
+
+/// La tarjeta de un mapa publicado, en la pantalla del administrador.
+class TarjetaMapaAdmin extends StatelessWidget {
+  const TarjetaMapaAdmin({
+    super.key,
+    required this.mapa,
+    required this.propio,
+    required this.alEliminar,
+    this.eliminando = false,
+    this.urlImagen,
+  });
+
+  final MapaPublicadoResumen mapa;
+
+  /// Si lo publicó la cuenta con la que se entró: sólo esos se eliminan.
+  final bool propio;
+
+  /// Si se está eliminando (va "Eliminando…" en lugar del botón).
+  final bool eliminando;
+
+  /// La imagen del plano en la nube, para la miniatura. null: un ícono.
+  final String? urlImagen;
+
+  final VoidCallback alEliminar;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    final beacons = mapa.numBeacons;
+    final calibraciones = mapa.numCalibraciones;
+    final gris = TipografiaApp.subtitulo.copyWith(color: e.textoSecundario);
+    final datos = Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _Miniatura(url: urlImagen),
+        const SizedBox(width: EspaciadoApp.medio),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(mapa.edificioNombre, style: gris),
+              const SizedBox(height: EspaciadoApp.minimo),
+              Text(
+                mapa.pisoNombre,
+                style: TipografiaApp.destacado.copyWith(
+                  color: e.textoPrincipal,
+                ),
+              ),
+              const SizedBox(height: EspaciadoApp.minimo),
+              Text(
+                '$beacons beacons · $calibraciones calibraciones',
+                semanticsLabel:
+                    '$beacons beacons y $calibraciones calibraciones',
+                style: gris,
+              ),
+              if (propio) ...[
+                const SizedBox(height: EspaciadoApp.chico),
+                const ChipApp(texto: 'Tuyo', icono: Icons.person_rounded),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+    return PanelRelieve(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          MergeSemantics(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                datos,
+                if (!propio) ...[
+                  const SizedBox(height: EspaciadoApp.medio),
+                  _SinPermiso(estilo: gris, color: e.textoSecundario),
+                ],
+              ],
+            ),
+          ),
+          if (propio) ...[
+            // Más aire que el alcance de la luz del botón: ninguna sombra cae
+            // sobre el texto del chip.
+            const SizedBox(height: EspaciadoApp.margenLateral),
+            if (eliminando)
+              _EnCurso(
+                texto: 'Eliminando…',
+                etiqueta: 'Eliminando ${mapa.pisoNombre} de la nube',
+              )
+            else
+              FilaBotones(
                 children: [
-                  Text(
-                    mapa.edificioNombre,
-                    style: const TextStyle(
-                      color: TemaApp.textoSecundario,
-                      fontSize: 12,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    mapa.pisoNombre,
-                    style: const TextStyle(
-                      color: TemaApp.textoBlanco,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 16,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      if (propio) ...[
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: TemaApp.acento.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: const Text(
-                            'Tuyo',
-                            style: TextStyle(
-                              color: TemaApp.acento,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
-                      Text(
-                        '${mapa.numBeacons} beacons',
-                        style: const TextStyle(
-                          color: TemaApp.textoSecundario,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
+                  BotonSecundario(
+                    texto: 'Eliminar',
+                    icono: Icons.delete_rounded,
+                    destructivo: true,
+                    etiquetaSemantica: 'Eliminar ${mapa.pisoNombre} de la nube',
+                    alPresionar: alEliminar,
                   ),
                 ],
               ),
-            ),
-            const SizedBox(width: 8),
-            _accion(mapa, propio: propio, borrando: borrando),
           ],
-        ),
+        ],
       ),
     );
   }
+}
 
-  Widget _accion(
-    MapaPublicadoResumen mapa, {
-    required bool propio,
-    required bool borrando,
-  }) {
-    if (borrando) {
-      return const SizedBox(
-        width: 44,
-        height: 44,
-        child: Center(
-          child: SizedBox(
-            width: 22,
-            height: 22,
-            child: CircularProgressIndicator(
-                strokeWidth: 2.4, color: TemaApp.acento),
-          ),
-        ),
-      );
-    }
+/// En un mapa de otro administrador, por qué no se puede eliminar: el
+/// candado (decorativo) y el texto, en gris.
+class _SinPermiso extends StatelessWidget {
+  const _SinPermiso({required this.estilo, required this.color});
 
-    // Sólo se pueden borrar los propios. En los ajenos se muestra un candado.
-    if (!propio) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 10),
-        child: Icon(Icons.lock_outline_rounded,
-            color: TemaApp.textoSecundario, size: 20),
-      );
-    }
+  final TextStyle estilo;
+  final Color color;
 
-    return Semantics(
-      button: true,
-      label: 'Eliminar ${mapa.pisoNombre}',
-      child: IconButton(
-        onPressed: () => _eliminar(mapa),
-        icon: const Icon(Icons.delete_outline_rounded),
-        color: TemaApp.zonaRestringidaRelleno,
-        tooltip: 'Eliminar de la nube',
-        iconSize: 24,
-      ),
-    );
-  }
-
-  Widget _miniatura(MapaPublicadoResumen mapa) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: SizedBox(
-        width: 56,
-        height: 56,
-        child: mapa.imagenPath.isEmpty
-            ? _placeholder()
-            : Image.network(
-                SupabaseService.instance.urlImagen(mapa.imagenPath),
-                fit: BoxFit.cover,
-                cacheWidth: 112,
-                gaplessPlayback: true,
-                errorBuilder: (_, __, ___) => _placeholder(),
-                loadingBuilder: (context, child, progress) {
-                  if (progress == null) return child;
-                  return _placeholder(cargando: true);
-                },
-              ),
-      ),
-    );
-  }
-
-  Widget _placeholder({bool cargando = false}) {
-    return Container(
-      color: TemaApp.fondoSurface,
-      alignment: Alignment.center,
-      child: cargando
-          ? const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(
-                  strokeWidth: 2, color: TemaApp.acento),
-            )
-          : const Icon(Icons.map_rounded,
-              color: TemaApp.textoSecundario, size: 24),
-    );
-  }
-
-  Widget _mensajeCentrado({
-    required IconData icono,
-    required String titulo,
-    required String detalle,
-  }) {
-    return ListView(
-      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 80),
+  @override
+  Widget build(BuildContext context) {
+    // El candado, centrado en el primer renglón, crezca o no la letra.
+    final renglon =
+        MediaQuery.textScalerOf(context).scale(estilo.fontSize!) *
+        estilo.height!;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icono, size: 64, color: TemaApp.textoSecundario),
-        const SizedBox(height: 16),
-        Text(
-          titulo,
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: TemaApp.textoBlanco,
-            fontSize: 17,
-            fontWeight: FontWeight.w600,
+        Padding(
+          padding: EdgeInsets.only(
+            top: (renglon - FormasApp.iconoChico).clamp(0, double.infinity) / 2,
+          ),
+          child: ExcludeSemantics(
+            child: Icon(
+              Icons.lock_rounded,
+              size: FormasApp.iconoChico,
+              color: color,
+            ),
           ),
         ),
-        const SizedBox(height: 8),
-        Text(
-          detalle,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 13),
+        const SizedBox(width: EspaciadoApp.chico),
+        Expanded(
+          child: Text(
+            'Sólo lo puede eliminar quien lo publicó.',
+            style: estilo,
+          ),
         ),
       ],
+    );
+  }
+}
+
+/// La miniatura del plano: un cuadro hundido con la imagen de la nube (la
+/// misma de antes, achicada en memoria) o, mientras llega (o si no llega), el
+/// ícono de un mapa, sin nada que gire. Decorativa.
+class _Miniatura extends StatelessWidget {
+  const _Miniatura({required this.url});
+
+  final String? url;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    final url = this.url;
+    final icono = Center(
+      child: Icon(
+        Icons.map_rounded,
+        size: FormasApp.icono,
+        color: e.textoSecundario,
+      ),
+    );
+    return ExcludeSemantics(
+      child: SizedBox.square(
+        dimension: FormasApp.miniatura,
+        // La sombra interior va encima del plano: así se ve hundido.
+        child: PanelRelieve(
+          hundido: true,
+          tamano: TamanoRelieve.chico,
+          radio: FormasApp.bordeCampo,
+          relleno: EdgeInsets.zero,
+          sombraEncima: true,
+          child: url == null
+              ? icono
+              : Image.network(
+                  url,
+                  fit: BoxFit.cover,
+                  cacheWidth: 112,
+                  gaplessPlayback: true,
+                  // El ícono hasta que el plano se puede mostrar (antes, una
+                  // ruedita mientras llegaba, y nada hasta el primer dato).
+                  frameBuilder: (context, child, cuadro, sincronico) =>
+                      cuadro == null ? icono : child,
+                  errorBuilder: (context, error, stack) => icono,
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Lo que va en lugar de "Eliminar" mientras se elimina un mapa: un recuadro
+/// hundido del alto de un botón, quieto, con [texto]. TalkBack dice
+/// [etiqueta] al aparecer.
+class _EnCurso extends StatelessWidget {
+  const _EnCurso({required this.texto, required this.etiqueta});
+
+  final String texto;
+  final String etiqueta;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      label: etiqueta,
+      excludeSemantics: true,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: FormasApp.altoBoton),
+        child: PanelRelieve(
+          hundido: true,
+          tamano: TamanoRelieve.chico,
+          radio: FormasApp.bordeBoton,
+          relleno: const EdgeInsets.symmetric(
+            horizontal: EspaciadoApp.rellenoTarjeta,
+            vertical: EspaciadoApp.medio,
+          ),
+          child: Center(
+            child: Text(
+              texto,
+              textAlign: TextAlign.center,
+              style: TipografiaApp.boton.copyWith(color: e.textoSecundario),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

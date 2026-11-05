@@ -724,6 +724,48 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       'Abajo, la píldora flotante de pestañas, levantada y con borde, sin '
       'desenfoque. La de acciones está en la pantalla de navegación.',
     ),
+    _entreSecciones,
+    const EncabezadoSeccion(titulo: 'Tarjetas de lista'),
+    _bajoEncabezado,
+    TarjetaLista(
+      key: const ValueKey<String>('edificio'),
+      icono: Icons.business_rounded,
+      titulo: 'Facultad de Ingeniería',
+      subtitulo: 'Deslizá para eliminar',
+      etiquetaSemantica: 'Facultad de Ingeniería',
+      alTocar: () => _aviso('Facultad de Ingeniería'),
+      alEliminar: _eliminarDeEjemplo,
+    ),
+    _entreElementos,
+    TarjetaLista(
+      key: const ValueKey<String>('piso'),
+      icono: Icons.layers_rounded,
+      titulo: 'Entrepiso',
+      subtitulo: 'Sin número de piso: tocá el lápiz para asignarlo',
+      tonoSubtitulo: TonoDato.advertencia,
+      etiquetaSemantica: 'Entrepiso, sin número de piso',
+      acciones: [
+        BotonRedondo(
+          icono: Icons.navigation_rounded,
+          etiqueta: 'Probar navegación en Entrepiso',
+          alPresionar: () => _aviso('Probar navegación'),
+        ),
+        BotonRedondo(
+          icono: Icons.edit_rounded,
+          etiqueta: 'Cambiar número de Entrepiso',
+          alPresionar: () => _aviso('Cambiar número'),
+        ),
+      ],
+      alTocar: () => _aviso('Entrepiso'),
+      alEliminar: _eliminarDeEjemplo,
+    ),
+    _bajoEncabezado,
+    _parrafo(
+      e,
+      'Se tocan enteras y los botones van aparte: al lado del texto si le '
+      'dejan lugar; si no, debajo. El tacho pide confirmar; también se '
+      'eliminan deslizándolas y, con TalkBack, con la acción «Eliminar».',
+    ),
   ];
 
   /// Los controles de la vista previa. Escuchan el valor, porque al cambiar
@@ -966,6 +1008,23 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
     );
     if (!mounted || nombre == null) return;
     _aviso(nombre.isEmpty ? 'Guardado sin nombre' : 'Guardado: $nombre');
+  }
+
+  /// En la galería no se elimina nada: confirma y la tarjeta vuelve a su
+  /// lugar.
+  Future<bool> _eliminarDeEjemplo() async {
+    final eliminar = await mostrarConfirmacion(
+      context,
+      titulo: '¿Eliminar?',
+      mensaje: 'Es de ejemplo: no se elimina nada.',
+      confirmar: 'Eliminar',
+      destructiva: true,
+      iconoConfirmar: Icons.delete_rounded,
+    );
+    if (mounted) {
+      _aviso(eliminar ? 'No se elimina: es de ejemplo' : 'No se eliminó');
+    }
+    return false;
   }
 
   Future<void> _confirmar() async {

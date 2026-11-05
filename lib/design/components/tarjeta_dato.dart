@@ -35,8 +35,9 @@ import 'presion.dart';
 // puede decir distinto de como se ve (valorSemantico): "1,2 m" se lee mejor
 // como "1,2 metros".
 
-/// Color del texto de abajo de una [TarjetaDato]. El verde no está: es sólo
-/// de la ruta. Lo bueno se dice con palabras, en gris.
+/// Color del texto de abajo de una [TarjetaDato] (y del subtítulo de una
+/// TarjetaLista). El verde no está: es sólo de la ruta. Lo bueno se dice con
+/// palabras, en gris.
 enum TonoDato {
   /// Gris (9,10 sobre la superficie).
   neutro,

@@ -43,6 +43,10 @@
 //   progreso.dart            AnilloProgreso, BarraProgreso, MiniGrafico
 //   tarjeta_dato.dart        TarjetaDato, TonoDato, GrillaTarjetas
 //   tarjeta_destino.dart     TarjetaDestino
+//   tarjeta_lista.dart       TarjetaLista (un elemento de una lista que
+//                            lleva a otra pantalla, con acciones aparte y,
+//                            si se elimina, deslizándola o con la acción
+//                            «Eliminar» de TalkBack)
 //
 // presion.dart (el relieve al presionar y su animación, el foco y el
 // achique) es interno: lo usan los componentes y no se exporta.
@@ -67,3 +71,4 @@ export 'panel_relieve.dart';
 export 'progreso.dart';
 export 'tarjeta_dato.dart';
 export 'tarjeta_destino.dart';
+export 'tarjeta_lista.dart';
