@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../espaciado.dart';
 import '../estilo.dart';
 import '../formas.dart';
+import '../movimiento.dart';
 import '../relieve.dart';
 import '../tipografia.dart';
 import 'cuadro_icono.dart';
@@ -21,7 +22,8 @@ import 'presion.dart';
 // El borde pasa del gris de los controles al acento (8,75 sobre la
 // superficie) y a la derecha aparece la tilde en acento; sin elegir, un
 // círculo vacío en gris. Así el estado no depende sólo del color del borde.
-// Presionada, se hunde.
+// Al elegirla, el borde cambia y la tilde aparece con un fundido, en 150 ms.
+// Presionada, se hunde y se achica apenas (presion.dart).
 //
 // ─── Letra grande ───
 // El cuadro del ícono (decorativo) no se muestra: el nombre se queda con el
@@ -97,12 +99,18 @@ class TarjetaDestino extends StatelessWidget {
             ),
           ),
           const SizedBox(width: EspaciadoApp.chico),
-          Icon(
-            seleccionada
-                ? Icons.check_circle_rounded
-                : Icons.radio_button_unchecked_rounded,
-            size: FormasApp.icono,
-            color: seleccionada && habilitada ? e.acento : e.textoSecundario,
+          AnimatedSwitcher(
+            duration: MovimientoApp.duracion(context, MovimientoApp.seleccion),
+            switchInCurve: MovimientoApp.curva,
+            switchOutCurve: MovimientoApp.curva.flipped,
+            child: Icon(
+              seleccionada
+                  ? Icons.check_circle_rounded
+                  : Icons.radio_button_unchecked_rounded,
+              key: ValueKey<bool>(seleccionada),
+              size: FormasApp.icono,
+              color: seleccionada && habilitada ? e.acento : e.textoSecundario,
+            ),
           ),
         ],
       ),
@@ -135,26 +143,30 @@ class TarjetaDestino extends StatelessWidget {
               width: FormasApp.grosorLinea,
             );
           }
-          return DecoratedBox(
-            decoration: DecoracionRelieve(
-              color: presionado ? e.hundido : e.superficie,
-              radio: FormasApp.bordeTarjeta,
-              elevacion: elevacionControl(estados),
-              borde: borde,
-              sombraOscura: e.sombraOscura,
-              sombraClara: e.sombraClara,
-            ),
-            child: Material(
-              type: MaterialType.transparency,
-              child: InkWell(
-                onTap: alTocar,
-                statesController: controlador,
-                customBorder: const RoundedRectangleBorder(
-                  borderRadius: FormasApp.bordeTarjeta,
+          return EscalaPresion(
+            presionado: presionado,
+            child: RelieveAnimado(
+              presionado: presionado,
+              decoracion: DecoracionRelieve(
+                color: presionado ? e.hundido : e.superficie,
+                radio: FormasApp.bordeTarjeta,
+                elevacion: elevacionControl(estados),
+                borde: borde,
+                sombraOscura: e.sombraOscura,
+                sombraClara: e.sombraClara,
+              ),
+              child: Material(
+                type: MaterialType.transparency,
+                child: InkWell(
+                  onTap: alTocar,
+                  statesController: controlador,
+                  customBorder: const RoundedRectangleBorder(
+                    borderRadius: FormasApp.bordeTarjeta,
+                  ),
+                  overlayColor: sinCapa,
+                  splashFactory: sinOnda,
+                  child: contenido,
                 ),
-                overlayColor: sinCapa,
-                splashFactory: sinOnda,
-                child: contenido,
               ),
             ),
           );

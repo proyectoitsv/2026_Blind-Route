@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'dart:math';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_compass/flutter_compass.dart';
@@ -32,6 +31,7 @@ import 'supabase_service.dart';
 import 'restriccion_zonas.dart';
 import 'histeresis_celda.dart';
 import 'tema.dart';
+import 'design/haptica.dart';
 import 'piso_util.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -3486,7 +3486,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       _anunciarLlegada(paso);
       return;
     }
-    HapticFeedback.mediumImpact();
+    HapticaApp.media();
     setState(() => _orientador = orientador);
     // hablar() corta la indicación de la ruta que pudiera estar sonando.
     _voz.hablar('Estás llegando $llegandoA. $indicacion.');
@@ -3533,7 +3533,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final d = _destinoSeleccionado;
     if (d == null) return;
     setState(() => _estadoRuta = 'Llegaste');
-    HapticFeedback.heavyImpact();
+    HapticaApp.fuerte();
     // Ej: "Llegaste a Baño. Está adelante."
     _voz.hablar('Llegaste a ${d.nombre}.$lado');
   }
@@ -3569,7 +3569,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// si hay que subir o bajar, hasta qué piso, y el recordatorio del gesto
   /// para cambiar de piso.
   void _anunciarLlegadaEscalera(LugarInteres esc, String lado) {
-    HapticFeedback.heavyImpact();
+    HapticaApp.fuerte();
     final accion = _subiendo ? 'Subí' : 'Bajá';
     final sig = _siguientePisoNumero;
 
@@ -3607,7 +3607,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
 
     _saltandoDePiso = true;
-    HapticFeedback.heavyImpact();
+    HapticaApp.fuerte();
     _turnoVoz++; // un pedido a medio conversar no sigue en el piso nuevo
     _pedidoDesde = null;
     if (_escuchando) {
@@ -4229,7 +4229,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           ? 'Girá a la derecha'
           : 'Girá a la izquierda';
       if (_voz.hablarUrgente(clave, clave: clave)) {
-        HapticFeedback.mediumImpact();
+        HapticaApp.media();
         _maniobrasAnunciadas.add((
           esquina: maniobra.esquina,
           giro: maniobra.giro,

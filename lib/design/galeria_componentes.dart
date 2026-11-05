@@ -17,27 +17,28 @@ import 'galeria_pantallas.dart';
 //
 // Tres pestañas: Componentes, Texto (la escala tipográfica) y Colores (la
 // paleta, con el contraste de cada token calculado en vivo). En Componentes
-// están también las dos pantallas de referencia (Navegación y Elegir
-// destino, galeria_pantallas.dart) y, arriba, una vista previa que fuerza la
-// letra al 100 o al 200 % (lineal: más exigente que el 200 % de Android 14,
-// que agranda menos los tamaños grandes) y "sin animaciones", en toda la
-// galería, hojas y pantallas de referencia incluidas. Sirve para mirar
-// rápido; la prueba de verdad es con los ajustes del teléfono y TalkBack.
+// están también las dos pantallas de referencia (Navegación, con una
+// simulación del recorrido, y Elegir destino, galeria_pantallas.dart) y,
+// arriba, una vista previa que fuerza la letra al 100 o al 200 % (lineal: más
+// exigente que el 200 % de Android 14, que agranda menos los tamaños
+// grandes) en toda la galería, hojas y pantallas de referencia incluidas, y
+// los interruptores de «Reducir movimiento» y «Vibración» (los mismos de
+// Ajustes en la app: la galería se instala en lugar de la app del usuario y
+// comparte lo guardado). Sirve para mirar rápido; la prueba de verdad es con
+// los ajustes del teléfono y TalkBack.
 
 /// Lo que fuerza la vista previa de la galería.
 @immutable
 class VistaPrevia {
-  const VistaPrevia({this.escalaLetra, this.sinAnimaciones = false});
+  const VistaPrevia({this.escalaLetra});
 
   /// Escala de la letra. null: la del teléfono.
   final double? escalaLetra;
-
-  /// Como "Quitar animaciones" del teléfono.
-  final bool sinAnimaciones;
 }
 
-/// La app de la galería, con el tema nuevo. Aplica la [VistaPrevia] a todo,
-/// también a las hojas y a las pantallas de referencia.
+/// La app de la galería, con el tema nuevo y el ambiente del sistema de
+/// diseño (AmbienteDiseno). Aplica la [VistaPrevia] a todo, también a las
+/// hojas y a las pantallas de referencia.
 class AppGaleria extends StatefulWidget {
   const AppGaleria({super.key});
 
@@ -60,23 +61,24 @@ class _AppGaleriaState extends State<AppGaleria> {
       debugShowCheckedModeBanner: false,
       title: 'Galería BlindRoute',
       theme: TemaBlindRoute.oscuro,
-      builder: (context, navegador) => ValueListenableBuilder<VistaPrevia>(
-        valueListenable: _vista,
-        child: navegador,
-        builder: (context, vista, hijo) {
-          final datos = MediaQuery.of(context);
-          final escala = vista.escalaLetra;
-          return MediaQuery(
-            data: datos.copyWith(
-              textScaler: escala == null
-                  ? datos.textScaler
-                  : TextScaler.linear(escala),
-              disableAnimations:
-                  datos.disableAnimations || vista.sinAnimaciones,
-            ),
-            child: hijo!,
-          );
-        },
+      // Arriba del navegador: rige para todas las pantallas y las hojas.
+      builder: (context, navegador) => AmbienteDiseno(
+        child: ValueListenableBuilder<VistaPrevia>(
+          valueListenable: _vista,
+          child: navegador,
+          builder: (context, vista, hijo) {
+            final datos = MediaQuery.of(context);
+            final escala = vista.escalaLetra;
+            return MediaQuery(
+              data: datos.copyWith(
+                textScaler: escala == null
+                    ? datos.textScaler
+                    : TextScaler.linear(escala),
+              ),
+              child: hijo!,
+            );
+          },
+        ),
       ),
       home: GaleriaComponentes(vistaPrevia: _vista),
     );
@@ -101,7 +103,7 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
   String _modo = 'beacons';
   String _filtro = 'todos';
   String _destino = 'aula12';
-  bool _vibrar = true;
+  bool _anunciarPiso = true;
   double _progreso = 0.45;
   int _tramo = 1;
 
@@ -131,9 +133,8 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       ..showSnackBar(SnackBar(content: Text(texto)));
   }
 
-  void _abrir(Widget pantalla) => Navigator.of(
-    context,
-  ).push(MaterialPageRoute<void>(builder: (_) => pantalla));
+  void _abrir(Widget pantalla) =>
+      Navigator.of(context).push(RutaApp<void>(builder: (_) => pantalla));
 
   @override
   Widget build(BuildContext context) {
@@ -241,7 +242,7 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
         FilaGrupo(
           icono: Icons.navigation_rounded,
           titulo: 'Navegación',
-          subtitulo: 'Instrucción, plano y línea de tiempo',
+          subtitulo: 'Instrucción, plano, línea de tiempo y simulación',
           navega: true,
           alTocar: () => _abrir(const PantallaNavegacionEjemplo()),
         ),
@@ -306,7 +307,8 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       e,
       'Verde, lo recorrido; acento y más grueso, el tramo actual; violeta '
       'punteado, lo que falta. El destino va en un cuadro con borde verde y '
-      'el cabezal marca dónde va el usuario.',
+      'el cabezal marca dónde va el usuario. Al cambiar de tramo, el cabezal '
+      'recorre la ruta y los tramos cambian de color.',
     ),
     _entreSecciones,
     const EncabezadoSeccion(titulo: 'Línea de tiempo'),
@@ -347,11 +349,11 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
           alTocar: () => _aviso('Velocidad de la voz'),
         ),
         FilaGrupo.interruptor(
-          icono: Icons.vibration_rounded,
-          titulo: 'Vibrar al llegar',
-          subtitulo: 'Una vibración corta en el destino',
-          valor: _vibrar,
-          alCambiar: (v) => setState(() => _vibrar = v),
+          icono: Icons.campaign_rounded,
+          titulo: 'Anunciar el piso',
+          subtitulo: 'Al llegar a otro piso (de ejemplo)',
+          valor: _anunciarPiso,
+          alCambiar: (v) => setState(() => _anunciarPiso = v),
         ),
         const FilaGrupo(
           titulo: 'Edificio',
@@ -450,7 +452,8 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
     _bajoEncabezado,
     _parrafo(
       e,
-      'Al presionar, se hunden y se achican apenas. El segundo está '
+      'Al presionar, se hunden y se achican apenas (120 ms); al soltar, '
+      'vuelven (160 ms). Un toque corto también se ve. El segundo está '
       'deshabilitado: queda plano y se sigue leyendo.',
     ),
     _entreSecciones,
@@ -583,53 +586,68 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
   ];
 
   /// Los controles de la vista previa. Escuchan el valor, porque al cambiar
-  /// la letra esta pantalla no se vuelve a armar entera.
-  Widget _vistaPrevia(ValueNotifier<VistaPrevia> vista) =>
+  /// la letra esta pantalla no se vuelve a armar entera. Debajo, los
+  /// interruptores de movimiento y vibración, que son los de verdad.
+  Widget _vistaPrevia(ValueNotifier<VistaPrevia> vista) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const EncabezadoSeccion(titulo: 'Vista previa'),
+      _bajoEncabezado,
       ValueListenableBuilder<VistaPrevia>(
         valueListenable: vista,
-        builder: (context, v, _) => Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const EncabezadoSeccion(titulo: 'Vista previa'),
-            _bajoEncabezado,
-            ControlSegmentado<double?>(
-              etiqueta: 'Tamaño de la letra',
-              opciones: const [
-                OpcionSegmento(
-                  valor: null,
-                  texto: 'Teléfono',
-                  etiquetaSemantica: 'La del teléfono',
-                ),
-                OpcionSegmento(valor: 1.0, texto: '100 %'),
-                OpcionSegmento(valor: 2.0, texto: '200 %'),
-              ],
-              seleccionada: v.escalaLetra,
-              alCambiar: (escala) => vista.value = VistaPrevia(
-                escalaLetra: escala,
-                sinAnimaciones: v.sinAnimaciones,
-              ),
+        builder: (context, v, _) => ControlSegmentado<double?>(
+          etiqueta: 'Tamaño de la letra',
+          opciones: const [
+            OpcionSegmento(
+              valor: null,
+              texto: 'Teléfono',
+              etiquetaSemantica: 'La del teléfono',
             ),
-            _entreElementos,
-            GrupoFilas(
-              pie:
-                  'Fuerzan la letra y las animaciones en toda la galería. La '
-                  'prueba de verdad es con los ajustes del teléfono.',
-              filas: [
-                FilaGrupo.interruptor(
-                  icono: Icons.motion_photos_off_rounded,
-                  titulo: 'Sin animaciones',
-                  subtitulo: 'Como «Quitar animaciones» del teléfono',
-                  valor: v.sinAnimaciones,
-                  alCambiar: (sin) => vista.value = VistaPrevia(
-                    escalaLetra: v.escalaLetra,
-                    sinAnimaciones: sin,
-                  ),
-                ),
-              ],
-            ),
+            OpcionSegmento(valor: 1.0, texto: '100 %'),
+            OpcionSegmento(valor: 2.0, texto: '200 %'),
           ],
+          seleccionada: v.escalaLetra,
+          alCambiar: (escala) => vista.value = VistaPrevia(escalaLetra: escala),
         ),
-      );
+      ),
+      _bajoEncabezado,
+      _parrafo(
+        EstiloApp.de(context),
+        'Fuerza la letra en toda la galería. La prueba de verdad es con los '
+        'ajustes del teléfono.',
+      ),
+      _entreSecciones,
+      ListenableBuilder(
+        listenable: AjustesMovimiento.instancia,
+        builder: (context, _) {
+          final ajustes = AjustesMovimiento.instancia;
+          return GrupoFilas(
+            titulo: 'Movimiento y vibración',
+            pie:
+                'Los mismos de Ajustes en la app del usuario: se guardan en '
+                'el teléfono. «Quitar animaciones» del teléfono también '
+                'reduce el movimiento.',
+            filas: [
+              FilaGrupo.interruptor(
+                icono: Icons.motion_photos_off_rounded,
+                titulo: 'Reducir movimiento',
+                subtitulo: 'Sin deslizamientos, escalas ni resortes',
+                valor: ajustes.reducirMovimiento,
+                alCambiar: ajustes.cambiarReducirMovimiento,
+              ),
+              FilaGrupo.interruptor(
+                icono: Icons.vibration_rounded,
+                titulo: 'Vibración',
+                subtitulo: 'En la simulación de la navegación',
+                valor: ajustes.vibracion,
+                alCambiar: ajustes.cambiarVibracion,
+              ),
+            ],
+          );
+        },
+      ),
+    ],
+  );
 
   Widget _tarjetas() => GrillaTarjetas(
     tarjetas: [
@@ -773,8 +791,9 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       _bajoEncabezado,
       _parrafo(
         e,
-        'Pistas hundidas con el avance en acento, sin degradado. Llenarse '
-        'animado es de la fase 3.',
+        'Pistas hundidas con el avance en acento, sin degradado. Se llenan '
+        'al aparecer (400 ms) y cada cambio tarda 120 ms; el número no '
+        'cuenta. Con movimiento reducido, cambian de golpe.',
       ),
       _entreElementos,
       PanelRelieve(

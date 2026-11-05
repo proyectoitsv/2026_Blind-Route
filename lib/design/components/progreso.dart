@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../estilo.dart';
 import '../formas.dart';
+import '../movimiento.dart';
 import '../relieve.dart';
 import '../tipografia.dart';
 
@@ -26,12 +27,91 @@ import '../tipografia.dart';
 // Para una carga sin porcentaje (no se sabe cuánto falta), el
 // CircularProgressIndicator o el LinearProgressIndicator del tema.
 //
-// El valor cambia de golpe; que se llene animado es de la fase 3, y nunca en
-// la navegación en vivo.
+// ─── Movimiento ───
+// El anillo y la barra se llenan al aparecer, en 400 ms con la curva de
+// salida fuerte; después, cada cambio del valor tarda 120 ms (una descarga
+// puede avanzar varias veces por segundo). Con movimiento reducido, el valor
+// cambia de golpe. El número no cuenta: dice siempre el valor final, y
+// TalkBack también. En la navegación en vivo no se llenan al aparecer
+// (animarAlAparecer: false): lo que se mueve ahí es la ruta.
 
 /// "45 %", con un espacio que no se parte entre el número y el signo.
 String textoPorcentaje(double valor) =>
     '${(valor.clamp(0.0, 1.0) * 100).round()} %';
+
+/// Lleva el avance que se dibuja hasta [valor]: desde 0 al aparecer (si
+/// [alAparecer]) y desde donde esté cuando el valor cambia.
+class _ProgresoAnimado extends StatefulWidget {
+  const _ProgresoAnimado({
+    required this.valor,
+    required this.alAparecer,
+    required this.constructor,
+  });
+
+  final double valor;
+  final bool alAparecer;
+  final Widget Function(BuildContext context, Animation<double> avance)
+  constructor;
+
+  @override
+  State<_ProgresoAnimado> createState() => _ProgresoAnimadoState();
+}
+
+class _ProgresoAnimadoState extends State<_ProgresoAnimado>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _avance;
+  bool _empezo = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _avance = AnimationController(vsync: this);
+  }
+
+  double get _destino => widget.valor.clamp(0.0, 1.0);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Al aparecer (una sola vez): acá ya se puede preguntar por el
+    // movimiento reducido, que sale del contexto.
+    if (_empezo) return;
+    _empezo = true;
+    if (widget.alAparecer && !MovimientoApp.reducido(context)) {
+      _avance.animateTo(
+        _destino,
+        duration: MovimientoApp.llenarProgreso,
+        curve: MovimientoApp.curva,
+      );
+    } else {
+      _avance.value = _destino;
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _ProgresoAnimado anterior) {
+    super.didUpdateWidget(anterior);
+    if (anterior.valor.clamp(0.0, 1.0) == _destino) return;
+    if (MovimientoApp.reducido(context)) {
+      _avance.value = _destino;
+    } else {
+      _avance.animateTo(
+        _destino,
+        duration: MovimientoApp.cambioProgreso,
+        curve: MovimientoApp.curva,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _avance.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.constructor(context, _avance);
+}
 
 // ─── ANILLO ─────────────────────────────────────────────────────────────────
 
@@ -48,6 +128,7 @@ class AnilloProgreso extends StatelessWidget {
     this.centro,
     this.etiqueta,
     this.valorSemantico,
+    this.animarAlAparecer = true,
   });
 
   /// De 0 a 1.
@@ -64,6 +145,9 @@ class AnilloProgreso extends StatelessWidget {
   /// El valor para TalkBack. Por defecto, el porcentaje.
   final String? valorSemantico;
 
+  /// Si se llena al aparecer (400 ms). En la navegación en vivo, false.
+  final bool animarAlAparecer;
+
   @override
   Widget build(BuildContext context) {
     final e = EstiloApp.de(context);
@@ -75,13 +159,17 @@ class AnilloProgreso extends StatelessWidget {
       excludeSemantics: true,
       child: SizedBox.square(
         dimension: diametro * escala,
-        child: CustomPaint(
-          painter: _PintorAnillo(
-            valor: valor,
-            grosor: grosor * escala,
-            estilo: e,
+        child: _ProgresoAnimado(
+          valor: valor,
+          alAparecer: animarAlAparecer,
+          constructor: (context, avance) => CustomPaint(
+            painter: _PintorAnillo(
+              avance: avance,
+              grosor: grosor * escala,
+              estilo: e,
+            ),
+            child: centro == null ? null : Center(child: centro),
           ),
-          child: centro == null ? null : Center(child: centro),
         ),
       ),
     );
@@ -89,13 +177,14 @@ class AnilloProgreso extends StatelessWidget {
 }
 
 class _PintorAnillo extends CustomPainter {
-  const _PintorAnillo({
-    required this.valor,
+  _PintorAnillo({
+    required this.avance,
     required this.grosor,
     required this.estilo,
-  });
+  }) : super(repaint: avance);
 
-  final double valor;
+  /// Lo que está lleno ahora, de 0 a 1.
+  final Animation<double> avance;
   final double grosor;
   final EstiloApp estilo;
 
@@ -117,7 +206,7 @@ class _PintorAnillo extends CustomPainter {
       sombraOscura: estilo.sombraOscura,
       sombraClara: estilo.sombraClara,
     );
-    final v = valor.clamp(0.0, 1.0);
+    final v = avance.value.clamp(0.0, 1.0);
     if (v <= 0) return;
     // El avance, un poco más fino que la pista, adentro de la ranura.
     final ancho = math.max(2.0, grosor - 2);
@@ -142,7 +231,7 @@ class _PintorAnillo extends CustomPainter {
 
   @override
   bool shouldRepaint(_PintorAnillo anterior) =>
-      anterior.valor != valor ||
+      anterior.avance != avance ||
       anterior.grosor != grosor ||
       anterior.estilo != estilo;
 }
@@ -156,6 +245,7 @@ class BarraProgreso extends StatelessWidget {
     required this.valor,
     this.etiqueta,
     this.valorSemantico,
+    this.animarAlAparecer = true,
   });
 
   /// De 0 a 1.
@@ -166,6 +256,9 @@ class BarraProgreso extends StatelessWidget {
 
   /// El valor para TalkBack. Por defecto, el porcentaje.
   final String? valorSemantico;
+
+  /// Si se llena al aparecer (400 ms). En la navegación en vivo, false.
+  final bool animarAlAparecer;
 
   @override
   Widget build(BuildContext context) {
@@ -178,11 +271,15 @@ class BarraProgreso extends StatelessWidget {
       child: SizedBox(
         height: FormasApp.altoBarraProgreso,
         width: double.infinity,
-        child: CustomPaint(
-          painter: _PintorBarra(
-            valor: valor,
-            estilo: e,
-            textDirection: Directionality.of(context),
+        child: _ProgresoAnimado(
+          valor: valor,
+          alAparecer: animarAlAparecer,
+          constructor: (context, avance) => CustomPaint(
+            painter: _PintorBarra(
+              avance: avance,
+              estilo: e,
+              textDirection: Directionality.of(context),
+            ),
           ),
         ),
       ),
@@ -191,13 +288,14 @@ class BarraProgreso extends StatelessWidget {
 }
 
 class _PintorBarra extends CustomPainter {
-  const _PintorBarra({
-    required this.valor,
+  _PintorBarra({
+    required this.avance,
     required this.estilo,
     required this.textDirection,
-  });
+  }) : super(repaint: avance);
 
-  final double valor;
+  /// Lo que está lleno ahora, de 0 a 1.
+  final Animation<double> avance;
   final EstiloApp estilo;
   final TextDirection textDirection;
 
@@ -218,7 +316,7 @@ class _PintorBarra extends CustomPainter {
       sombraOscura: estilo.sombraOscura,
       sombraClara: estilo.sombraClara,
     );
-    final v = valor.clamp(0.0, 1.0);
+    final v = avance.value.clamp(0.0, 1.0);
     if (v <= 0) return;
     // El avance, adentro de la ranura (2 dp de aire). Aun con muy poco se ve
     // un punto: nunca menos que su alto.
@@ -238,7 +336,7 @@ class _PintorBarra extends CustomPainter {
 
   @override
   bool shouldRepaint(_PintorBarra anterior) =>
-      anterior.valor != valor ||
+      anterior.avance != avance ||
       anterior.estilo != estilo ||
       anterior.textDirection != textDirection;
 }

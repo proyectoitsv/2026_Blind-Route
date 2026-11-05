@@ -3,10 +3,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // Widgets reutilizables con el estilo del editor con relieve, todos
-// accesibles: área táctil de 48 dp, semántica para TalkBack, nada roto con
-// la letra al 200 % y sin animaciones con "Quitar animaciones". Toman todo de
-// los tokens de lib/design/ y los colores de EstiloApp.de(context), así se
-// ven igual bajo cualquier tema.
+// accesibles: área táctil de 48 dp, semántica para TalkBack y nada roto con
+// la letra al 200 %. Se mueven según la tabla de movimiento
+// (movimiento.dart, fase 3) y, con movimiento reducido («Quitar animaciones»
+// del teléfono o «Reducir movimiento» de Ajustes), sin desplazamientos,
+// escalas ni resortes. Toman todo de los tokens de lib/design/ y los colores
+// de EstiloApp.de(context), así se ven igual bajo cualquier tema.
 //
 //   barras.dart              BarraSuperior (botones redondos, título
 //                            centrado), AccionBarra, BarraInferior y
@@ -24,13 +26,15 @@
 //   linea_ruta.dart          LineaRuta (la ruta sobre el plano), TramoRuta,
 //                            MarcaTramo, EstadoTramo, Recorrido
 //   linea_tiempo.dart        LineaTiempo (la ruta como línea de tiempo)
+//   movimiento_cabezal.dart  MovimientoCabezal (cómo sigue el cabezal a la
+//                            posición; lo usan las dos líneas)
 //   panel_relieve.dart       PanelRelieve (levantado o hundido)
 //   progreso.dart            AnilloProgreso, BarraProgreso, MiniGrafico
 //   tarjeta_dato.dart        TarjetaDato, TonoDato, GrillaTarjetas
 //   tarjeta_destino.dart     TarjetaDestino
 //
-// presion.dart (el relieve al presionar, el foco y el achique de los
-// botones) es interno: lo usan los componentes y no se exporta.
+// presion.dart (el relieve al presionar y su animación, el foco y el
+// achique) es interno: lo usan los componentes y no se exporta.
 //
 // Se ven todos en la galería (lib/design/galeria_componentes.dart), que se
 // abre con: flutter run --flavor user -t lib/main_galeria.dart
@@ -44,6 +48,7 @@ export 'grupo_filas.dart';
 export 'hoja_inferior.dart';
 export 'linea_ruta.dart';
 export 'linea_tiempo.dart';
+export 'movimiento_cabezal.dart';
 export 'panel_relieve.dart';
 export 'progreso.dart';
 export 'tarjeta_dato.dart';

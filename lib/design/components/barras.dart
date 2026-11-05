@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../espaciado.dart';
 import '../estilo.dart';
 import '../formas.dart';
+import '../movimiento.dart';
 import '../relieve.dart';
 import '../tipografia.dart';
 import 'botones.dart';
@@ -211,10 +212,11 @@ class _Pildora extends StatelessWidget {
 
 /// El nombre de una pestaña o una acción, en un renglón: si con letra
 /// grande no entra en su ancho, se achica lo justo para entrar, en vez de
-/// partirse a la mitad de la palabra ("Compon/entes").
+/// partirse a la mitad de la palabra ("Compon/entes"). Sin [estilo], toma el
+/// DefaultTextStyle (el de una pestaña, que cambia animado).
 Widget _nombreEnUnRenglon(
   String texto,
-  TextStyle estilo, {
+  TextStyle? estilo, {
   String? semanticsLabel,
 }) => FittedBox(
   fit: BoxFit.scaleDown,
@@ -253,10 +255,11 @@ class PestanaBarra {
 ///
 /// La activa va en acento (8,75 sobre la superficie) con el ícono relleno y
 /// el nombre en negrita; las demás, en texto secundario (9,10) con el ícono
-/// de contorno: el estado no depende sólo del color. TalkBack lee el nombre,
-/// si está seleccionada y "pestaña 2 de 3". Al tocar no hay relieve: la
-/// respuesta es el cambio de pestaña. Conviene que los nombres sean de una
-/// palabra corta.
+/// de contorno: el estado no depende sólo del color. Al cambiar, el ícono
+/// pasa a relleno con un fundido y el color a acento, en 150 ms (con
+/// movimiento reducido, de golpe). TalkBack lee el nombre, si está
+/// seleccionada y "pestaña 2 de 3". Al tocar no hay relieve: la respuesta es
+/// el cambio de pestaña. Conviene que los nombres sean de una palabra corta.
 class BarraInferior extends StatelessWidget {
   const BarraInferior({
     super.key,
@@ -319,6 +322,7 @@ class _Pestana extends StatelessWidget {
   Widget build(BuildContext context) {
     final e = EstiloApp.de(context);
     final color = activa ? e.acento : e.textoSecundario;
+    final duracion = MovimientoApp.duracion(context, MovimientoApp.seleccion);
     return MergeSemantics(
       child: Semantics(
         role: SemanticsRole.tab,
@@ -336,18 +340,31 @@ class _Pestana extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(
-                  activa ? pestana.icono : pestana.iconoInactivo,
-                  size: FormasApp.icono,
+                // El ícono pasa de contorno a relleno con un fundido, y de
+                // gris a acento, a la vez.
+                ColorAnimado(
                   color: color,
+                  builder: (context, colorIcono) => AnimatedSwitcher(
+                    duration: duracion,
+                    switchInCurve: MovimientoApp.curva,
+                    switchOutCurve: MovimientoApp.curva.flipped,
+                    child: Icon(
+                      activa ? pestana.icono : pestana.iconoInactivo,
+                      key: ValueKey<bool>(activa),
+                      size: FormasApp.icono,
+                      color: colorIcono,
+                    ),
+                  ),
                 ),
                 const SizedBox(height: EspaciadoApp.minimo),
-                _nombreEnUnRenglon(
-                  pestana.texto,
-                  TipografiaApp.leyenda.copyWith(
+                AnimatedDefaultTextStyle(
+                  duration: duracion,
+                  curve: MovimientoApp.curva,
+                  style: TipografiaApp.leyenda.copyWith(
                     color: color,
                     fontWeight: activa ? FontWeight.w700 : FontWeight.w500,
                   ),
+                  child: _nombreEnUnRenglon(pestana.texto, null),
                 ),
                 // Lo que agrega Material a cada pestaña, en español.
                 Semantics(label: 'pestaña $numero de $total'),
@@ -389,7 +406,8 @@ class AccionPildora {
 
 /// Barra flotante con botones, como la de la navegación ("Repetir" en
 /// acento). Las demás acciones van en texto principal (13,85); una
-/// deshabilitada, en texto secundario. Presionada, la acción se hunde.
+/// deshabilitada, en texto secundario. Presionada, la acción se hunde y se
+/// achica apenas (presion.dart).
 class BarraAcciones extends StatelessWidget {
   const BarraAcciones({super.key, required this.acciones});
 
@@ -439,55 +457,68 @@ class _BotonPildora extends StatelessWidget {
             final presionado = estaPresionado(estados);
             return Padding(
               padding: const EdgeInsets.all(EspaciadoApp.minimo),
-              child: DecoratedBox(
+              child: EscalaPresion(
+                presionado: presionado,
                 // En reposo, plana; presionada, hundida con el relieve chico,
                 // adentro de la píldora.
-                decoration: DecoracionRelieve(
-                  color: presionado ? e.hundido : Colors.transparent,
-                  radio: const BorderRadius.all(
-                    Radius.circular(FormasApp.radioHoja - EspaciadoApp.minimo),
-                  ),
-                  elevacion: presionado ? -1 : 0,
-                  tamano: TamanoRelieve.chico,
-                  borde: estaEnfocado(estados)
-                      ? BorderSide(color: e.acento, width: FormasApp.grosorFoco)
-                      : BorderSide.none,
-                  sombraOscura: e.sombraOscura,
-                  sombraClara: e.sombraClara,
-                ),
-                child: InkWell(
-                  onTap: accion.alPresionar,
-                  statesController: controlador,
-                  customBorder: const RoundedRectangleBorder(
-                    borderRadius: BorderRadius.all(
+                child: RelieveAnimado(
+                  presionado: presionado,
+                  decoracion: DecoracionRelieve(
+                    color: presionado ? e.hundido : Colors.transparent,
+                    radio: const BorderRadius.all(
                       Radius.circular(
                         FormasApp.radioHoja - EspaciadoApp.minimo,
                       ),
                     ),
+                    elevacion: presionado ? -1 : 0,
+                    tamano: TamanoRelieve.chico,
+                    borde: estaEnfocado(estados)
+                        ? BorderSide(
+                            color: e.acento,
+                            width: FormasApp.grosorFoco,
+                          )
+                        : BorderSide.none,
+                    sombraOscura: e.sombraOscura,
+                    sombraClara: e.sombraClara,
                   ),
-                  splashFactory: sinOnda,
-                  overlayColor: sinCapa,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: EspaciadoApp.minimo,
-                      vertical: EspaciadoApp.chico,
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(accion.icono, size: FormasApp.icono, color: color),
-                        const SizedBox(height: EspaciadoApp.minimo),
-                        _nombreEnUnRenglon(
-                          accion.texto,
-                          TipografiaApp.leyenda.copyWith(
-                            color: color,
-                            fontWeight: accion.principal
-                                ? FontWeight.w700
-                                : FontWeight.w500,
-                          ),
-                          semanticsLabel: accion.etiquetaSemantica,
+                  child: InkWell(
+                    onTap: accion.alPresionar,
+                    statesController: controlador,
+                    customBorder: const RoundedRectangleBorder(
+                      borderRadius: BorderRadius.all(
+                        Radius.circular(
+                          FormasApp.radioHoja - EspaciadoApp.minimo,
                         ),
-                      ],
+                      ),
+                    ),
+                    splashFactory: sinOnda,
+                    overlayColor: sinCapa,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: EspaciadoApp.minimo,
+                        vertical: EspaciadoApp.chico,
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            accion.icono,
+                            size: FormasApp.icono,
+                            color: color,
+                          ),
+                          const SizedBox(height: EspaciadoApp.minimo),
+                          _nombreEnUnRenglon(
+                            accion.texto,
+                            TipografiaApp.leyenda.copyWith(
+                              color: color,
+                              fontWeight: accion.principal
+                                  ? FontWeight.w700
+                                  : FontWeight.w500,
+                            ),
+                            semanticsLabel: accion.etiquetaSemantica,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),

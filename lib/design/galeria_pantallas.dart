@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'design.dart';
@@ -8,10 +10,14 @@ import 'design.dart';
 //
 // Las dos pantallas de la sección 4 del prompt, armadas con los componentes
 // y datos de ejemplo: muestran cómo se combinan antes de migrar las pantallas
-// de verdad (fase 5). No tienen lógica: lo que se toca sólo avisa.
-//   · Navegación: barra con dos botones redondos, la instrucción levantada,
-//     el plano hundido con la ruta, la línea de tiempo y la barra de acciones
-//     con "Repetir" en acento.
+// de verdad (fase 5). No tienen lógica de la app: lo que se toca sólo avisa.
+//   · Navegación: barra con botones redondos, la instrucción levantada, el
+//     plano hundido con la ruta, la línea de tiempo y la barra de acciones
+//     con "Repetir" en acento. Tiene una simulación del recorrido (el botón
+//     de reproducir de arriba) para ver el movimiento de la fase 3: el
+//     cabezal sigue la posición, al cambiar de tramo recorre la ruta (con
+//     una vibración suave) y al llegar aparece el aviso con un fundido (con
+//     una vibración media).
 //   · Elegir destino: título centrado, buscador hundido, chips, tarjetas de
 //     destino y el botón "Ir a…" en acento.
 // Las abre la galería (galeria_componentes.dart).
@@ -112,7 +118,8 @@ class _PintorPlano extends CustomPainter {
       anterior.estilo != estilo || anterior.escalaTexto != escalaTexto;
 }
 
-/// El plano de ejemplo hundido, con la ruta encima.
+/// El plano de ejemplo hundido, con la ruta encima. El plano va en su propio
+/// RepaintBoundary: cuando el cabezal se mueve, no se vuelve a pintar.
 class PlanoConRuta extends StatelessWidget {
   const PlanoConRuta({
     super.key,
@@ -138,7 +145,7 @@ class PlanoConRuta extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            const PlanoEjemplo(),
+            const RepaintBoundary(child: PlanoEjemplo()),
             LineaRuta(
               tramos: tramosEjemplo,
               tramoActual: tramoActual,
@@ -159,27 +166,135 @@ void _aviso(BuildContext context, String texto) {
 
 // ─── NAVEGACIÓN ─────────────────────────────────────────────────────────────
 
-/// La pantalla de navegación de referencia.
-class PantallaNavegacionEjemplo extends StatelessWidget {
+/// La pantalla de navegación de referencia, con una simulación del
+/// recorrido.
+class PantallaNavegacionEjemplo extends StatefulWidget {
   const PantallaNavegacionEjemplo({super.key});
 
-  static const int _tramo = 1;
-  static const double _avance = 0.25;
+  /// Cada cuánto llega una posición en la simulación, y cuánto se avanza
+  /// (unos 1,2 m/s, caminando tranquilo).
+  static const Duration intervaloSimulacion = Duration(milliseconds: 600);
+  static const double pasoSimulacionMetros = 0.7;
+
+  @override
+  State<PantallaNavegacionEjemplo> createState() =>
+      _PantallaNavegacionEjemploState();
+}
+
+class _PantallaNavegacionEjemploState extends State<PantallaNavegacionEjemplo> {
+  int _tramo = 1;
+  double _avance = 0.25;
+  bool _llego = false;
+
+  /// Cambia al volver a empezar: el plano y la línea de tiempo se arman de
+  /// nuevo, así el cabezal salta al principio (es otra ruta, no un
+  /// movimiento).
+  int _vuelta = 0;
+
+  Timer? _reloj;
+
+  bool get _simulando => _reloj?.isActive ?? false;
+
+  @override
+  void dispose() {
+    _reloj?.cancel();
+    super.dispose();
+  }
+
+  void _alternarSimulacion() {
+    setState(() {
+      if (_simulando) {
+        _reloj?.cancel();
+        _reloj = null;
+      } else {
+        _reloj = Timer.periodic(
+          PantallaNavegacionEjemplo.intervaloSimulacion,
+          (_) => _paso(),
+        );
+      }
+    });
+  }
+
+  /// Una posición nueva: avanza un paso y, al terminar un tramo, pasa al
+  /// siguiente (vibración suave) o llega (vibración media).
+  void _paso() {
+    var tramo = _tramo;
+    final metros = tramosEjemplo[tramo].metros;
+    var avance =
+        _avance + PantallaNavegacionEjemplo.pasoSimulacionMetros / metros;
+    var llego = false;
+    if (avance >= 1) {
+      if (tramo < tramosEjemplo.length - 1) {
+        final sobra = (avance - 1) * metros;
+        tramo++;
+        avance = sobra / tramosEjemplo[tramo].metros;
+        HapticaApp.cambioDeTramo();
+      } else {
+        avance = 1;
+        llego = true;
+        _reloj?.cancel();
+        _reloj = null;
+        HapticaApp.llegada();
+      }
+    }
+    setState(() {
+      _tramo = tramo;
+      _avance = avance;
+      _llego = llego;
+    });
+  }
+
+  void _empezarDeNuevo() {
+    _reloj?.cancel();
+    _reloj = null;
+    setState(() {
+      _tramo = 0;
+      _avance = 0;
+      _llego = false;
+      _vuelta++;
+    });
+  }
+
+  /// Lo que dice la instrucción en cada tramo de la ruta de ejemplo: la
+  /// indicación y la distancia (con un espacio que no se parte antes de la
+  /// "m").
+  static (String, String) _indicacion(int tramo, int faltan) => switch (tramo) {
+    0 => ('Seguí derecho', '$faltan m'),
+    1 => ('Girá a la izquierda', 'en $faltan m'),
+    _ => ('Aula 12 adelante', 'a $faltan m'),
+  };
 
   @override
   Widget build(BuildContext context) {
     final e = EstiloApp.de(context);
-    final faltan = const Recorrido(
+    final faltan = Recorrido(
       tramos: tramosEjemplo,
       tramoActual: _tramo,
       avance: _avance,
     ).metrosQueFaltan;
+    final reducido = MovimientoApp.reducido(context);
     return Scaffold(
       backgroundColor: e.fondo,
       extendBody: true,
       appBar: BarraSuperior(
         titulo: 'Aula 12',
         acciones: [
+          if (_llego)
+            AccionBarra(
+              icono: Icons.restart_alt_rounded,
+              etiqueta: 'Volver a empezar el recorrido',
+              alPresionar: _empezarDeNuevo,
+            )
+          else
+            AccionBarra(
+              icono: _simulando
+                  ? Icons.pause_rounded
+                  : Icons.play_arrow_rounded,
+              etiqueta: _simulando
+                  ? 'Pausar la simulación'
+                  : 'Simular el recorrido',
+              alPresionar: _alternarSimulacion,
+            ),
           AccionBarra(
             icono: Icons.format_list_bulleted_rounded,
             etiqueta: 'Elegir el destino de una lista',
@@ -225,49 +340,49 @@ class PantallaNavegacionEjemplo extends StatelessWidget {
             MediaQuery.paddingOf(context).bottom + EspaciadoApp.entreSecciones,
           ),
           children: [
-            // La instrucción: el tramo, el giro en grande y la distancia en
-            // acento. Tres tamaños de letra.
+            // La instrucción y, al llegar, el aviso, que aparece con un
+            // fundido (200 ms; con movimiento reducido, 120 ms). El panel
+            // acompaña el cambio de alto.
             PanelRelieve(
-              child: Semantics(
-                container: true,
-                label:
-                    'Tramo ${_tramo + 1} de ${tramosEjemplo.length}. '
-                    'Girá a la izquierda en $faltan metros',
-                excludeSemantics: true,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Tramo ${_tramo + 1} de ${tramosEjemplo.length}',
-                      style: TipografiaApp.subtitulo.copyWith(
-                        color: e.textoSecundario,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: EspaciadoApp.minimo),
-                    Text(
-                      'Girá a la izquierda',
-                      style: TipografiaApp.tituloGrande.copyWith(
-                        color: e.textoPrincipal,
-                      ),
-                    ),
-                    const SizedBox(height: EspaciadoApp.minimo),
-                    Text(
-                      'en $faltan m',
-                      style: TipografiaApp.metricaMediana.copyWith(
-                        color: e.acento,
-                      ),
-                    ),
-                  ],
+              child: AnimatedSize(
+                duration: MovimientoApp.duracion(
+                  context,
+                  MovimientoApp.llegada,
+                ),
+                curve: MovimientoApp.curva,
+                alignment: AlignmentDirectional.topStart,
+                child: AnimatedSwitcher(
+                  duration: reducido
+                      ? MovimientoApp.fundidoReducido
+                      : MovimientoApp.llegada,
+                  switchInCurve: MovimientoApp.curva,
+                  switchOutCurve: MovimientoApp.curva.flipped,
+                  layoutBuilder: (actual, anteriores) => Stack(
+                    alignment: AlignmentDirectional.topStart,
+                    children: [...anteriores, ?actual],
+                  ),
+                  child: _llego
+                      ? _AvisoLlegada(key: const ValueKey('llegada'), estilo: e)
+                      : _Instruccion(
+                          key: const ValueKey('instruccion'),
+                          tramo: _tramo,
+                          indicacion: _indicacion(_tramo, faltan),
+                          estilo: e,
+                        ),
                 ),
               ),
             ),
             const SizedBox(height: EspaciadoApp.entreSecciones),
-            const PlanoConRuta(tramoActual: _tramo, avance: _avance),
+            PlanoConRuta(
+              key: ValueKey(_vuelta),
+              tramoActual: _tramo,
+              avance: _avance,
+            ),
             const SizedBox(height: EspaciadoApp.entreSecciones),
             // Dice lo mismo que la ruta del plano: TalkBack no la repite.
-            const ExcludeSemantics(
+            ExcludeSemantics(
               child: LineaTiempo(
+                key: ValueKey(_vuelta),
                 tramos: tramosEjemplo,
                 tramoActual: _tramo,
                 avance: _avance,
@@ -276,6 +391,97 @@ class PantallaNavegacionEjemplo extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// La instrucción: el tramo, la indicación en grande y la distancia en
+/// acento. Tres tamaños de letra. El número no cuenta: cambia con cada
+/// posición.
+class _Instruccion extends StatelessWidget {
+  const _Instruccion({
+    super.key,
+    required this.tramo,
+    required this.indicacion,
+    required this.estilo,
+  });
+
+  final int tramo;
+  final (String, String) indicacion;
+  final EstiloApp estilo;
+
+  @override
+  Widget build(BuildContext context) {
+    final (texto, distancia) = indicacion;
+    final enTramo = 'Tramo ${tramo + 1} de ${tramosEjemplo.length}';
+    return Semantics(
+      container: true,
+      label: '$enTramo. $texto, ${distancia.replaceAll(' m', ' metros')}',
+      excludeSemantics: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            enTramo,
+            style: TipografiaApp.subtitulo.copyWith(
+              color: estilo.textoSecundario,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: EspaciadoApp.minimo),
+          Text(
+            texto,
+            style: TipografiaApp.tituloGrande.copyWith(
+              color: estilo.textoPrincipal,
+            ),
+          ),
+          const SizedBox(height: EspaciadoApp.minimo),
+          Text(
+            distancia,
+            style: TipografiaApp.metricaMediana.copyWith(color: estilo.acento),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// El aviso de llegada. El cabezal se queda en el destino.
+class _AvisoLlegada extends StatelessWidget {
+  const _AvisoLlegada({super.key, required this.estilo});
+
+  final EstiloApp estilo;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      container: true,
+      label: 'Llegaste a Aula 12. Está adelante',
+      excludeSemantics: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Destino',
+            style: TipografiaApp.subtitulo.copyWith(
+              color: estilo.textoSecundario,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: EspaciadoApp.minimo),
+          Text(
+            'Llegaste a Aula 12',
+            style: TipografiaApp.tituloGrande.copyWith(
+              color: estilo.textoPrincipal,
+            ),
+          ),
+          const SizedBox(height: EspaciadoApp.minimo),
+          Text(
+            'Está adelante',
+            style: TipografiaApp.titulo.copyWith(color: estilo.acento),
+          ),
+        ],
       ),
     );
   }

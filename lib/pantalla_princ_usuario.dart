@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'modo_automatico.dart';
-import 'pantalla_ajustes_voz.dart';
+import 'pantalla_ajustes.dart';
 import 'pantalla_mapas_online.dart';
 import 'voz_service.dart';
 import 'tema.dart';
@@ -147,7 +147,8 @@ class _PantallaPrincipalUsuarioState extends State<PantallaPrincipalUsuario> {
 
               const SizedBox(height: 16),
 
-              // Catálogo de mapas publicados y ajustes de la voz.
+              // Catálogo de mapas publicados y ajustes (la voz, el
+              // movimiento y la vibración).
               _botonSecundario(
                 icono: Icons.cloud_download_rounded,
                 texto: 'Mapas disponibles',
@@ -156,10 +157,10 @@ class _PantallaPrincipalUsuarioState extends State<PantallaPrincipalUsuario> {
               ),
               const SizedBox(height: 12),
               _botonSecundario(
-                icono: Icons.record_voice_over_rounded,
-                texto: 'Ajustes de voz',
-                etiqueta: 'Ajustes de voz: velocidad, volumen y tono',
-                pantalla: const PantallaAjustesVoz(),
+                icono: Icons.settings_rounded,
+                texto: 'Ajustes',
+                etiqueta: 'Ajustes: voz, movimiento y vibración',
+                pantalla: const PantallaAjustes(),
               ),
             ],
           ),

@@ -4,9 +4,10 @@ import 'package:blindroute/design/galeria_pantallas.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// COMPONENTES DEL SISTEMA DE DISEÑO (fase 2 del rediseño, editor con relieve)
+// COMPONENTES DEL SISTEMA DE DISEÑO (fases 2 y 3 del rediseño)
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // Lo que tiene que cumplir cada componente para ser accesible: área táctil
@@ -15,6 +16,9 @@ import 'package:flutter_test/flutter_test.dart';
 // resorte ni achique. También la paleta de la v5 del prompt, con el
 // contraste anotado en colores.dart, el relieve (levantado y hundido, con las
 // medidas de CSS), la línea de ruta sobre el plano y la línea de tiempo.
+// Desde la fase 3 los cambios de estado se animan: donde importa el estado
+// final, se espera a que termine (pumpAndSettle). Los tiempos y las curvas
+// de cada animación se prueban en animaciones_test.dart.
 //
 // En los tests la letra es la de prueba de Flutter (cada letra, un cuadrado
 // de 1 em), más ancha que Inter: si acá no se desborda, en el teléfono menos.
@@ -77,6 +81,12 @@ DecoracionRelieve relieveDe(WidgetTester tester, Finder de) =>
     relieves(tester, de).first;
 
 void main() {
+  // Los ajustes de movimiento, de fábrica y sin leer el teléfono de verdad.
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    AjustesMovimiento.instancia.reiniciarParaTests();
+  });
+
   // ── Paleta y relieve ────────────────────────────────────────────────────
 
   group('paleta y relieve', () {
@@ -391,9 +401,10 @@ void main() {
           expect(escala(), 1);
           expect(relieveDe(tester, boton).elevacion, 1);
           final dedo = await tester.startGesture(tester.getCenter(boton));
-          // Adentro de una lista, el toque se confirma a los 100 ms.
+          // Adentro de una lista, el toque se confirma a los 100 ms; el paso
+          // a hundido dura 120 ms (también con movimiento reducido).
           await tester.pump(const Duration(milliseconds: 150));
-          await tester.pump();
+          await tester.pump(MovimientoApp.presion);
           expect(escala(), sinAnimaciones ? 1 : MovimientoApp.escalaPresion);
           final presionado = relieveDe(tester, boton);
           expect(presionado.elevacion, -1);
@@ -711,7 +722,7 @@ void main() {
       expect(relieveDe(tester, fila).elevacion, 0);
       final dedo = await tester.startGesture(tester.getCenter(fila));
       await tester.pump(const Duration(milliseconds: 150));
-      await tester.pump();
+      await tester.pump(MovimientoApp.presion);
       final presionada = relieveDe(tester, fila);
       expect(presionada.elevacion, -1);
       expect(presionada.color, ColoresApp.hundido);
@@ -752,8 +763,12 @@ void main() {
         tester.getRect(find.text('3 pisos')).top,
         greaterThan(tester.getRect(find.text('Edificio')).bottom),
       );
+      final interruptor = find.byWidgetPredicate(
+        (w) => w.runtimeType.toString() == '_Interruptor',
+      );
+      expect(interruptor, findsOneWidget);
       expect(
-        tester.getRect(find.byType(Switch)).top,
+        tester.getRect(interruptor).top,
         greaterThanOrEqualTo(
           tester.getRect(find.text('Vibrar al llegar')).bottom,
         ),
@@ -1303,7 +1318,8 @@ void main() {
         contains('Buscar un destino'),
       );
       await tester.tap(find.byType(TextField).first);
-      await tester.pump();
+      // El borde pasa al acento en 150 ms.
+      await tester.pumpAndSettle();
       d = relieveDe(tester, campo);
       expect(d.borde.color, ColoresApp.acento);
       expect(d.borde.width, FormasApp.grosorFoco);
@@ -1350,8 +1366,11 @@ void main() {
       );
       expect(find.byTooltip('Cerrar'), findsOneWidget);
       expect(temaAdentro!.extension<EstiloApp>(), isNotNull);
+      // Para TalkBack, la hoja se nombra con su título (no "Dialog").
+      expect(find.bySemanticsLabel('Nuevo lugar'), findsWidgets);
+      expect(find.bySemanticsLabel('Dialog'), findsNothing);
       // Levantada, en la superficie, con la manija hundida y con borde.
-      final hoja = relieves(tester, find.byType(BottomSheet));
+      final hoja = relieves(tester, find.byType(Overlay).first);
       expect(
         hoja.any(
           (d) =>
@@ -1431,6 +1450,8 @@ void main() {
       tester,
     ) async {
       await armar(tester, const BarraProgreso(valor: 0.5));
+      // Se llena al aparecer (400 ms).
+      await tester.pumpAndSettle();
       final dibujo = tester.renderObject(
         find.descendant(
           of: find.byType(BarraProgreso),
@@ -1682,6 +1703,8 @@ void main() {
           tester,
           LineaTiempo(tramos: tramos, tramoActual: actual, avance: 0.5),
         );
+        // El cambio de tramo se anima: el estado final, al terminar.
+        await tester.pumpAndSettle();
         expect(cabezal, findsOneWidget);
         final d =
             tester.widget<DecoratedBox>(cabezal).decoration

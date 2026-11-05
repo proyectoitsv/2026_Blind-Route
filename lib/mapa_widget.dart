@@ -8,6 +8,7 @@ import 'zona_model.dart';
 import 'poi_model.dart';
 import 'grilla_nav.dart';
 import 'asistente_trazo.dart';
+import 'design/movimiento.dart';
 import 'tema.dart';
 /// Helpers de coordenadas/celdas compartidos por los painters.
 Offset _desnormalizar(Offset n, Size tam) =>
@@ -496,6 +497,9 @@ class _MapaPainter extends CustomPainter {
 /// camino. Con una animación de duración fija, cada posición nueva la
 /// reiniciaba y el movimiento salía a los tirones.
 ///
+/// Con movimiento reducido (MovimientoApp.reducido) no se desliza: va
+/// directo a la celda nueva.
+///
 /// El ticker corre sólo durante el deslizamiento y repinta sólo esta capa.
 class _CapaUsuario extends StatefulWidget {
   final Offset posicionUsuario; // posición normalizada
@@ -543,7 +547,15 @@ class _CapaUsuarioState extends State<_CapaUsuario>
   @override
   void didUpdateWidget(_CapaUsuario old) {
     super.didUpdateWidget(old);
-    if (_mostrada.value != _objetivo && !_ticker.isActive) {
+    if (_mostrada.value == _objetivo) return;
+    // Con movimiento reducido («Quitar animaciones» del teléfono o «Reducir
+    // movimiento» de Ajustes), el cuadrado va directo a la celda nueva.
+    if (MovimientoApp.reducido(context)) {
+      _ticker.stop();
+      _mostrada.value = _objetivo;
+      return;
+    }
+    if (!_ticker.isActive) {
       _ultimoTick = null;
       _ticker.start();
     }

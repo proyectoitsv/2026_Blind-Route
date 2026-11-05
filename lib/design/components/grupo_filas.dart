@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../espaciado.dart';
 import '../estilo.dart';
 import '../formas.dart';
+import '../movimiento.dart';
 import '../relieve.dart';
 import '../tipografia.dart';
 import 'cuadro_icono.dart';
@@ -18,7 +19,13 @@ import 'presion.dart';
 // arranca donde arranca el texto, no en el borde. Cada fila lleva su ícono en
 // un cuadro hundido. Si alguna fila se toca, la tarjeta lleva el borde de
 // 1 px de los controles. Una fila que lleva a otra pantalla termina en una
-// flecha gris. Presionada, la fila se hunde.
+// flecha gris. Presionada, la fila se hunde (120 ms; al soltar, 160 ms), sin
+// achicarse: es parte de la tarjeta.
+//
+// ─── Interruptor ───
+// Dibujado acá (no el Switch de Material, que siempre desliza en 200 ms): la
+// pista y el pulgar cambian en 150 ms con la curva de salida fuerte y, con
+// movimiento reducido, saltan. Toda la fila lo prende y lo apaga.
 //
 // ─── Letra grande ───
 // Las filas crecen con el texto, que se parte en renglones. Desde
@@ -183,7 +190,7 @@ class FilaGrupo extends StatelessWidget {
          titulo: titulo,
          subtitulo: subtitulo,
          icono: icono,
-         accesorio: _Interruptor(valor: valor, alCambiar: alCambiar),
+         accesorio: _Interruptor(valor: valor, habilitado: alCambiar != null),
          alTocar: alCambiar == null ? null : () => alCambiar(!valor),
        );
 
@@ -313,8 +320,9 @@ class FilaGrupo extends StatelessWidget {
             // En reposo, plana y transparente (se ve la tarjeta); presionada,
             // hundida con el relieve chico, que no llega al texto (queda a
             // 8 dp o más del borde). El grupo la recorta a sus esquinas.
-            return DecoratedBox(
-              decoration: DecoracionRelieve(
+            return RelieveAnimado(
+              presionado: presionado,
+              decoracion: DecoracionRelieve(
                 color: presionado ? e.hundido : Colors.transparent,
                 elevacion: presionado ? -1 : 0,
                 tamano: TamanoRelieve.chico,
@@ -342,38 +350,97 @@ class FilaGrupo extends StatelessWidget {
   }
 }
 
-/// Interruptor de una fila, con los colores del sistema de diseño fijados
-/// (los mismos del tema): apagado, pista hundida con borde (4,41 sobre el
-/// fondo) y el pulgar gris (10,18); prendido, pulgar oscuro sobre el acento
-/// (11,47).
+/// Interruptor de una fila, con las medidas del de Material 3 (pista de
+/// 52 × 32, pulgar de 16 apagado y de 24 prendido) y los colores del sistema
+/// de diseño: apagado, pista hundida con borde (4,41 sobre el fondo) y el
+/// pulgar gris (10,18); prendido, pulgar oscuro sobre el acento (11,47). El
+/// estado no depende sólo del color: el pulgar cambia de lado y de tamaño.
+///
+/// No se toca solo: lo prende y lo apaga la fila entera (FilaGrupo
+/// .interruptor). TalkBack lo lee como interruptor, activado o no.
 class _Interruptor extends StatelessWidget {
-  const _Interruptor({required this.valor, required this.alCambiar});
+  const _Interruptor({required this.valor, required this.habilitado});
 
   final bool valor;
-  final ValueChanged<bool>? alCambiar;
+  final bool habilitado;
+
+  static const double _anchoPista = 52;
+  static const double _altoPista = 32;
+  static const double _bordePista = 2;
+  static const double _pulgarApagado = 16;
+  static const double _pulgarPrendido = 24;
+
+  /// Del borde de la pista (por dentro del borde de 2) al lugar del pulgar
+  /// más grande: así el centro del pulgar queda a 16 dp de cada punta, como
+  /// en Material.
+  static const double _margen =
+      (_altoPista - _pulgarPrendido) / 2 - _bordePista;
 
   @override
   Widget build(BuildContext context) {
     final e = EstiloApp.de(context);
-    return Switch(
-      value: valor,
-      onChanged: alCambiar,
-      thumbColor: WidgetStateProperty.resolveWith((estados) {
-        if (estados.contains(WidgetState.disabled)) return null;
-        return estados.contains(WidgetState.selected)
-            ? e.textoSobreAcento
-            : e.textoSecundario;
-      }),
-      trackColor: WidgetStateProperty.resolveWith((estados) {
-        if (estados.contains(WidgetState.disabled)) return null;
-        return estados.contains(WidgetState.selected) ? e.acento : e.hundido;
-      }),
-      trackOutlineColor: WidgetStateProperty.resolveWith((estados) {
-        if (estados.contains(WidgetState.disabled)) return null;
-        return estados.contains(WidgetState.selected) ? e.acento : e.borde;
-      }),
-      overlayColor: sinCapa,
-      materialTapTargetSize: MaterialTapTargetSize.padded,
+    final duracion = MovimientoApp.duracion(context, MovimientoApp.seleccion);
+    const curva = MovimientoApp.curva;
+    final prendido = valor && habilitado;
+    final Color pista;
+    final Color borde;
+    final Color pulgar;
+    if (!habilitado) {
+      // Deshabilitado: todo en el separador, plano (no hace falta 3:1).
+      pista = e.hundido;
+      borde = e.separador;
+      pulgar = e.separador;
+    } else if (prendido) {
+      pista = e.acento;
+      borde = e.acento;
+      pulgar = e.textoSobreAcento;
+    } else {
+      pista = e.hundido;
+      borde = e.borde;
+      pulgar = e.textoSecundario;
+    }
+    final lado = valor ? _pulgarPrendido : _pulgarApagado;
+    return Semantics(
+      toggled: valor,
+      enabled: habilitado,
+      child: SizedBox(
+        width: _anchoPista,
+        height: _altoPista,
+        child: AnimatedContainer(
+          duration: duracion,
+          curve: curva,
+          decoration: BoxDecoration(
+            color: pista,
+            borderRadius: BorderRadius.circular(_altoPista / 2),
+            border: Border.all(color: borde, width: _bordePista),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: _margen),
+            child: AnimatedAlign(
+              duration: duracion,
+              curve: curva,
+              alignment: valor
+                  ? AlignmentDirectional.centerEnd
+                  : AlignmentDirectional.centerStart,
+              child: SizedBox.square(
+                dimension: _pulgarPrendido,
+                child: Center(
+                  child: AnimatedContainer(
+                    duration: duracion,
+                    curve: curva,
+                    width: lado,
+                    height: lado,
+                    decoration: BoxDecoration(
+                      color: pulgar,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

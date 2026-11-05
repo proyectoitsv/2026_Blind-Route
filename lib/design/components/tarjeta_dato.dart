@@ -22,7 +22,8 @@ import 'presion.dart';
 // ─── Tocable ───
 // La que se toca lleva el borde de 1 px (3,94 sobre la superficie) y una
 // flecha gris arriba a la derecha: así se ve qué se puede tocar sin depender
-// del color. Se toca entera y, presionada, se hunde.
+// del color. Se toca entera y, presionada, se hunde y se achica apenas
+// (presion.dart).
 //
 // ─── Letra grande ───
 // La grilla pasa a una columna cuando dos tarjetas por fila no entran
@@ -182,22 +183,29 @@ class TarjetaDato extends StatelessWidget {
         ? DecoratedBox(decoration: decoracion(const {}), child: contenido)
         : ConEstados(
             deshabilitado: false,
-            constructor: (context, controlador, estados) => DecoratedBox(
-              decoration: decoracion(estados),
-              child: Material(
-                type: MaterialType.transparency,
-                child: InkWell(
-                  onTap: alTocar,
-                  statesController: controlador,
-                  customBorder: const RoundedRectangleBorder(
-                    borderRadius: FormasApp.bordeTarjeta,
+            constructor: (context, controlador, estados) {
+              final presionado = estaPresionado(estados);
+              return EscalaPresion(
+                presionado: presionado,
+                child: RelieveAnimado(
+                  decoracion: decoracion(estados),
+                  presionado: presionado,
+                  child: Material(
+                    type: MaterialType.transparency,
+                    child: InkWell(
+                      onTap: alTocar,
+                      statesController: controlador,
+                      customBorder: const RoundedRectangleBorder(
+                        borderRadius: FormasApp.bordeTarjeta,
+                      ),
+                      overlayColor: sinCapa,
+                      splashFactory: sinOnda,
+                      child: contenido,
+                    ),
                   ),
-                  overlayColor: sinCapa,
-                  splashFactory: sinOnda,
-                  child: contenido,
                 ),
-              ),
-            ),
+              );
+            },
           );
 
     return Semantics(
