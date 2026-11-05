@@ -127,10 +127,9 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
     ),
   ];
 
-  void _aviso(String texto) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(texto)));
+  void _aviso(String texto, {bool error = false}) {
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    mostrarAviso(context, texto, error: error);
   }
 
   void _abrir(Widget pantalla) =>
@@ -434,6 +433,22 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       alPresionar: () => _aviso('Quitar mapa'),
     ),
     _entreElementos,
+    FilaBotones(
+      children: [
+        BotonSecundario(
+          texto: 'Actualizar',
+          icono: Icons.update_rounded,
+          alPresionar: () => _aviso('Actualizar'),
+        ),
+        BotonSecundario(
+          texto: 'Quitar',
+          icono: Icons.delete_rounded,
+          destructivo: true,
+          alPresionar: () => _aviso('Quitar'),
+        ),
+      ],
+    ),
+    _entreElementos,
     Wrap(
       spacing: EspaciadoApp.medio,
       runSpacing: EspaciadoApp.medio,
@@ -462,7 +477,9 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       'Al presionar, se hunden y se achican apenas (120 ms); al soltar, '
       'vuelven (160 ms). Un toque corto también se ve. El segundo está '
       'deshabilitado: queda plano y se sigue leyendo. El tercero es el '
-      'principal en grande, el del inicio: ahí llena el lugar libre.',
+      'principal en grande, el del inicio: ahí llena el lugar libre. '
+      '«Actualizar» y «Quitar» van en una fila de botones: del mismo ancho '
+      'y, si con letra grande no entran, uno debajo del otro.',
     ),
     _entreSecciones,
     const EncabezadoSeccion(titulo: 'Chips'),
@@ -567,7 +584,31 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
     _parrafo(
       e,
       'Hundidos, con borde. Enfocados, el borde pasa al acento. El buscador '
-      'no muestra la etiqueta, pero TalkBack la dice.',
+      'no muestra la etiqueta, pero TalkBack la dice, y con algo escrito '
+      'trae el botón «Borrar búsqueda».',
+    ),
+    _entreSecciones,
+    const EncabezadoSeccion(titulo: 'Estados de pantalla'),
+    const EstadoPantalla(
+      icono: Icons.search_off_rounded,
+      titulo: 'Sin resultados',
+      detalle: 'No hay mapas que coincidan con la búsqueda.',
+    ),
+    EstadoPantalla(
+      icono: Icons.cloud_off_rounded,
+      titulo: 'No hay conexión con la nube',
+      detalle: 'Revisá la conexión del teléfono (de ejemplo).',
+      accion: BotonSecundario(
+        texto: 'Reintentar',
+        icono: Icons.refresh_rounded,
+        alPresionar: () => _aviso('Reintentar'),
+      ),
+    ),
+    _parrafo(
+      e,
+      'En lugar del contenido, cuando no hay nada, algo falló o se espera '
+      '(con un reloj de arena quieto: nada gira). TalkBack los anuncia al '
+      'aparecer.',
     ),
     _entreSecciones,
     const EncabezadoSeccion(titulo: 'Progreso'),
@@ -581,6 +622,46 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       icono: Icons.add_rounded,
       expandido: true,
       alPresionar: _abrirHoja,
+    ),
+    _entreElementos,
+    BotonSecundario(
+      texto: 'Pedir una confirmación',
+      icono: Icons.help_outline_rounded,
+      expandido: true,
+      alPresionar: _confirmar,
+    ),
+    _bajoEncabezado,
+    _parrafo(
+      e,
+      'La confirmación es una hoja con «Cancelar» y la acción; si la acción '
+      'no se deshace, va en rojo y nunca en cian.',
+    ),
+    _entreSecciones,
+    const EncabezadoSeccion(titulo: 'Avisos'),
+    _bajoEncabezado,
+    FilaBotones(
+      children: [
+        BotonSecundario(
+          texto: 'Un aviso',
+          icono: Icons.info_outline_rounded,
+          etiquetaSemantica: 'Mostrar un aviso',
+          alPresionar: () => _aviso('"Planta baja" descargado'),
+        ),
+        BotonSecundario(
+          texto: 'Un error',
+          icono: Icons.error_outline_rounded,
+          etiquetaSemantica: 'Mostrar un error',
+          alPresionar: () =>
+              _aviso('Error al descargar: sin conexión', error: true),
+        ),
+      ],
+    ),
+    _bajoEncabezado,
+    _parrafo(
+      e,
+      'Abajo, levantados y con borde; el de error, con el ícono y el borde '
+      'en rojo. Aparecen con un fundido corto, sin moverse, se van solos a '
+      'los 4 s y TalkBack los lee.',
     ),
     _entreSecciones,
     const EncabezadoSeccion(titulo: 'Barras'),
@@ -833,6 +914,21 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
     );
     if (!mounted || nombre == null) return;
     _aviso(nombre.isEmpty ? 'Guardado sin nombre' : 'Guardado: $nombre');
+  }
+
+  Future<void> _confirmar() async {
+    final quitar = await mostrarConfirmacion(
+      context,
+      titulo: 'Quitar del teléfono',
+      mensaje:
+          'Se borrará "Planta baja" de este teléfono. Podés volver a '
+          'descargarlo cuando quieras.\n\n¿Continuar?',
+      confirmar: 'Quitar',
+      destructiva: true,
+      iconoConfirmar: Icons.delete_rounded,
+    );
+    if (!mounted) return;
+    _aviso(quitar ? 'Quitado (de ejemplo)' : 'No se quitó');
   }
 
   // ── Pestaña "Texto" ───────────────────────────────────────────────────────

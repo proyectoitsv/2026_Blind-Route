@@ -3,11 +3,27 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'database.dart';
+import 'design/design.dart';
 import 'supabase_service.dart';
-import 'tema.dart';
 
 /// Filtros rápidos del catálogo.
 enum _FiltroMapas { todos, actualizables, descargados }
+
+/// En qué está un mapa del catálogo para este teléfono.
+enum EstadoMapa {
+  /// Todavía no se descargó.
+  nuevo,
+
+  /// Descargado, y en la nube hay una versión más nueva.
+  actualizable,
+
+  /// Descargado y al día.
+  descargado,
+}
+
+/// Lo que se está haciendo con un mapa. Mientras dura, su tarjeta lo dice en
+/// lugar de los botones.
+enum OperacionMapa { descarga, actualizacion, borrado }
 
 /// Catálogo de mapas publicados. El usuario puede descargar, actualizar y quitar
 /// mapas de su teléfono. Pensado para ser fácil de operar (también con lector de
@@ -20,6 +36,21 @@ enum _FiltroMapas { todos, actualizables, descargados }
 /// `cacheWidth` achica la imagen en memoria, no la descarga.) El filtrado y la
 /// búsqueda se hacen en memoria sobre esa lista liviana, sin volver a
 /// consultar la nube.
+///
+/// ─── Sistema de diseño (fase 5.2 del rediseño) ───
+/// Va envuelta en AmbienteDiseno. El buscador, los filtros y la lista se
+/// desplazan juntos: con letra grande, la lista no queda reducida a un
+/// renglón. Cada mapa es una TarjetaMapa (abajo), con los botones de siempre
+/// y las mismas etiquetas de TalkBack; ninguno va en cian, porque serían
+/// varios botones principales en la pantalla. Lo que no es la lista (vacía,
+/// sin conexión, cargando) es un EstadoPantalla, quieto (sin nada que gire),
+/// que TalkBack anuncia al aparecer. Quitar un mapa se confirma en una hoja
+/// (mostrarConfirmacion) y los avisos son los del sistema de diseño
+/// (mostrarAviso).
+///
+/// Tirar hacia abajo vuelve a cargar la lista, como antes. Con TalkBack eso no
+/// se puede hacer: para eso están el botón de la barra ("Volver a cargar la
+/// lista") y "Reintentar" en el error de conexión, que hacen lo mismo.
 class PantallaMapasOnline extends StatefulWidget {
   const PantallaMapasOnline({super.key});
 
@@ -34,6 +65,9 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
   // remote_id → ruta local de la imagen del plano (sólo mapas descargados).
   Map<String, String> _imagenesLocales = {};
   final Set<String> _enProgreso = {};
+  // remote_id → qué se está haciendo con él, para que la tarjeta lo diga
+  // mientras está en _enProgreso. Lo anotan los botones de la tarjeta.
+  final Map<String, OperacionMapa> _operaciones = {};
 
   final TextEditingController _buscador = TextEditingController();
   String _busqueda = '';
@@ -58,7 +92,8 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
     if (!SupabaseService.instance.configurado) {
       setState(() {
         _cargando = false;
-        _error = 'La nube de mapas no está configurada todavía.\n'
+        _error =
+            'La nube de mapas no está configurada todavía.\n'
             'Cargá tus credenciales en supabase_config.dart.';
       });
       return;
@@ -77,8 +112,8 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
       final mapas = resultados[0] as List<MapaPublicadoResumen>;
       final descargados = resultados[1] as Map<String, DateTime?>;
       final quitados = await _quitarEliminados(mapas, descargados);
-      final imagenes =
-          await DatabaseHelper.instance.obtenerImagenesDescargadas();
+      final imagenes = await DatabaseHelper.instance
+          .obtenerImagenesDescargadas();
       if (!mounted) return;
       setState(() {
         _mapas = mapas;
@@ -87,9 +122,11 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
         _cargando = false;
       });
       if (quitados > 0) {
-        _avisar(quitados == 1
-            ? 'Se quitó 1 mapa que ya no está disponible'
-            : 'Se quitaron $quitados mapas que ya no están disponibles');
+        _avisar(
+          quitados == 1
+              ? 'Se quitó 1 mapa que ya no está disponible'
+              : 'Se quitaron $quitados mapas que ya no están disponibles',
+        );
       }
     } catch (e) {
       if (!mounted) return;
@@ -136,7 +173,8 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
 
   // ── Estado de cada mapa ─────────────────────────────────────────────────────
 
-  bool _estaDescargado(MapaPublicadoResumen m) => _descargados.containsKey(m.id);
+  bool _estaDescargado(MapaPublicadoResumen m) =>
+      _descargados.containsKey(m.id);
 
   bool _tieneActualizacion(MapaPublicadoResumen m) {
     if (!_estaDescargado(m)) return false;
@@ -167,32 +205,22 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _enProgreso.remove(mapa.id));
-      _avisar('Error al descargar: $e');
+      _avisar('Error al descargar: $e', error: true);
     }
   }
 
   Future<void> _desinstalar(MapaPublicadoResumen mapa) async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Quitar del teléfono'),
-        content: Text(
-          'Se borrará "${mapa.pisoNombre}" de este teléfono. Podés volver a '
-          'descargarlo cuando quieras.\n\n¿Continuar?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Quitar'),
-          ),
-        ],
-      ),
+    final confirmar = await mostrarConfirmacion(
+      context,
+      titulo: 'Quitar del teléfono',
+      mensaje:
+          'Se borrará "${mapa.pisoNombre}" de este teléfono. Podés volver '
+          'a descargarlo cuando quieras.\n\n¿Continuar?',
+      confirmar: 'Quitar',
+      destructiva: true,
+      iconoConfirmar: Icons.delete_rounded,
     );
-    if (confirmar != true) return;
+    if (!confirmar) return;
 
     setState(() => _enProgreso.add(mapa.id));
     try {
@@ -207,14 +235,13 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _enProgreso.remove(mapa.id));
-      _avisar('Error al quitar: $e');
+      _avisar('Error al quitar: $e', error: true);
     }
   }
 
-  void _avisar(String msg) {
+  void _avisar(String msg, {bool error = false}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+    mostrarAviso(context, msg, error: error);
   }
 
   // ── Filtrado + agrupado ─────────────────────────────────────────────────────
@@ -256,145 +283,161 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
 
   @override
   Widget build(BuildContext context) {
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        appBar: AppBar(title: const Text('Mapas disponibles')),
-        body: _cargando
-            ? const Center(
-                child: CircularProgressIndicator(color: TemaApp.acento))
-            : _error != null
-                ? RefreshIndicator(
-                    onRefresh: _cargar,
-                    color: TemaApp.acento,
-                    backgroundColor: TemaApp.fondoCard,
-                    child: _mensajeCentrado(
-                      icono: Icons.cloud_off_rounded,
-                      titulo: 'No hay conexión con la nube',
-                      detalle: _error!,
-                    ),
-                  )
-                : Column(
-                    children: [
-                      _barraBusqueda(),
-                      _barraFiltros(),
-                      Expanded(
-                        child: RefreshIndicator(
-                          onRefresh: _cargar,
-                          color: TemaApp.acento,
-                          backgroundColor: TemaApp.fondoCard,
-                          child: _lista(),
-                        ),
-                      ),
-                    ],
+    return AmbienteDiseno(
+      child: Builder(
+        builder: (context) {
+          final e = EstiloApp.de(context);
+          return Scaffold(
+            backgroundColor: e.fondo,
+            appBar: BarraSuperior(
+              titulo: 'Mapas disponibles',
+              acciones: [
+                if (SupabaseService.instance.configurado)
+                  AccionBarra(
+                    icono: Icons.refresh_rounded,
+                    etiqueta: 'Volver a cargar la lista',
+                    alPresionar: _cargando ? null : _cargar,
                   ),
+              ],
+            ),
+            body: SafeArea(top: false, child: _cuerpo(e)),
+          );
+        },
       ),
     );
   }
 
-  Widget _barraBusqueda() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-      child: TextField(
-        controller: _buscador,
-        onChanged: (v) => setState(() => _busqueda = v),
-        style: const TextStyle(color: TemaApp.textoBlanco),
-        textInputAction: TextInputAction.search,
-        decoration: InputDecoration(
-          hintText: 'Buscar mapa por nombre...',
-          hintStyle: const TextStyle(color: TemaApp.textoSecundario),
-          prefixIcon:
-              const Icon(Icons.search_rounded, color: TemaApp.textoSecundario),
-          suffixIcon: _busqueda.isEmpty
-              ? null
-              : IconButton(
-                  tooltip: 'Borrar búsqueda',
-                  icon: const Icon(Icons.clear_rounded,
-                      color: TemaApp.textoSecundario),
-                  onPressed: () {
-                    _buscador.clear();
-                    setState(() => _busqueda = '');
-                  },
-                ),
-          filled: true,
-          fillColor: TemaApp.fondoCard,
-          contentPadding: const EdgeInsets.symmetric(vertical: 4),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(TemaApp.radiusButton),
-            borderSide: const BorderSide(color: Color(0xFF21262D)),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(TemaApp.radiusButton),
-            borderSide: const BorderSide(color: Color(0xFF21262D)),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(TemaApp.radiusButton),
-            borderSide: const BorderSide(color: TemaApp.acento),
+  Widget _cuerpo(EstiloApp e) {
+    if (_cargando) {
+      return _enElMedio(
+        const EstadoPantalla(
+          icono: Icons.hourglass_empty_rounded,
+          titulo: 'Cargando mapas…',
+        ),
+      );
+    }
+    if (_error != null) {
+      return _conRecarga(
+        e,
+        _enElMedio(
+          EstadoPantalla(
+            icono: Icons.cloud_off_rounded,
+            titulo: 'No hay conexión con la nube',
+            detalle: _error,
+            accion: SupabaseService.instance.configurado
+                ? BotonSecundario(
+                    texto: 'Reintentar',
+                    icono: Icons.refresh_rounded,
+                    alPresionar: _cargar,
+                  )
+                : null,
           ),
         ),
-      ),
+      );
+    }
+    return _conRecarga(e, _lista());
+  }
+
+  /// [estado] en el medio de la pantalla. Si con letra grande no entra, se
+  /// desplaza (y se puede tirar hacia abajo aunque entre).
+  Widget _enElMedio(Widget estado) => CustomScrollView(
+    physics: const AlwaysScrollableScrollPhysics(),
+    slivers: [
+      SliverFillRemaining(hasScrollBody: false, child: Center(child: estado)),
+    ],
+  );
+
+  /// Tirar hacia abajo vuelve a cargar la lista.
+  Widget _conRecarga(EstiloApp e, Widget hijo) => RefreshIndicator(
+    onRefresh: _cargar,
+    color: e.acento,
+    backgroundColor: e.superficie,
+    child: hijo,
+  );
+
+  Widget _lista() {
+    final filtrados = _mapasFiltrados();
+    final items = _aplanarPorEdificio(filtrados);
+    final vacio = filtrados.isEmpty ? _mensajeVacio() : null;
+    return CustomScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(
+            EspaciadoApp.margenLateral,
+            EspaciadoApp.margenLateral,
+            EspaciadoApp.margenLateral,
+            0,
+          ),
+          sliver: SliverToBoxAdapter(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                CampoTexto.busqueda(
+                  etiqueta: 'Buscar mapa',
+                  ayuda: 'Buscar mapa por nombre…',
+                  controlador: _buscador,
+                  alCambiar: (v) => setState(() => _busqueda = v),
+                ),
+                const SizedBox(height: EspaciadoApp.margenLateral),
+                _barraFiltros(),
+              ],
+            ),
+          ),
+        ),
+        if (vacio != null)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: EstadoPantalla(
+                icono: Icons.search_off_rounded,
+                titulo: vacio.$1,
+                detalle: vacio.$2,
+              ),
+            ),
+          )
+        else
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(
+              EspaciadoApp.margenLateral,
+              EspaciadoApp.entreSecciones,
+              EspaciadoApp.margenLateral,
+              EspaciadoApp.entreSecciones,
+            ),
+            sliver: SliverList.builder(
+              itemCount: items.length,
+              itemBuilder: (context, i) => _item(items, i),
+            ),
+          ),
+      ],
     );
   }
 
   Widget _barraFiltros() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-      child: Wrap(
-        spacing: 8,
-        children: [
-          _chipFiltro('Todos', _FiltroMapas.todos, null),
-          _chipFiltro(
-              'Actualizables', _FiltroMapas.actualizables, _countActualizables),
-          _chipFiltro(
-              'Descargados', _FiltroMapas.descargados, _countDescargados),
-        ],
-      ),
+    return Wrap(
+      spacing: EspaciadoApp.chico,
+      runSpacing: EspaciadoApp.chico,
+      children: [
+        _chipFiltro('Todos', _FiltroMapas.todos, null),
+        _chipFiltro(
+          'Actualizables',
+          _FiltroMapas.actualizables,
+          _countActualizables,
+        ),
+        _chipFiltro('Descargados', _FiltroMapas.descargados, _countDescargados),
+      ],
     );
   }
 
   Widget _chipFiltro(String texto, _FiltroMapas filtro, int? cantidad) {
-    final seleccionado = _filtro == filtro;
-    final etiqueta =
-        (cantidad != null && cantidad > 0) ? '$texto ($cantidad)' : texto;
-    return ChoiceChip(
-      label: Text(etiqueta),
-      selected: seleccionado,
-      onSelected: (_) => setState(() => _filtro = filtro),
-      backgroundColor: TemaApp.fondoCard,
-      selectedColor: TemaApp.acento.withValues(alpha: 0.25),
-      side: BorderSide(
-        color: seleccionado ? TemaApp.acento : const Color(0xFF21262D),
-      ),
-      labelStyle: TextStyle(
-        color: seleccionado ? TemaApp.acento : TemaApp.textoSecundario,
-        fontWeight: FontWeight.w600,
-        fontSize: 13,
-      ),
-    );
-  }
-
-  Widget _lista() {
-    final filtrados = _mapasFiltrados();
-
-    if (filtrados.isEmpty) {
-      final vacio = _mensajeVacio();
-      return _mensajeCentrado(
-        icono: Icons.search_off_rounded,
-        titulo: vacio.$1,
-        detalle: vacio.$2,
-      );
-    }
-
-    final items = _aplanarPorEdificio(filtrados);
-    return ListView.builder(
-      padding: const EdgeInsets.only(bottom: 12),
-      itemCount: items.length,
-      itemBuilder: (context, i) {
-        final item = items[i];
-        if (item is String) return _encabezadoEdificio(item);
-        return _tarjetaMapa(item as MapaPublicadoResumen);
-      },
+    final etiqueta = (cantidad != null && cantidad > 0)
+        ? '$texto ($cantidad)'
+        : texto;
+    return ChipFiltro(
+      texto: etiqueta,
+      seleccionado: _filtro == filtro,
+      exclusivo: true,
+      alCambiar: (_) => setState(() => _filtro = filtro),
     );
   }
 
@@ -410,303 +453,297 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
       case _FiltroMapas.todos:
         return (
           'Todavía no hay mapas publicados',
-          'Cuando un administrador publique un plano, aparecerá acá.'
+          'Cuando un administrador publique un plano, aparecerá acá.',
         );
     }
   }
 
-  Widget _encabezadoEdificio(String nombre) {
+  /// El encabezado de un edificio o la tarjeta de un mapa, con su aire: 28
+  /// antes de cada edificio (menos el primero), 12 entre el encabezado y su
+  /// primer mapa y entre mapa y mapa.
+  Widget _item(List<Object> items, int i) {
+    final item = items[i];
+    if (item is String) {
+      return Padding(
+        padding: EdgeInsets.only(
+          top: i == 0 ? 0 : EspaciadoApp.entreSecciones,
+          bottom: EspaciadoApp.medio,
+        ),
+        child: EncabezadoSeccion(titulo: item),
+      );
+    }
+    final mapa = item as MapaPublicadoResumen;
+    final sigueOtroMapa =
+        i + 1 < items.length && items[i + 1] is MapaPublicadoResumen;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-      child: Row(
-        children: [
-          const Icon(Icons.business_rounded, color: TemaApp.acento, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              nombre,
-              style: const TextStyle(
-                color: TemaApp.textoBlanco,
-                fontWeight: FontWeight.w700,
-                fontSize: 15,
-                letterSpacing: 0.2,
-              ),
-            ),
-          ),
-        ],
+      padding: EdgeInsets.only(
+        bottom: sigueOtroMapa ? EspaciadoApp.entreTarjetas : 0,
       ),
+      child: _tarjetaMapa(mapa),
     );
   }
 
   Widget _tarjetaMapa(MapaPublicadoResumen mapa) {
-    final yaDescargado = _estaDescargado(mapa);
-    final actualizacion = _tieneActualizacion(mapa);
+    final estado = !_estaDescargado(mapa)
+        ? EstadoMapa.nuevo
+        : _tieneActualizacion(mapa)
+        ? EstadoMapa.actualizable
+        : EstadoMapa.descargado;
+    return TarjetaMapa(
+      mapa: mapa,
+      estado: estado,
+      rutaImagen: _imagenesLocales[mapa.id],
+      operacion: _enProgreso.contains(mapa.id)
+          ? (_operaciones[mapa.id] ?? OperacionMapa.descarga)
+          : null,
+      alDescargar: () {
+        _operaciones[mapa.id] = OperacionMapa.descarga;
+        _descargar(mapa);
+      },
+      alActualizar: () {
+        _operaciones[mapa.id] = OperacionMapa.actualizacion;
+        _descargar(mapa);
+      },
+      alQuitar: () {
+        _operaciones[mapa.id] = OperacionMapa.borrado;
+        _desinstalar(mapa);
+      },
+    );
+  }
+}
 
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      decoration: BoxDecoration(
-        color: TemaApp.fondoCard,
-        borderRadius: BorderRadius.circular(TemaApp.radiusCard),
-        border: Border.all(color: const Color(0xFF21262D)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+// ═══════════════════════════════════════════════════════════════════════════
+// Tarjeta de un mapa
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Levantada (radio 20), sin borde: los botones de adentro llevan el suyo.
+// Arriba, la miniatura del plano en un cuadro hundido (sólo si está en el
+// teléfono; si no, un ícono), el nombre del piso, cuántos beacons y
+// calibraciones tiene y la marca de su estado en un chip hundido ("Nuevo",
+// "Actualizable", "Descargado"), sin cian ni verde: la v5 los guarda para lo
+// elegido y para la ruta. Abajo, los botones: "Descargar" en uno nuevo;
+// "Actualizar" y "Quitar" en uno actualizable; "Quitar" en uno descargado.
+// Son secundarios ("Quitar", en rojo) y van lado a lado o, si con letra
+// grande no entran, uno debajo del otro (FilaBotones).
+//
+// Mientras se descarga, se actualiza o se quita, en lugar de los botones va
+// un recuadro hundido y quieto que dice qué se está haciendo; TalkBack lo
+// anuncia.
+//
+// ─── TalkBack ───
+// La parte de arriba se lee de una vez ("Planta baja, 4 beacons y 12
+// calibraciones, Nuevo"). Los botones conservan las etiquetas de siempre:
+// "Descargar Planta baja", "Actualizar Planta baja" y "Quitar Planta baja
+// del teléfono".
+//
+// Sólo muestra y avisa los toques: la carga, la descarga y el borrado los
+// hace la pantalla. Así se puede probar sin la nube.
+
+/// La tarjeta de un mapa del catálogo.
+class TarjetaMapa extends StatelessWidget {
+  const TarjetaMapa({
+    super.key,
+    required this.mapa,
+    required this.estado,
+    required this.alDescargar,
+    required this.alActualizar,
+    required this.alQuitar,
+    this.rutaImagen,
+    this.operacion,
+  });
+
+  final MapaPublicadoResumen mapa;
+  final EstadoMapa estado;
+
+  /// El plano en el teléfono, para la miniatura. null: un ícono.
+  final String? rutaImagen;
+
+  /// Lo que se está haciendo con el mapa. null: nada (se ven los botones).
+  final OperacionMapa? operacion;
+
+  final VoidCallback alDescargar;
+  final VoidCallback alActualizar;
+  final VoidCallback alQuitar;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    final (marca, iconoMarca) = switch (estado) {
+      EstadoMapa.nuevo => ('Nuevo', Icons.cloud_rounded),
+      EstadoMapa.actualizable => ('Actualizable', Icons.update_rounded),
+      EstadoMapa.descargado => ('Descargado', Icons.download_done_rounded),
+    };
+    final beacons = mapa.numBeacons;
+    final calibraciones = mapa.numCalibraciones;
+    return PanelRelieve(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          MergeSemantics(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _miniatura(mapa),
-                const SizedBox(width: 12),
+                _Miniatura(rutaImagen: rutaImagen),
+                const SizedBox(width: EspaciadoApp.medio),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              mapa.pisoNombre,
-                              style: const TextStyle(
-                                color: TemaApp.textoBlanco,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 16,
-                              ),
-                            ),
-                          ),
-                          if (!yaDescargado) ...[
-                            const SizedBox(width: 8),
-                            _chip('Nuevo', TemaApp.acento),
-                          ] else if (actualizacion) ...[
-                            const SizedBox(width: 8),
-                            _chip('Actualizado', TemaApp.instruccionAccent),
-                          ],
-                        ],
-                      ),
-                      const SizedBox(height: 4),
                       Text(
-                        '${mapa.numBeacons} beacons · '
-                        '${mapa.numCalibraciones} calibraciones',
-                        style: const TextStyle(
-                          color: TemaApp.textoSecundario,
-                          fontSize: 12,
+                        mapa.pisoNombre,
+                        style: TipografiaApp.destacado.copyWith(
+                          color: e.textoPrincipal,
                         ),
                       ),
+                      const SizedBox(height: EspaciadoApp.minimo),
+                      Text(
+                        '$beacons beacons · $calibraciones calibraciones',
+                        semanticsLabel:
+                            '$beacons beacons y $calibraciones calibraciones',
+                        style: TipografiaApp.subtitulo.copyWith(
+                          color: e.textoSecundario,
+                        ),
+                      ),
+                      const SizedBox(height: EspaciadoApp.chico),
+                      ChipApp(texto: marca, icono: iconoMarca),
                     ],
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            _acciones(mapa, yaDescargado, actualizacion),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _acciones(
-      MapaPublicadoResumen mapa, bool yaDescargado, bool actualizacion) {
-    if (_enProgreso.contains(mapa.id)) {
-      return const SizedBox(
-        height: 50,
-        child: Center(
-          child: SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(
-                strokeWidth: 2.6, color: TemaApp.acento),
           ),
-        ),
-      );
-    }
-
-    if (!yaDescargado) {
-      return _botonAccion(
-        icon: Icons.cloud_download_rounded,
-        label: 'Descargar',
-        color: TemaApp.acento,
-        semantica: 'Descargar ${mapa.pisoNombre}',
-        onTap: () => _descargar(mapa),
-      );
-    }
-
-    // Descargado: acción principal (actualizar o estado) + quitar.
-    return Row(
-      children: [
-        Expanded(
-          child: actualizacion
-              ? _botonAccion(
-                  icon: Icons.refresh_rounded,
-                  label: 'Actualizar',
-                  color: TemaApp.instruccionAccent,
-                  semantica: 'Actualizar ${mapa.pisoNombre}',
-                  onTap: () => _descargar(mapa),
-                )
-              : _estadoDescargado(),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: _botonAccion(
-            icon: Icons.delete_outline_rounded,
-            label: 'Quitar',
-            color: TemaApp.zonaRestringidaRelleno,
-            semantica: 'Quitar ${mapa.pisoNombre} del teléfono',
-            onTap: () => _desinstalar(mapa),
-            relleno: false,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _estadoDescargado() {
-    return Container(
-      height: 50,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(TemaApp.radiusButton),
-        border: Border.all(color: const Color(0xFF21262D)),
-      ),
-      child: const Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.check_circle_rounded,
-              color: TemaApp.instruccionAccent, size: 20),
-          SizedBox(width: 8),
-          Text('Descargado',
-              style: TextStyle(
-                  color: TemaApp.textoSecundario,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600)),
+          // Más aire que el alcance de la luz de los botones: ninguna sombra
+          // cae sobre el texto del chip.
+          const SizedBox(height: EspaciadoApp.margenLateral),
+          _acciones(),
         ],
       ),
     );
   }
 
-  Widget _botonAccion({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required String semantica,
-    required VoidCallback onTap,
-    bool relleno = true,
-  }) {
-    return Semantics(
-      button: true,
-      label: semantica,
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(TemaApp.radiusButton),
-          onTap: onTap,
-          child: Ink(
-            height: 50,
-            decoration: BoxDecoration(
-              color:
-                  relleno ? color.withValues(alpha: 0.15) : Colors.transparent,
-              borderRadius: BorderRadius.circular(TemaApp.radiusButton),
-              border: Border.all(
-                color: color.withValues(alpha: relleno ? 0.5 : 0.7),
-                width: 1.4,
-              ),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(icon, color: color, size: 22),
-                const SizedBox(width: 8),
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: relleno ? TemaApp.textoBlanco : color,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                  ),
+  Widget _acciones() {
+    final piso = mapa.pisoNombre;
+    final enCurso = operacion;
+    if (enCurso != null) {
+      final (texto, etiqueta) = switch (enCurso) {
+        OperacionMapa.descarga => ('Descargando…', 'Descargando $piso'),
+        OperacionMapa.actualizacion => ('Actualizando…', 'Actualizando $piso'),
+        OperacionMapa.borrado => ('Quitando…', 'Quitando $piso del teléfono'),
+      };
+      return _EnCurso(texto: texto, etiqueta: etiqueta);
+    }
+    final quitar = BotonSecundario(
+      texto: 'Quitar',
+      icono: Icons.delete_rounded,
+      destructivo: true,
+      etiquetaSemantica: 'Quitar $piso del teléfono',
+      alPresionar: alQuitar,
+    );
+    return FilaBotones(
+      children: switch (estado) {
+        EstadoMapa.nuevo => [
+          BotonSecundario(
+            texto: 'Descargar',
+            icono: Icons.cloud_download_rounded,
+            etiquetaSemantica: 'Descargar $piso',
+            alPresionar: alDescargar,
+          ),
+        ],
+        EstadoMapa.actualizable => [
+          BotonSecundario(
+            texto: 'Actualizar',
+            icono: Icons.update_rounded,
+            etiquetaSemantica: 'Actualizar $piso',
+            alPresionar: alActualizar,
+          ),
+          quitar,
+        ],
+        EstadoMapa.descargado => [quitar],
+      },
+    );
+  }
+}
+
+/// La miniatura del plano: un cuadro hundido con el plano del teléfono o,
+/// si no está, el ícono de un mapa. Decorativa. Sale del archivo local: no se
+/// pide ninguna imagen a la nube.
+class _Miniatura extends StatelessWidget {
+  const _Miniatura({required this.rutaImagen});
+
+  final String? rutaImagen;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    final ruta = rutaImagen;
+    final icono = Center(
+      child: Icon(
+        Icons.map_rounded,
+        size: FormasApp.icono,
+        color: e.textoSecundario,
+      ),
+    );
+    return ExcludeSemantics(
+      child: SizedBox.square(
+        dimension: FormasApp.miniatura,
+        // La sombra interior va encima del plano: así se ve hundido.
+        child: PanelRelieve(
+          hundido: true,
+          tamano: TamanoRelieve.chico,
+          radio: FormasApp.bordeCampo,
+          relleno: EdgeInsets.zero,
+          sombraEncima: true,
+          child: ruta == null
+              ? icono
+              : Image.file(
+                  File(ruta),
+                  fit: BoxFit.cover,
+                  cacheWidth: 112,
+                  gaplessPlayback: true,
+                  errorBuilder: (context, error, stack) => icono,
                 ),
-              ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Lo que va en lugar de los botones mientras se descarga, se actualiza o se
+/// quita un mapa: un recuadro hundido del alto de un botón, quieto, con
+/// [texto]. TalkBack dice [etiqueta] al aparecer.
+class _EnCurso extends StatelessWidget {
+  const _EnCurso({required this.texto, required this.etiqueta});
+
+  final String texto;
+  final String etiqueta;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      label: etiqueta,
+      excludeSemantics: true,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: FormasApp.altoBoton),
+        child: PanelRelieve(
+          hundido: true,
+          tamano: TamanoRelieve.chico,
+          radio: FormasApp.bordeBoton,
+          relleno: const EdgeInsets.symmetric(
+            horizontal: EspaciadoApp.rellenoTarjeta,
+            vertical: EspaciadoApp.medio,
+          ),
+          child: Center(
+            child: Text(
+              texto,
+              textAlign: TextAlign.center,
+              style: TipografiaApp.boton.copyWith(color: e.textoSecundario),
             ),
           ),
         ),
       ),
-    );
-  }
-
-  Widget _chip(String texto, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        texto,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-    );
-  }
-
-  /// Miniatura del mapa. Sólo los mapas descargados la tienen, y sale del
-  /// archivo local: no se pide ninguna imagen a la nube.
-  Widget _miniatura(MapaPublicadoResumen mapa) {
-    final rutaLocal = _imagenesLocales[mapa.id];
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: SizedBox(
-        width: 56,
-        height: 56,
-        child: rutaLocal == null
-            ? _placeholderMiniatura()
-            : Image.file(
-                File(rutaLocal),
-                fit: BoxFit.cover,
-                cacheWidth: 112,
-                gaplessPlayback: true,
-                errorBuilder: (context, error, stack) => _placeholderMiniatura(),
-              ),
-      ),
-    );
-  }
-
-  Widget _placeholderMiniatura() {
-    return Container(
-      color: TemaApp.fondoSurface,
-      alignment: Alignment.center,
-      child: const Icon(Icons.map_rounded,
-          color: TemaApp.textoSecundario, size: 24),
-    );
-  }
-
-  Widget _mensajeCentrado({
-    required IconData icono,
-    required String titulo,
-    required String detalle,
-  }) {
-    return ListView(
-      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 80),
-      children: [
-        Icon(icono, size: 64, color: TemaApp.textoSecundario),
-        const SizedBox(height: 16),
-        Text(
-          titulo,
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: TemaApp.textoBlanco,
-            fontSize: 17,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          detalle,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 13),
-        ),
-      ],
     );
   }
 }

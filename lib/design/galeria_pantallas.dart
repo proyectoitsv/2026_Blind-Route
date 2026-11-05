@@ -159,9 +159,8 @@ class PlanoConRuta extends StatelessWidget {
 }
 
 void _aviso(BuildContext context, String texto) {
-  ScaffoldMessenger.of(context)
-    ..hideCurrentSnackBar()
-    ..showSnackBar(SnackBar(content: Text(texto)));
+  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+  mostrarAviso(context, texto);
 }
 
 // ─── NAVEGACIÓN ─────────────────────────────────────────────────────────────

@@ -4,10 +4,10 @@ import 'package:blindroute/pantalla_ajustes.dart';
 import 'package:blindroute/pantalla_mapas_online.dart';
 import 'package:blindroute/pantalla_princ_usuario.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'ayudas_pantallas.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // INICIO DE LA APP DEL USUARIO (fase 5.1 del rediseño)
@@ -15,15 +15,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 //
 // La pantalla migrada al sistema de diseño: el botón grande que llena el
 // lugar libre, las dos filas, lo que dice TalkBack y en qué orden, las guías
-// de área táctil, etiquetas y contraste, la letra al 200 % y adónde lleva
-// cada cosa (cortando la voz antes). Va con el MaterialApp de la app, con el
-// tema de antes, como en main_user.dart.
-//
-// ─── Inter de verdad ───
-// La letra de prueba de Flutter (cada letra, un cuadrado de 1 em) es mucho
-// más ancha que Inter: con ella, al 200 % casi cualquier palabra larga se
-// partiría. Acá se carga Inter, con los mismos archivos de la app, para
-// medir como en el teléfono que ninguna palabra se parta.
+// de área táctil, etiquetas y contraste, la letra al 200 % (con Inter de
+// verdad, ayudas_pantallas.dart) y adónde lleva cada cosa (cortando la voz
+// antes). Va con el MaterialApp de la app, con el tema de antes, como en
+// main_user.dart.
 //
 // ─── Lo que no anda en los tests ───
 // La voz se simula sobre el canal de flutter_tts: se anota lo que se le pide.
@@ -31,69 +26,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 // y la base local: de esas dos se mira qué ruta se abre y se saca antes de
 // que se arme.
 
-const MethodChannel _canalVoz = MethodChannel('flutter_tts');
-
-/// Un teléfono de 360 × 780 dp.
-const Size _telefono = Size(360, 780);
-
-/// Anota las rutas que se abren.
-class _Observador extends NavigatorObserver {
-  final List<Route<dynamic>> abiertas = [];
-
-  @override
-  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) =>
-      abiertas.add(route);
-}
-
-/// Carga Inter con sus cuatro pesos, desde los archivos de la app.
-Future<void> _cargarInter() async {
-  final familia = FontLoader(TipografiaApp.familia);
-  for (final peso in ['Regular', 'Medium', 'SemiBold', 'Bold']) {
-    familia.addFont(rootBundle.load('assets/fonts/Inter/Inter-$peso.ttf'));
-  }
-  await familia.load();
-}
-
 /// Arma el inicio como en la app, con la letra en [escala].
-Future<_Observador> _armar(WidgetTester tester, {double escala = 1}) async {
-  tester.view.physicalSize = _telefono * 3;
-  tester.view.devicePixelRatio = 3;
-  tester.platformDispatcher.textScaleFactorTestValue = escala;
-  addTearDown(tester.view.reset);
-  addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-  final observador = _Observador();
-  await tester.pumpWidget(
-    MaterialApp(
-      theme: ThemeData(primarySwatch: Colors.indigo),
-      navigatorObservers: [observador],
-      home: const PantallaPrincipalUsuario(),
-    ),
-  );
-  await tester.pumpAndSettle();
-  return observador;
-}
-
-/// Los textos de la pantalla.
-Iterable<RenderParagraph> _parrafos(WidgetTester tester) =>
-    tester.renderObjectList<RenderParagraph>(find.byType(RichText));
-
-/// Las palabras que quedaron partidas en dos renglones.
-List<String> _palabrasPartidas(WidgetTester tester) => [
-  for (final parrafo in _parrafos(tester))
-    for (final palabra in RegExp(r'\S+').allMatches(parrafo.text.toPlainText()))
-      if (parrafo
-              .getBoxesForSelection(
-                TextSelection(
-                  baseOffset: palabra.start,
-                  extentOffset: palabra.end,
-                ),
-              )
-              .map((caja) => caja.top.round())
-              .toSet()
-              .length >
-          1)
-        palabra.group(0)!,
-];
+Future<ObservadorRutas> _armar(WidgetTester tester, {double escala = 1}) =>
+    armarPantalla(tester, const PantallaPrincipalUsuario(), escala: escala);
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -103,19 +38,19 @@ void main() {
   /// Lo que se le pidió al motor de voz, por nombre de método.
   final llamadasVoz = <String>[];
 
-  setUpAll(_cargarInter);
+  setUpAll(cargarInter);
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     AjustesMovimiento.instancia.reiniciarParaTests();
     llamadasVoz.clear();
-    mensajero.setMockMethodCallHandler(_canalVoz, (llamada) async {
+    mensajero.setMockMethodCallHandler(canalVoz, (llamada) async {
       llamadasVoz.add(llamada.method);
       return 1;
     });
   });
 
-  tearDown(() => mensajero.setMockMethodCallHandler(_canalVoz, null));
+  tearDown(() => mensajero.setMockMethodCallHandler(canalVoz, null));
 
   testWidgets('al abrirse inicializa la voz; el botón grande llena el lugar '
       'libre y las filas van abajo', (tester) async {
@@ -132,13 +67,13 @@ void main() {
     final boton = tester.getRect(find.byType(BotonPrincipalGrande));
     expect(
       grupo.bottom,
-      moreOrLessEquals(_telefono.height - EspaciadoApp.entreSecciones),
+      moreOrLessEquals(telefono.height - EspaciadoApp.entreSecciones),
     );
     expect(
       grupo.top - boton.bottom,
       moreOrLessEquals(EspaciadoApp.entreSecciones),
     );
-    expect(boton.height, greaterThan(_telefono.height / 2));
+    expect(boton.height, greaterThan(telefono.height / 2));
     // Con la letra normal entra todo, sin desplazarse.
     expect(
       tester
@@ -183,20 +118,13 @@ void main() {
     // dicen ya está en las etiquetas.
     expect(find.bySemanticsLabel(RegExp('Tocá')), findsNothing);
     expect(find.bySemanticsLabel(RegExp('Descargá')), findsNothing);
-    expect(
-      tester.semantics
-          .simulatedAccessibilityTraversal()
-          .map((nodo) => nodo.label)
-          .where((etiqueta) => etiqueta.isNotEmpty)
-          .toList(),
-      [
-        'Blind Route',
-        'Navegación interior para todos',
-        'Comenzar a navegar',
-        'Mapas disponibles para descargar',
-        'Ajustes: voz, movimiento y vibración',
-      ],
-    );
+    expect(ordenTalkBack(tester), [
+      'Blind Route',
+      'Navegación interior para todos',
+      'Comenzar a navegar',
+      'Mapas disponibles para descargar',
+      'Ajustes: voz, movimiento y vibración',
+    ]);
     await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
     await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
     await expectLater(tester, meetsGuideline(textContrastGuideline));
@@ -208,8 +136,8 @@ void main() {
     final semantica = tester.ensureSemantics();
     await _armar(tester, escala: 2);
     expect(tester.takeException(), isNull);
-    expect(_palabrasPartidas(tester), isEmpty);
-    expect(_parrafos(tester).where((p) => p.didExceedMaxLines), isEmpty);
+    expect(palabrasPartidas(tester), isEmpty);
+    expect(textosCortados(tester), isEmpty);
     // No entra todo: la pantalla se desplaza y el botón grande mide lo que
     // pide su contenido, sin achicarse.
     expect(
