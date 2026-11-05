@@ -10,6 +10,8 @@
 // escalas ni resortes. Toman todo de los tokens de lib/design/ y los colores
 // de EstiloApp.de(context), así se ven igual bajo cualquier tema.
 //
+//   aviso.dart               mostrarAviso (un mensaje abajo que se va
+//                            solo, en lugar del SnackBar)
 //   barras.dart              BarraSuperior (botones redondos, título
 //                            centrado), AccionBarra, BarraInferior y
 //                            PestanaBarra (píldora de pestañas),
@@ -17,11 +19,17 @@
 //                            acciones)
 //   botones.dart             BotonPrincipal (acento plano),
 //                            BotonPrincipalGrande (llena el lugar),
-//                            BotonSecundario, BotonRedondo
-//   campo_texto.dart         CampoTexto (y CampoTexto.busqueda)
+//                            BotonSecundario, BotonRedondo, FilaBotones
+//                            (lado a lado o apilados)
+//   campo_texto.dart         CampoTexto (y CampoTexto.busqueda, con
+//                            "Borrar búsqueda")
 //   chips.dart               ChipApp (hundido), ChipFiltro
+//   confirmacion.dart        mostrarConfirmacion (una hoja con "Cancelar"
+//                            y la acción, en lugar del AlertDialog)
 //   control_segmentado.dart  ControlSegmentado, OpcionSegmento
 //   cuadro_icono.dart        CuadroIcono (ícono en un cuadro hundido)
+//   estado_pantalla.dart     EstadoPantalla (vacía, con un error o
+//                            esperando)
 //   grupo_filas.dart         EncabezadoSeccion, GrupoFilas, FilaGrupo
 //   hoja_inferior.dart       mostrarHoja
 //   linea_ruta.dart          LineaRuta (la ruta sobre el plano), TramoRuta,
@@ -39,12 +47,15 @@
 //
 // Se ven todos en la galería (lib/design/galeria_componentes.dart), que se
 // abre con: flutter run --flavor user -t lib/main_galeria.dart
+export 'aviso.dart';
 export 'barras.dart';
 export 'botones.dart';
 export 'campo_texto.dart';
 export 'chips.dart';
+export 'confirmacion.dart';
 export 'control_segmentado.dart';
 export 'cuadro_icono.dart';
+export 'estado_pantalla.dart';
 export 'grupo_filas.dart';
 export 'hoja_inferior.dart';
 export 'linea_ruta.dart';

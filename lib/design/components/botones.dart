@@ -1,4 +1,7 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../espaciado.dart';
 import '../estilo.dart';
@@ -393,6 +396,188 @@ class BotonSecundario extends StatelessWidget {
     );
     return expandido ? SizedBox(width: double.infinity, child: boton) : boton;
   }
+}
+
+// ─── FILA DE BOTONES ────────────────────────────────────────────────────────
+//
+// Botones uno al lado del otro, todos del mismo ancho: "Actualizar" y
+// "Quitar" en una tarjeta, "Cancelar" y "Quitar" en una confirmación. Si
+// alguno no entra en un renglón en su parte de la fila (con letra grande o en
+// un lugar angosto), van uno debajo del otro, a todo el ancho: así ninguna
+// palabra se parte a la mitad. Lo decide con el ancho natural de cada botón,
+// como el control segmentado. Con uno solo, va a todo el ancho.
+//
+// Entre botón y botón, 12 dp, en fila y apilados. TalkBack los lee en el
+// orden en que se pasan: de izquierda a derecha en fila, de arriba abajo
+// apilados.
+
+/// Botones del mismo ancho en una fila o, si no entran, apilados.
+class FilaBotones extends MultiChildRenderObjectWidget {
+  const FilaBotones({super.key, required super.children});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderFilaBotones(textDirection: Directionality.of(context));
+
+  @override
+  void updateRenderObject(BuildContext context, RenderObject renderObject) {
+    (renderObject as _RenderFilaBotones).textDirection = Directionality.of(
+      context,
+    );
+  }
+}
+
+class _DatosFilaBotones extends ContainerBoxParentData<RenderBox> {}
+
+class _RenderFilaBotones extends RenderBox
+    with
+        ContainerRenderObjectMixin<RenderBox, _DatosFilaBotones>,
+        RenderBoxContainerDefaultsMixin<RenderBox, _DatosFilaBotones> {
+  _RenderFilaBotones({required TextDirection textDirection})
+    : _textDirection = textDirection;
+
+  static const double _separacion = EspaciadoApp.medio;
+
+  TextDirection _textDirection;
+  set textDirection(TextDirection valor) {
+    if (valor == _textDirection) return;
+    _textDirection = valor;
+    markNeedsLayout();
+  }
+
+  @override
+  void setupParentData(RenderBox child) {
+    if (child.parentData is! _DatosFilaBotones) {
+      child.parentData = _DatosFilaBotones();
+    }
+  }
+
+  /// El ancho natural del botón más ancho, en un solo renglón.
+  double _anchoNatural(List<RenderBox> hijos) => hijos
+      .map((c) => c.getMaxIntrinsicWidth(double.infinity))
+      .reduce(math.max);
+
+  /// El ancho de la fila: el que le dan o, si no tiene tope, el que piden
+  /// los botones en fila.
+  double _ancho(BoxConstraints constraints, List<RenderBox> hijos) =>
+      constraints.hasBoundedWidth
+      ? constraints.maxWidth
+      : constraints.constrainWidth(
+          _anchoNatural(hijos) * hijos.length +
+              _separacion * (hijos.length - 1),
+        );
+
+  /// La parte de la fila de cada botón.
+  double _parte(double ancho, int n) => (ancho - _separacion * (n - 1)) / n;
+
+  /// Si entran en fila: cada uno, en un renglón, en su parte.
+  bool _enFila(double ancho, List<RenderBox> hijos) =>
+      hijos.length == 1 || _anchoNatural(hijos) <= _parte(ancho, hijos.length);
+
+  /// Lo que mide la fila en [constraints], con [medir] para el alto de cada
+  /// botón en un ancho (sirve para el acomodo real, el "en seco" y los
+  /// intrínsecos).
+  Size _medir(
+    BoxConstraints constraints,
+    double Function(RenderBox hijo, double ancho) medir,
+  ) {
+    final hijos = getChildrenAsList();
+    if (hijos.isEmpty) return constraints.smallest;
+    final ancho = _ancho(constraints, hijos);
+    if (_enFila(ancho, hijos)) {
+      final parte = _parte(ancho, hijos.length);
+      final alto = hijos.map((c) => medir(c, parte)).reduce(math.max);
+      return constraints.constrain(Size(ancho, alto));
+    }
+    var alto = _separacion * (hijos.length - 1);
+    for (final c in hijos) {
+      alto += medir(c, ancho);
+    }
+    return constraints.constrain(Size(ancho, alto));
+  }
+
+  @override
+  Size computeDryLayout(covariant BoxConstraints constraints) => _medir(
+    constraints,
+    (c, ancho) => c.getDryLayout(BoxConstraints.tightFor(width: ancho)).height,
+  );
+
+  @override
+  void performLayout() {
+    final hijos = getChildrenAsList();
+    if (hijos.isEmpty) {
+      size = constraints.smallest;
+      return;
+    }
+    final n = hijos.length;
+    final ancho = _ancho(constraints, hijos);
+    if (_enFila(ancho, hijos)) {
+      final parte = _parte(ancho, n);
+      var alto = 0.0;
+      for (final c in hijos) {
+        c.layout(BoxConstraints.tightFor(width: parte), parentUsesSize: true);
+        alto = math.max(alto, c.size.height);
+      }
+      for (var i = 0; i < n; i++) {
+        final c = hijos[i];
+        // Todos del alto del más alto.
+        if (c.size.height != alto) {
+          c.layout(BoxConstraints.tight(Size(parte, alto)));
+        }
+        final columna = _textDirection == TextDirection.rtl ? n - 1 - i : i;
+        (c.parentData! as _DatosFilaBotones).offset = Offset(
+          columna * (parte + _separacion),
+          0,
+        );
+      }
+      size = constraints.constrain(Size(ancho, alto));
+      return;
+    }
+    var y = 0.0;
+    for (final c in hijos) {
+      c.layout(BoxConstraints.tightFor(width: ancho), parentUsesSize: true);
+      (c.parentData! as _DatosFilaBotones).offset = Offset(0, y);
+      y += c.size.height + _separacion;
+    }
+    size = constraints.constrain(Size(ancho, y - _separacion));
+  }
+
+  @override
+  double computeMinIntrinsicWidth(double height) {
+    // Apilados, alcanza con el ancho del más ancho.
+    final hijos = getChildrenAsList();
+    if (hijos.isEmpty) return 0;
+    return hijos.map((c) => c.getMinIntrinsicWidth(height)).reduce(math.max);
+  }
+
+  @override
+  double computeMaxIntrinsicWidth(double height) {
+    // En fila, todos del ancho del más ancho.
+    final hijos = getChildrenAsList();
+    if (hijos.isEmpty) return 0;
+    return _anchoNatural(hijos) * hijos.length +
+        _separacion * (hijos.length - 1);
+  }
+
+  @override
+  double computeMinIntrinsicHeight(double width) => _medir(
+    BoxConstraints(maxWidth: width),
+    (c, ancho) => c.getMinIntrinsicHeight(ancho),
+  ).height;
+
+  @override
+  double computeMaxIntrinsicHeight(double width) => _medir(
+    BoxConstraints(maxWidth: width),
+    (c, ancho) => c.getMaxIntrinsicHeight(ancho),
+  ).height;
+
+  @override
+  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) =>
+      defaultHitTestChildren(result, position: position);
+
+  @override
+  void paint(PaintingContext context, Offset offset) =>
+      defaultPaint(context, offset);
 }
 
 /// El borde de un control gris: el de 1 px; enfocado, 2 px de acento;

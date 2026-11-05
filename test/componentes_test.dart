@@ -614,6 +614,66 @@ void main() {
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       semantica.dispose();
     });
+
+    testWidgets('la fila de botones: lado a lado y del mismo ancho; si no '
+        'entran, apilados a todo el ancho', (tester) async {
+      final semantica = tester.ensureSemantics();
+      final toques = <String>[];
+      // Con la letra de prueba (1 em por letra), «Otro» al 200 % ya no entra
+      // en media fila.
+      Widget fila() => FilaBotones(
+        children: [
+          BotonSecundario(texto: 'Uno', alPresionar: () => toques.add('uno')),
+          BotonSecundario(
+            texto: 'Otro',
+            destructivo: true,
+            alPresionar: () => toques.add('otro'),
+          ),
+        ],
+      );
+      const ancho = 360 - 2 * EspaciadoApp.margenLateral;
+      List<String> orden() => tester.semantics
+          .simulatedAccessibilityTraversal()
+          .map((n) => n.label)
+          .where((l) => l.isNotEmpty)
+          .toList();
+
+      await armar(tester, fila());
+      var uno = tester.getRect(find.widgetWithText(BotonSecundario, 'Uno'));
+      var otro = tester.getRect(find.widgetWithText(BotonSecundario, 'Otro'));
+      expect(otro.top, uno.top);
+      expect(otro.width, moreOrLessEquals(uno.width));
+      expect(otro.left - uno.right, moreOrLessEquals(EspaciadoApp.medio));
+      expect(otro.right - uno.left, moreOrLessEquals(ancho));
+      expect(uno.height, FormasApp.altoBoton);
+      expect(orden(), ['Uno', 'Otro']);
+      await tester.tap(find.text('Otro'));
+      expect(toques, ['otro']);
+
+      await armar(tester, fila(), escala: 2);
+      await tester.pumpAndSettle();
+      uno = tester.getRect(find.widgetWithText(BotonSecundario, 'Uno'));
+      otro = tester.getRect(find.widgetWithText(BotonSecundario, 'Otro'));
+      expect(otro.top - uno.bottom, moreOrLessEquals(EspaciadoApp.medio));
+      expect(uno.width, moreOrLessEquals(ancho));
+      expect(otro.width, moreOrLessEquals(ancho));
+      expect(orden(), ['Uno', 'Otro']);
+      expect(tester.takeException(), isNull);
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+
+      // Con uno solo, a todo el ancho.
+      await armar(
+        tester,
+        FilaBotones(
+          children: [BotonSecundario(texto: 'Solo', alPresionar: () {})],
+        ),
+      );
+      expect(
+        tester.getRect(find.byType(BotonSecundario)).width,
+        moreOrLessEquals(ancho),
+      );
+      semantica.dispose();
+    });
   });
 
   // ── Tarjeta de dato ─────────────────────────────────────────────────────
@@ -1497,6 +1557,133 @@ void main() {
       expect(d.borde.width, FormasApp.grosorFoco);
       semantica.dispose();
     });
+
+    testWidgets('el buscador: con algo escrito, «Borrar búsqueda» lo borra y '
+        'avisa el cambio', (tester) async {
+      final semantica = tester.ensureSemantics();
+      final cambios = <String>[];
+      await armar(
+        tester,
+        CampoTexto.busqueda(
+          etiqueta: 'Buscar mapa',
+          ayuda: 'Por nombre',
+          alCambiar: cambios.add,
+        ),
+      );
+      // Vacío, sin el botón.
+      expect(find.byTooltip('Borrar búsqueda'), findsNothing);
+      await tester.enterText(find.byType(TextField), 'Piso');
+      await tester.pumpAndSettle();
+      expect(cambios, ['Piso']);
+      expect(find.byTooltip('Borrar búsqueda'), findsOneWidget);
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Borrar búsqueda')),
+        isSemantics(isButton: true, hasTapAction: true),
+      );
+      // Adentro del campo, levantado y con borde, con 48 para tocar.
+      expect(
+        find.descendant(
+          of: find.byType(CampoTexto),
+          matching: find.byType(BotonRedondo),
+        ),
+        findsOneWidget,
+      );
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await tester.tap(find.byTooltip('Borrar búsqueda'));
+      await tester.pumpAndSettle();
+      expect(cambios, ['Piso', '']);
+      expect(find.text('Piso'), findsNothing);
+      expect(find.byTooltip('Borrar búsqueda'), findsNothing);
+
+      // Con un controlador de afuera, igual.
+      final controlador = TextEditingController(text: 'Aula');
+      addTearDown(controlador.dispose);
+      await armar(
+        tester,
+        CampoTexto.busqueda(
+          etiqueta: 'Buscar',
+          ayuda: 'Por nombre',
+          controlador: controlador,
+        ),
+      );
+      expect(find.byTooltip('Borrar búsqueda'), findsOneWidget);
+      await tester.tap(find.byTooltip('Borrar búsqueda'));
+      await tester.pumpAndSettle();
+      expect(controlador.text, isEmpty);
+      expect(find.byTooltip('Borrar búsqueda'), findsNothing);
+
+      // Un campo común no lo trae.
+      await armar(tester, const CampoTexto(etiqueta: 'Nombre'));
+      await tester.enterText(find.byType(TextField), 'Aula 12');
+      await tester.pumpAndSettle();
+      expect(find.byType(BotonRedondo), findsNothing);
+      semantica.dispose();
+    });
+  });
+
+  // ── Estado de pantalla ──────────────────────────────────────────────────
+
+  group('estado de pantalla', () {
+    testWidgets('el título y la aclaración de una vez, anunciados al '
+        'aparecer; el ícono no se lee; el botón, aparte; nada gira', (
+      tester,
+    ) async {
+      final semantica = tester.ensureSemantics();
+      var reintentos = 0;
+      await armar(
+        tester,
+        EstadoPantalla(
+          icono: Icons.cloud_off_rounded,
+          titulo: 'No hay conexión con la nube',
+          detalle: 'Revisá la conexión.',
+          accion: BotonSecundario(
+            texto: 'Reintentar',
+            alPresionar: () => reintentos++,
+          ),
+        ),
+      );
+      expect(
+        tester.getSemantics(find.text('No hay conexión con la nube')),
+        isSemantics(
+          label: 'No hay conexión con la nube\nRevisá la conexión.',
+          isLiveRegion: true,
+        ),
+      );
+      expect(
+        find.ancestor(
+          of: find.byIcon(Icons.cloud_off_rounded),
+          matching: find.byType(ExcludeSemantics),
+        ),
+        findsWidgets,
+      );
+      // En gris, sin relieve: no es un control.
+      final icono = tester.widget<Icon>(find.byIcon(Icons.cloud_off_rounded));
+      expect(icono.color, ColoresApp.textoSecundario);
+      expect(icono.size, FormasApp.iconoGrande);
+      expect(find.byType(ProgressIndicator), findsNothing);
+      await tester.tap(find.text('Reintentar'));
+      expect(reintentos, 1);
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      semantica.dispose();
+    });
+
+    testWidgets('con la letra al 200 %, el texto crece sin desbordarse', (
+      tester,
+    ) async {
+      await armar(
+        tester,
+        const EstadoPantalla(
+          icono: Icons.search_off_rounded,
+          titulo: 'Sin resultados',
+          detalle: 'No hay mapas que coincidan con la búsqueda.',
+        ),
+        escala: 2,
+      );
+      expect(tester.takeException(), isNull);
+      expect(find.text('Sin resultados'), findsOneWidget);
+    });
   });
 
   // ── Hoja inferior ───────────────────────────────────────────────────────
@@ -1575,6 +1762,207 @@ void main() {
       expect(await resultado, isNull);
       semantica.dispose();
     });
+  });
+
+  // ── Confirmación ────────────────────────────────────────────────────────
+
+  group('confirmación', () {
+    /// Un botón que abre la confirmación y anota lo que devuelve.
+    Widget abridor(
+      List<bool> resultados, {
+      bool destructiva = true,
+      String confirmar = 'Quitar',
+    }) => Builder(
+      builder: (context) => TextButton(
+        onPressed: () async => resultados.add(
+          await mostrarConfirmacion(
+            context,
+            titulo: 'Quitar del teléfono',
+            mensaje: 'Se borrará "Planta baja" de este teléfono.',
+            confirmar: confirmar,
+            destructiva: destructiva,
+          ),
+        ),
+        child: const Text('Abrir'),
+      ),
+    );
+
+    testWidgets('una hoja con su título, el mensaje, «Cancelar» y la acción '
+        'en rojo; da true sólo al confirmar', (tester) async {
+      final semantica = tester.ensureSemantics();
+      final resultados = <bool>[];
+      // Con el tema viejo, como desde una pantalla sin migrar.
+      await armar(tester, abridor(resultados), tema: ThemeData.light());
+      await tester.tap(find.text('Abrir'));
+      await tester.pumpAndSettle();
+      // Para TalkBack se nombra con su título, en español.
+      expect(find.bySemanticsLabel('Quitar del teléfono'), findsWidgets);
+      expect(find.bySemanticsLabel('Dialog'), findsNothing);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('Se borrará "Planta baja" de este teléfono.'), findsOne);
+      // Sin el botón redondo de cerrar: «Cancelar» ya lo es.
+      expect(find.byTooltip('Cerrar'), findsNothing);
+      // La acción destructiva, en un secundario rojo; nada en cian.
+      expect(
+        tester
+            .widget<BotonSecundario>(
+              find.widgetWithText(BotonSecundario, 'Quitar'),
+            )
+            .destructivo,
+        isTrue,
+      );
+      expect(find.byType(BotonPrincipal), findsNothing);
+      // «Cancelar» primero.
+      final orden = tester.semantics
+          .simulatedAccessibilityTraversal()
+          .map((n) => n.label)
+          .toList();
+      expect(orden.indexOf('Cancelar'), lessThan(orden.indexOf('Quitar')));
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+
+      await tester.tap(find.text('Cancelar'));
+      await tester.pumpAndSettle();
+      expect(resultados, [false]);
+      expect(find.text('Quitar del teléfono'), findsNothing);
+
+      await tester.tap(find.text('Abrir'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Quitar'));
+      await tester.pumpAndSettle();
+      expect(resultados, [false, true]);
+
+      // Tocar afuera también es que no.
+      await tester.tap(find.text('Abrir'));
+      await tester.pumpAndSettle();
+      await tester.tapAt(const Offset(180, 40));
+      await tester.pumpAndSettle();
+      expect(resultados, [false, true, false]);
+      semantica.dispose();
+    });
+
+    testWidgets('si la acción no es destructiva, va en el botón principal', (
+      tester,
+    ) async {
+      final resultados = <bool>[];
+      await armar(
+        tester,
+        abridor(resultados, destructiva: false, confirmar: 'Publicar'),
+      );
+      await tester.tap(find.text('Abrir'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(BotonPrincipal, 'Publicar'), findsOneWidget);
+      await tester.tap(find.text('Publicar'));
+      await tester.pumpAndSettle();
+      expect(resultados, [true]);
+    });
+
+    testWidgets('con la letra al 200 %, los botones se apilan y nada se '
+        'desborda', (tester) async {
+      final resultados = <bool>[];
+      await armar(tester, abridor(resultados), escala: 2);
+      await tester.tap(find.text('Abrir'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      final cancelar = tester.getRect(
+        find.widgetWithText(BotonSecundario, 'Cancelar'),
+      );
+      final quitar = tester.getRect(
+        find.widgetWithText(BotonSecundario, 'Quitar'),
+      );
+      expect(quitar.top, greaterThan(cancelar.bottom));
+      expect(quitar.width, moreOrLessEquals(cancelar.width));
+    });
+  });
+
+  // ── Aviso ───────────────────────────────────────────────────────────────
+
+  group('aviso', () {
+    /// Un botón que muestra el aviso.
+    Widget avisador(String texto, {bool error = false}) => Builder(
+      builder: (context) => TextButton(
+        onPressed: () => mostrarAviso(context, texto, error: error),
+        child: const Text('Avisar'),
+      ),
+    );
+
+    testWidgets('abajo, levantado y con borde; TalkBack lo lee sin nada en '
+        'inglés; se va solo a los 4 s', (tester) async {
+      final semantica = tester.ensureSemantics();
+      await armar(tester, avisador('"Planta baja" descargado'));
+      await tester.tap(find.text('Avisar'));
+      await tester.pumpAndSettle();
+      final texto = find.text('"Planta baja" descargado');
+      expect(texto, findsOneWidget);
+      final d = relieveDe(tester, find.byType(SnackBar));
+      expect(d.elevacion, 1);
+      expect(d.color, ColoresApp.superficie);
+      expect(d.borde.color, ColoresApp.borde);
+      expect(d.radio, FormasApp.bordeTarjeta);
+      expect(find.byIcon(Icons.error_rounded), findsNothing);
+      // Abajo, a 16 dp de los costados.
+      final caja = tester.getRect(
+        find.descendant(
+          of: find.byType(SnackBar),
+          matching: find.byType(PanelRelieve),
+        ),
+      );
+      expect(caja.left, moreOrLessEquals(EspaciadoApp.margenLateral));
+      expect(caja.right, moreOrLessEquals(360 - EspaciadoApp.margenLateral));
+      expect(caja.bottom, greaterThan(780 / 2));
+      // Se anuncia al aparecer (región en vivo).
+      expect(
+        tester.getSemantics(texto),
+        isSemantics(label: '"Planta baja" descargado', isLiveRegion: true),
+      );
+      expect(find.bySemanticsLabel(RegExp('Close|Dismiss')), findsNothing);
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pumpAndSettle();
+      expect(texto, findsNothing);
+      semantica.dispose();
+    });
+
+    testWidgets('el de error lleva el ícono y el borde en rojo', (
+      tester,
+    ) async {
+      await armar(
+        tester,
+        avisador('Error al quitar: sin conexión', error: true),
+      );
+      await tester.tap(find.text('Avisar'));
+      await tester.pumpAndSettle();
+      final icono = tester.widget<Icon>(find.byIcon(Icons.error_rounded));
+      expect(icono.color, ColoresApp.error);
+      expect(
+        relieveDe(tester, find.byType(SnackBar)).borde.color,
+        ColoresApp.error,
+      );
+    });
+
+    for (final sinAnimaciones in [false, true]) {
+      testWidgets('no se mueve al aparecer: queda quieto en su lugar'
+          '${sinAnimaciones ? ', también con «Reducir movimiento»' : ''}', (
+        tester,
+      ) async {
+        await armar(
+          tester,
+          avisador('"Planta baja" descargado'),
+          sinAnimaciones: sinAnimaciones,
+        );
+        await tester.tap(find.text('Avisar'));
+        await tester.pump();
+        final texto = find.text('"Planta baja" descargado');
+        final primero = tester.getRect(texto);
+        await tester.pump(const Duration(milliseconds: 60));
+        final medio = tester.getRect(texto);
+        await tester.pumpAndSettle();
+        final ultimo = tester.getRect(texto);
+        expect(medio, primero);
+        expect(ultimo, primero);
+      });
+    }
   });
 
   // ── Progreso ────────────────────────────────────────────────────────────

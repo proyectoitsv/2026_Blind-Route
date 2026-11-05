@@ -90,6 +90,11 @@ abstract final class FormasApp {
   /// ícono de una tarjeta de dato, de una fila y de una tarjeta de destino.
   static const double cuadroIcono = 40;
 
+  /// Miniatura de un plano en una tarjeta (el catálogo de mapas): un cuadro
+  /// hundido de radio 12, con el plano o, si no está en el teléfono, un
+  /// ícono. Como los íconos, no crece con la letra.
+  static const double miniatura = 56;
+
   // ── Líneas y trazos ─────────────────────────────────────────────────────
 
   /// Separadores entre filas y bordes de los controles.
