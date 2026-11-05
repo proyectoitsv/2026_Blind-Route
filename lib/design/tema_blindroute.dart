@@ -5,6 +5,7 @@ import 'espaciado.dart';
 import 'estilo.dart';
 import 'formas.dart';
 import 'tipografia.dart';
+import 'transiciones.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tema oscuro de BlindRoute
@@ -43,6 +44,12 @@ import 'tipografia.dart';
 // Sin la onda de Material: una capa tenue de acento (ColoresApp.
 // opacidadPresion), que no baja ningún texto del mínimo. Los componentes no
 // la usan: responden con el relieve.
+//
+// ─── Entre pantallas ───
+// La transición de la tabla de movimiento (TransicionPaginaApp), en todas
+// las plataformas: la toma cualquier MaterialPageRoute de una app con este
+// tema (la galería). Las apps, que siguen con el tema de antes, abren las
+// pantallas migradas con RutaApp.
 abstract final class TemaBlindRoute {
   /// El tema oscuro, el principal. Se arma una sola vez.
   static final ThemeData oscuro = _armar(EstiloApp.oscuro);
@@ -137,6 +144,13 @@ abstract final class TemaBlindRoute {
       highlightColor: capaPresion,
       hoverColor: capaPresion,
       focusColor: capaPresion,
+
+      pageTransitionsTheme: PageTransitionsTheme(
+        builders: {
+          for (final plataforma in TargetPlatform.values)
+            plataforma: const TransicionPaginaApp(),
+        },
+      ),
 
       // Como la BarraSuperior: fondo liso y el título chico, centrado.
       appBarTheme: AppBarThemeData(

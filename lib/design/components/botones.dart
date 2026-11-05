@@ -18,7 +18,8 @@ import 'presion.dart';
 //
 // ─── Estados ───
 //   reposo         levantado
-//   presionado     hundido (de golpe; la fase 3 lo anima) y achicado a 0,97
+//   presionado     hundido (en 120 ms) y achicado a 0,97; al soltar vuelve
+//                  en 160 ms (presion.dart)
 //   deshabilitado  plano, con el texto secundario (se sigue leyendo: con baja
 //                  visión importa saber qué está apagado)
 //   enfocado       el borde pasa a 2 px de acento (con teclado o switch)
@@ -167,8 +168,9 @@ class BotonPrincipal extends StatelessWidget {
         );
         return EscalaPresion(
           presionado: presionado,
-          child: DecoratedBox(
-            decoration: decoracion,
+          child: RelieveAnimado(
+            decoracion: decoracion,
+            presionado: presionado,
             child: _botonMaterial(
               alPresionar: alPresionar,
               estilo: estilo,
@@ -240,8 +242,9 @@ class BotonSecundario extends StatelessWidget {
         final presionado = estaPresionado(estados);
         return EscalaPresion(
           presionado: presionado,
-          child: DecoratedBox(
-            decoration: DecoracionRelieve(
+          child: RelieveAnimado(
+            presionado: presionado,
+            decoracion: DecoracionRelieve(
               color: presionado ? e.hundido : e.superficie,
               radio: FormasApp.bordeBoton,
               elevacion: elevacionControl(estados),
@@ -329,8 +332,9 @@ class BotonRedondo extends StatelessWidget {
               children: [
                 SizedBox.fromSize(
                   size: tamano,
-                  child: DecoratedBox(
-                    decoration: DecoracionRelieve(
+                  child: RelieveAnimado(
+                    presionado: presionado,
+                    decoracion: DecoracionRelieve(
                       color: presionado ? e.hundido : e.superficie,
                       circulo: true,
                       elevacion: elevacionControl(estados),

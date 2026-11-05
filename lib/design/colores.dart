@@ -143,6 +143,13 @@ abstract final class ColoresApp {
   // secundario 8,20 · acento 7,89 · error 4,79; sobre el fondo, error 5,40.
   static const double opacidadPresion = 0.05;
 
+  // ── Velo ────────────────────────────────────────────────────────────────
+
+  /// Lo que oscurece la pantalla detrás de una hoja inferior: negro al 54 %,
+  /// el de Material. Decorativo, sin contraste mínimo: lo que se lee va en la
+  /// hoja.
+  static const Color velo = Color(0x8A000000);
+
   // ── Mapa de las pantallas sin migrar ────────────────────────────────────
   // Se dibujan sobre la imagen del plano, que suele ser clara, así que se
   // anotan contra el fondo y contra un plano blanco. Los usa mapa_widget.dart

@@ -17,7 +17,8 @@ import 'presion.dart';
 //   · ChipFiltro: se prende y se apaga. Sin elegir, levantado (el relieve
 //     chico) con el borde de 1 px y el texto principal (13,85); elegido, en
 //     acento con el texto oscuro (11,47) y una tilde, así el estado no
-//     depende sólo del color. Presionado, se hunde.
+//     depende sólo del color. Presionado, se hunde y se achica apenas; al
+//     elegirlo, el color y el borde cambian en 150 ms (presion.dart).
 //
 // El dibujo mide 36 de alto; el área tocable de un ChipFiltro llega a 48
 // (arriba y abajo del dibujo también se toca). Con letra grande, el chip
@@ -178,31 +179,38 @@ class ChipFiltro extends StatelessWidget {
                 ),
                 child: Center(
                   widthFactor: 1,
-                  child: DecoratedBox(
-                    decoration: decoracion,
-                    child: Padding(
-                      padding: _relleno,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (seleccionado) ...[
-                            Icon(
-                              Icons.check_rounded,
-                              size: FormasApp.iconoChico,
-                              color: colorTexto,
-                            ),
-                            const SizedBox(width: EspaciadoApp.minimo),
-                          ],
-                          Flexible(
-                            child: Text(
-                              texto,
-                              semanticsLabel: etiquetaSemantica,
-                              style: _estiloEtiqueta.copyWith(
-                                color: colorTexto,
+                  child: EscalaPresion(
+                    presionado: presionado,
+                    child: RelieveAnimado(
+                      decoracion: decoracion,
+                      presionado: presionado,
+                      child: Padding(
+                        padding: _relleno,
+                        // El texto y la tilde cambian de color junto con el
+                        // relleno (150 ms).
+                        child: ColorAnimado(
+                          color: colorTexto,
+                          builder: (context, color) => Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (seleccionado) ...[
+                                Icon(
+                                  Icons.check_rounded,
+                                  size: FormasApp.iconoChico,
+                                  color: color,
+                                ),
+                                const SizedBox(width: EspaciadoApp.minimo),
+                              ],
+                              Flexible(
+                                child: Text(
+                                  texto,
+                                  semanticsLabel: etiquetaSemantica,
+                                  style: _estiloEtiqueta.copyWith(color: color),
+                                ),
                               ),
-                            ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   ),

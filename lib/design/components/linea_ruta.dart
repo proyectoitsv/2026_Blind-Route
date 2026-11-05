@@ -1,10 +1,13 @@
 import 'dart:math' as math;
+import 'dart:ui' show PathMetric, lerpDouble;
 
 import 'package:flutter/material.dart';
 
 import '../estilo.dart';
 import '../formas.dart';
+import '../movimiento.dart';
 import '../relieve.dart';
+import 'movimiento_cabezal.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Línea de ruta (la ruta sobre el plano)
@@ -29,12 +32,17 @@ import '../relieve.dart';
 // la línea), como las posiciones de la app sobre la imagen del plano: la
 // línea se pone encima del plano, del mismo tamaño.
 //
-// ─── Cabezal ───
-// Va sobre la ruta, a lo largo de la línea (PathMetrics): al principio del
-// tramo actual más lo que se avanzó en él. Así, la fase 3 lo puede llevar de
-// un tramo al otro recorriendo la ruta. Se dibuja en su propia capa: el
-// plano y la ruta van en un RepaintBoundary y no se repintan cuando el
-// cabezal se mueve.
+// ─── Movimiento (fase 3) ───
+//   · Cabezal: con cada posición, suavizado de τ = 80 ms; al cambiar de
+//     tramo, recorre la ruta a lo largo de la línea (PathMetrics) en 350 ms
+//     (MovimientoCabezal). Al llegar, se queda en el destino.
+//   · Tramos: al cambiar de tramo, el que se completa pasa de acento a verde
+//     y el siguiente, de violeta punteado a acento sólido (los guiones se
+//     alargan hasta juntarse), en 300 ms.
+//   · Con movimiento reducido, todo salta. Una ruta nueva (otros tramos)
+//     también salta: no es un movimiento del usuario.
+// La ruta va en un RepaintBoundary y el cabezal en otro: cada posición
+// repinta sólo la capa del cabezal.
 //
 // ─── TalkBack ───
 // Se lee de una vez, como un resumen: "Tramo 2 de 3, 8 metros, escalera al
@@ -149,7 +157,7 @@ class Recorrido {
 
 /// La ruta sobre el plano. Ocupa todo el lugar que le dan: va encima del
 /// plano, del mismo tamaño.
-class LineaRuta extends StatelessWidget {
+class LineaRuta extends StatefulWidget {
   const LineaRuta({
     super.key,
     required this.tramos,
@@ -157,6 +165,8 @@ class LineaRuta extends StatelessWidget {
     this.avance = 0,
   });
 
+  /// Los tramos. Otra lista (otra ruta) hace saltar el cabezal y los
+  /// colores, sin animar.
   final List<TramoRuta> tramos;
 
   /// Índice del tramo en el que está el usuario (0 = el primero).
@@ -185,58 +195,121 @@ class LineaRuta extends StatelessWidget {
       tramoActual: tramoActual,
       avance: avance,
     );
-    final camino = Path();
-    var antes = 0.0;
-    var largoActual = 0.0;
-    var hayPuntos = false;
-    for (var i = 0; i < tramos.length; i++) {
-      final largo = _largo(tramos[i].puntos, tamano);
-      if (i < r.actual) antes += largo;
-      if (i == r.actual) largoActual = largo;
-      // Una sola línea con todos los tramos: si el primer punto de un tramo
-      // no coincide con el último del anterior, la ruta los une.
-      for (final p in tramos[i].puntos) {
-        final punto = _aPixeles(p, tamano);
-        if (hayPuntos) {
-          camino.lineTo(punto.dx, punto.dy);
-        } else {
-          camino.moveTo(punto.dx, punto.dy);
-          hayPuntos = true;
-        }
-      }
-    }
-    if (!hayPuntos) return null;
-    final metricas = camino.computeMetrics().toList();
-    if (metricas.isEmpty) return null;
-    final metrica = metricas.first;
-    final distancia = (antes + largoActual * r.avanceAcotado).clamp(
-      0.0,
-      metrica.length,
+    final trazado = _Trazado(tramos, tamano);
+    final distancia = trazado.distancia(r.actual, r.avanceAcotado);
+    return distancia == null ? null : trazado.punto(distancia);
+  }
+
+  @override
+  State<LineaRuta> createState() => _LineaRutaState();
+}
+
+class _LineaRutaState extends State<LineaRuta>
+    with SingleTickerProviderStateMixin {
+  /// El cambio de colores de los tramos (300 ms).
+  late final AnimationController _cambio;
+  late final CurvedAnimation _curva;
+
+  /// Cómo se ve cada tramo al empezar el cambio y al terminarlo.
+  late List<_Mezcla> _desde;
+  late List<_Mezcla> _hasta;
+
+  @override
+  void initState() {
+    super.initState();
+    _cambio = AnimationController(
+      vsync: this,
+      duration: MovimientoApp.tramo,
+      value: 1,
     );
-    return metrica.getTangentForOffset(distancia)?.position;
+    _curva = CurvedAnimation(parent: _cambio, curve: MovimientoApp.curva);
+    _desde = _mezclas(widget);
+    _hasta = _desde;
+  }
+
+  static List<_Mezcla> _mezclas(LineaRuta w) {
+    final r = w._recorrido;
+    return [
+      for (var i = 0; i < w.tramos.length; i++) _Mezcla.de(r.estadoDe(i)),
+    ];
+  }
+
+  /// Cómo se ve cada tramo ahora.
+  List<_Mezcla> get _mostradas => [
+    for (var i = 0; i < _hasta.length; i++)
+      _Mezcla.lerp(_desde[i], _hasta[i], _curva.value),
+  ];
+
+  @override
+  void didUpdateWidget(covariant LineaRuta anterior) {
+    super.didUpdateWidget(anterior);
+    final nuevas = _mezclas(widget);
+    final otraRuta =
+        !identical(anterior.tramos, widget.tramos) ||
+        nuevas.length != _hasta.length;
+    if (!otraRuta && _iguales(nuevas, _hasta)) return;
+    if (otraRuta || MovimientoApp.reducido(context)) {
+      _desde = nuevas;
+      _hasta = nuevas;
+      _cambio.value = 1;
+      return;
+    }
+    // Interrumpido, sigue desde como se ve ahora.
+    _desde = _mostradas;
+    _hasta = nuevas;
+    _cambio.forward(from: 0);
+  }
+
+  static bool _iguales(List<_Mezcla> a, List<_Mezcla> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  @override
+  void dispose() {
+    _curva.dispose();
+    _cambio.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final e = EstiloApp.de(context);
-    final r = _recorrido;
+    final r = widget._recorrido;
     return Semantics(
       container: true,
-      label: resumen,
+      label: r.resumen,
       excludeSemantics: true,
       child: SizedBox.expand(
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            RepaintBoundary(
-              child: CustomPaint(
-                painter: _PintorRuta(recorrido: r, estilo: e),
+        child: LayoutBuilder(
+          builder: (context, restricciones) => Stack(
+            fit: StackFit.expand,
+            children: [
+              RepaintBoundary(
+                child: CustomPaint(
+                  painter: _PintorRuta(
+                    tramos: widget.tramos,
+                    desde: _desde,
+                    hasta: _hasta,
+                    cambio: _curva,
+                    estilo: e,
+                  ),
+                ),
               ),
-            ),
-            CustomPaint(
-              painter: _PintorCabezal(recorrido: r, estilo: e),
-            ),
-          ],
+              RepaintBoundary(
+                child: _CapaCabezal(
+                  tramos: widget.tramos,
+                  actual: r.actual,
+                  avance: r.avanceAcotado,
+                  tamano: restricciones.biggest,
+                  estilo: e,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -283,15 +356,145 @@ Path _punteado(Path camino, double guion, double hueco) {
   return resultado;
 }
 
+/// La ruta entera como una sola línea, en un [tamano]: dónde empieza cada
+/// tramo y cuánto mide, en píxeles a lo largo de la línea.
+class _Trazado {
+  factory _Trazado(List<TramoRuta> tramos, Size tamano) {
+    final camino = Path();
+    final inicios = <double>[];
+    final largos = <double>[];
+    var recorrido = 0.0;
+    var hayPuntos = false;
+    for (final t in tramos) {
+      final largo = _largo(t.puntos, tamano);
+      inicios.add(recorrido);
+      largos.add(largo);
+      recorrido += largo;
+      // Una sola línea con todos los tramos: si el primer punto de un tramo
+      // no coincide con el último del anterior, la ruta los une.
+      for (final p in t.puntos) {
+        final punto = _aPixeles(p, tamano);
+        if (hayPuntos) {
+          camino.lineTo(punto.dx, punto.dy);
+        } else {
+          camino.moveTo(punto.dx, punto.dy);
+          hayPuntos = true;
+        }
+      }
+    }
+    final metricas = hayPuntos
+        ? camino.computeMetrics().toList()
+        : const <PathMetric>[];
+    return _Trazado._(
+      metricas.isEmpty ? null : metricas.first,
+      inicios,
+      largos,
+    );
+  }
+
+  const _Trazado._(this._metrica, this._inicios, this._largos);
+
+  final PathMetric? _metrica;
+  final List<double> _inicios;
+  final List<double> _largos;
+
+  /// Cuánto de la línea hay hasta el tramo [actual] más [avance] de su
+  /// largo, o null si la ruta no tiene puntos.
+  double? distancia(int actual, double avance) {
+    final metrica = _metrica;
+    if (metrica == null || actual >= _inicios.length) return null;
+    return (_inicios[actual] + _largos[actual] * avance).clamp(
+      0.0,
+      metrica.length,
+    );
+  }
+
+  /// El punto de la línea a [distancia] del principio.
+  Offset? punto(double distancia) {
+    final metrica = _metrica;
+    if (metrica == null) return null;
+    return metrica
+        .getTangentForOffset(distancia.clamp(0.0, metrica.length))
+        ?.position;
+  }
+}
+
+/// Cómo se ve un tramo: una mezcla de los tres estados (en reposo, uno solo
+/// pesa 1). Al cambiar de tramo, cada uno pasa de una mezcla a otra; si el
+/// cambio se interrumpe, el siguiente arranca de la mezcla que se ve.
+@immutable
+class _Mezcla {
+  const _Mezcla(this.hecho, this.actual, this.siguiente);
+
+  factory _Mezcla.de(EstadoTramo estado) => switch (estado) {
+    EstadoTramo.hecho => const _Mezcla(1, 0, 0),
+    EstadoTramo.actual => const _Mezcla(0, 1, 0),
+    EstadoTramo.siguiente => const _Mezcla(0, 0, 1),
+  };
+
+  final double hecho;
+  final double actual;
+  final double siguiente;
+
+  static _Mezcla lerp(_Mezcla a, _Mezcla b, double t) => _Mezcla(
+    lerpDouble(a.hecho, b.hecho, t)!,
+    lerpDouble(a.actual, b.actual, t)!,
+    lerpDouble(a.siguiente, b.siguiente, t)!,
+  );
+
+  /// El color del trazo. En reposo, el del estado tal cual.
+  Color color(EstiloApp e) {
+    if (hecho >= 1) return e.hecho;
+    if (actual >= 1) return e.acento;
+    if (siguiente >= 1) return e.siguiente;
+    double canal(double Function(Color) de) =>
+        hecho * de(e.hecho) +
+        actual * de(e.acento) +
+        siguiente * de(e.siguiente);
+    return Color.from(
+      alpha: canal((c) => c.a),
+      red: canal((c) => c.r),
+      green: canal((c) => c.g),
+      blue: canal((c) => c.b),
+    );
+  }
+
+  /// El grosor del trazo: el actual, más grueso.
+  double get grosor =>
+      (hecho + siguiente) * FormasApp.grosorRuta +
+      actual * FormasApp.grosorRutaActual;
+
+  /// El hueco entre guiones: sólo el siguiente va punteado. Al pasar a
+  /// actual, los guiones se alargan hasta juntarse.
+  double get hueco => siguiente * FormasApp.huecoRuta;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _Mezcla &&
+      other.hecho == hecho &&
+      other.actual == actual &&
+      other.siguiente == siguiente;
+
+  @override
+  int get hashCode => Object.hash(hecho, actual, siguiente);
+}
+
 class _PintorRuta extends CustomPainter {
-  const _PintorRuta({required this.recorrido, required this.estilo});
+  _PintorRuta({
+    required this.tramos,
+    required this.desde,
+    required this.hasta,
+    required this.cambio,
+    required this.estilo,
+  }) : super(repaint: cambio);
 
-  final Recorrido recorrido;
+  final List<TramoRuta> tramos;
+  final List<_Mezcla> desde;
+  final List<_Mezcla> hasta;
+
+  /// Cuánto va del cambio de tramo, de 0 a 1 (ya con la curva).
+  final Animation<double> cambio;
   final EstiloApp estilo;
-
-  double _grosor(EstadoTramo estado) => estado == EstadoTramo.actual
-      ? FormasApp.grosorRutaActual
-      : FormasApp.grosorRuta;
 
   Paint _trazo(double grosor, Color color) => Paint()
     ..style = PaintingStyle.stroke
@@ -302,42 +505,46 @@ class _PintorRuta extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final tramos = recorrido.tramos;
-    final caminos = [for (final t in tramos) _caminoDe(t.puntos, size)];
+    final t = cambio.value;
+    final mezclas = [
+      for (var i = 0; i < tramos.length && i < hasta.length; i++)
+        t >= 1 ? hasta[i] : _Mezcla.lerp(desde[i], hasta[i], t),
+    ];
+    final caminos = [
+      for (var i = 0; i < mezclas.length; i++)
+        _caminoDe(tramos[i].puntos, size),
+    ];
 
     // Primero todas las ranuras, así un trazo nunca queda debajo de la
     // ranura del tramo de al lado.
-    for (var i = 0; i < tramos.length; i++) {
+    for (var i = 0; i < mezclas.length; i++) {
       if (tramos[i].puntos.length < 2) continue;
       canvas.drawPath(
         caminos[i],
         _trazo(
-          _grosor(recorrido.estadoDe(i)) + 2 * FormasApp.bordeRanura,
+          mezclas[i].grosor + 2 * FormasApp.bordeRanura,
           estilo.rutaRanura,
         ),
       );
     }
-    // Los trazos: el actual al final, encima de los demás.
-    final orden = [
-      for (var i = 0; i < tramos.length; i++)
-        if (i != recorrido.actual) i,
-      if (tramos.isNotEmpty) recorrido.actual,
-    ];
+    // Los trazos, del más fino al más grueso: el actual queda encima de los
+    // demás (a igual grosor, en orden).
+    final orden = [for (var i = 0; i < mezclas.length; i++) i]
+      ..sort((a, b) {
+        final porGrosor = mezclas[a].grosor.compareTo(mezclas[b].grosor);
+        return porGrosor != 0 ? porGrosor : a.compareTo(b);
+      });
     for (final i in orden) {
       if (tramos[i].puntos.length < 2) continue;
-      final estado = recorrido.estadoDe(i);
-      final grosor = _grosor(estado);
-      switch (estado) {
-        case EstadoTramo.hecho:
-          canvas.drawPath(caminos[i], _trazo(grosor, estilo.hecho));
-        case EstadoTramo.actual:
-          canvas.drawPath(caminos[i], _trazo(grosor, estilo.acento));
-        case EstadoTramo.siguiente:
-          canvas.drawPath(
-            _punteado(caminos[i], FormasApp.guionRuta, FormasApp.huecoRuta),
-            _trazo(grosor, estilo.siguiente),
-          );
-      }
+      final m = mezclas[i];
+      final pintura = _trazo(m.grosor, m.color(estilo));
+      // Con menos de medio píxel de hueco ya se ve sólido.
+      canvas.drawPath(
+        m.hueco < 0.5
+            ? caminos[i]
+            : _punteado(caminos[i], FormasApp.guionRuta, m.hueco),
+        pintura,
+      );
     }
     // Las marcas, al final de su tramo.
     for (final t in tramos) {
@@ -391,24 +598,97 @@ class _PintorRuta extends CustomPainter {
   @override
   bool shouldRepaint(_PintorRuta anterior) =>
       anterior.estilo != estilo ||
-      anterior.recorrido.actual != recorrido.actual ||
-      !identical(anterior.recorrido.tramos, recorrido.tramos);
+      !identical(anterior.desde, desde) ||
+      !identical(anterior.hasta, hasta) ||
+      anterior.cambio != cambio ||
+      !identical(anterior.tramos, tramos);
+}
+
+/// La capa del cabezal: lo mueve (MovimientoCabezal) y lo dibuja a lo largo
+/// de la ruta.
+class _CapaCabezal extends StatefulWidget {
+  const _CapaCabezal({
+    required this.tramos,
+    required this.actual,
+    required this.avance,
+    required this.tamano,
+    required this.estilo,
+  });
+
+  final List<TramoRuta> tramos;
+  final int actual;
+  final double avance;
+  final Size tamano;
+  final EstiloApp estilo;
+
+  @override
+  State<_CapaCabezal> createState() => _CapaCabezalState();
+}
+
+class _CapaCabezalState extends State<_CapaCabezal>
+    with SingleTickerProviderStateMixin {
+  late _Trazado _trazado;
+  late final MovimientoCabezal _movimiento;
+
+  @override
+  void initState() {
+    super.initState();
+    _trazado = _Trazado(widget.tramos, widget.tamano);
+    _movimiento = MovimientoCabezal(
+      vsync: this,
+      valor: _trazado.distancia(widget.actual, widget.avance) ?? 0,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _CapaCabezal anterior) {
+    super.didUpdateWidget(anterior);
+    // Otra ruta, u otro tamaño (el teléfono se dio vuelta): salta.
+    final otraRuta =
+        !identical(anterior.tramos, widget.tramos) ||
+        anterior.tamano != widget.tamano;
+    if (otraRuta) _trazado = _Trazado(widget.tramos, widget.tamano);
+    final objetivo = _trazado.distancia(widget.actual, widget.avance);
+    if (objetivo == null) return;
+    if (otraRuta || MovimientoApp.reducido(context)) {
+      _movimiento.saltarA(objetivo);
+    } else if (anterior.actual != widget.actual) {
+      _movimiento.recorrerHasta(objetivo);
+    } else if (objetivo != _movimiento.objetivo) {
+      _movimiento.seguir(objetivo);
+    }
+  }
+
+  @override
+  void dispose() {
+    _movimiento.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+    painter: _PintorCabezal(
+      trazado: _trazado,
+      movimiento: _movimiento,
+      estilo: widget.estilo,
+    ),
+  );
 }
 
 class _PintorCabezal extends CustomPainter {
-  const _PintorCabezal({required this.recorrido, required this.estilo});
+  _PintorCabezal({
+    required this.trazado,
+    required this.movimiento,
+    required this.estilo,
+  }) : super(repaint: movimiento);
 
-  final Recorrido recorrido;
+  final _Trazado trazado;
+  final MovimientoCabezal movimiento;
   final EstiloApp estilo;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final centro = LineaRuta.posicionCabezal(
-      recorrido.tramos,
-      recorrido.tramoActual,
-      recorrido.avance,
-      size,
-    );
+    final centro = trazado.punto(movimiento.valor);
     if (centro == null) return;
     final circulo = Path()
       ..addOval(
@@ -431,8 +711,7 @@ class _PintorCabezal extends CustomPainter {
 
   @override
   bool shouldRepaint(_PintorCabezal anterior) =>
-      anterior.estilo != estilo ||
-      anterior.recorrido.actual != recorrido.actual ||
-      anterior.recorrido.avanceAcotado != recorrido.avanceAcotado ||
-      !identical(anterior.recorrido.tramos, recorrido.tramos);
+      !identical(anterior.trazado, trazado) ||
+      anterior.movimiento != movimiento ||
+      anterior.estilo != estilo;
 }

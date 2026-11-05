@@ -12,7 +12,14 @@
 //   tipografia.dart      TipografiaApp: Inter y la escala de texto
 //   formas.dart          FormasApp: radios, altos, área táctil y medidas
 //   espaciado.dart       EspaciadoApp: márgenes y separaciones
-//   movimiento.dart      MovimientoApp: duraciones, curvas y resorte
+//   movimiento.dart      MovimientoApp: la tabla de movimiento (duraciones,
+//                        curvas y resorte) y si hay que reducirlo
+//   ajustes_movimiento.dart  AjustesMovimiento: «Reducir movimiento» y
+//                        «Vibración», guardados en el teléfono
+//   ambiente_diseno.dart AmbienteDiseno: el envoltorio de una pantalla
+//                        migrada (tema nuevo y movimiento reducido)
+//   transiciones.dart    TransicionPaginaApp y RutaApp: entre pantallas
+//   haptica.dart         HapticaApp: las vibraciones, con su interruptor
 //   tema_blindroute.dart TemaBlindRoute.oscuro: el ThemeData
 //   components/          los componentes (componentes.dart los lista)
 //
@@ -23,12 +30,16 @@
 //
 // Los componentes importan los archivos de tokens uno por uno, no este
 // archivo, para que no haya imports en círculo.
+export 'ajustes_movimiento.dart';
+export 'ambiente_diseno.dart';
 export 'colores.dart';
 export 'components/componentes.dart';
 export 'espaciado.dart';
 export 'estilo.dart';
 export 'formas.dart';
+export 'haptica.dart';
 export 'movimiento.dart';
 export 'relieve.dart';
 export 'tema_blindroute.dart';
 export 'tipografia.dart';
+export 'transiciones.dart';

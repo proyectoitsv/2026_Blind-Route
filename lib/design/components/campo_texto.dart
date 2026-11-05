@@ -5,6 +5,7 @@ import '../estilo.dart';
 import '../formas.dart';
 import '../relieve.dart';
 import '../tipografia.dart';
+import 'presion.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Campo de texto y buscador
@@ -12,7 +13,8 @@ import '../tipografia.dart';
 //
 // Hundido (el relieve común), con el borde de 1 px de los controles (4,41
 // sobre el fondo) y el texto de ayuda en texto secundario (10,18 sobre lo
-// hundido). Enfocado, el borde pasa a 2 px de acento.
+// hundido). Enfocado, el borde pasa a 2 px de acento en 150 ms (con
+// movimiento reducido, de golpe).
 //
 // ─── Etiqueta ───
 // Arriba del campo y siempre a la vista (no flota adentro): con baja visión
@@ -116,8 +118,8 @@ class _CampoTextoState extends State<CampoTexto> {
     final e = EstiloApp.de(context);
     final enfocado = _foco.hasFocus;
     const sinBorde = InputBorder.none;
-    final campo = DecoratedBox(
-      decoration: DecoracionRelieve(
+    final campo = RelieveAnimado(
+      decoracion: DecoracionRelieve(
         color: e.hundido,
         radio: FormasApp.bordeCampo,
         elevacion: -1,

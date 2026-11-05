@@ -5,9 +5,11 @@ import 'package:flutter/material.dart';
 import '../espaciado.dart';
 import '../estilo.dart';
 import '../formas.dart';
+import '../movimiento.dart';
 import '../relieve.dart';
 import '../tipografia.dart';
 import 'linea_ruta.dart';
+import 'movimiento_cabezal.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Línea de tiempo de la ruta
@@ -30,6 +32,15 @@ import 'linea_ruta.dart';
 // Un botón redondo levantado con un anillo de acento de 2 dp, adentro de la
 // pista, sobre el tramo actual. El número de arriba queda a 8 dp de la
 // pista: la sombra del cabezal no le llega.
+//
+// ─── Movimiento (fase 3) ───
+//   · El cabezal sigue la posición con el suavizado de τ = 80 ms y, al
+//     cambiar de tramo, recorre la pista en 350 ms (MovimientoCabezal), en su
+//     propia capa.
+//   · El segmento actual se ensancha (y el que deja de serlo se achica) en
+//     250 ms; su color y su punteado cambian en 300 ms, como en la línea de
+//     ruta. El número de arriba cambia junto con el color.
+//   · Con movimiento reducido, todo salta. Una ruta nueva también.
 //
 // ─── Ancho ───
 // Cada tramo ocupa un ancho proporcional a sus metros, con un mínimo para
@@ -148,11 +159,20 @@ class LineaTiempo extends StatelessWidget {
 
         // Las dos filas, con las mismas piezas del mismo ancho: arriba los
         // números, abajo la pista.
+        final duracionColor = MovimientoApp.duracion(
+          context,
+          MovimientoApp.tramo,
+        );
         final numeros = <Widget>[];
         final piezas = <Widget>[];
+        // Dónde empieza cada tramo en la fila (desde el principio, sin el
+        // margen de la pista).
+        final inicios = <double>[];
+        var x = 0.0;
         void hueco(double ancho) {
           numeros.add(SizedBox(width: ancho));
           piezas.add(SizedBox(width: ancho));
+          x += ancho;
         }
 
         for (var i = 0; i < tramos.length; i++) {
@@ -162,10 +182,9 @@ class LineaTiempo extends StatelessWidget {
               child: Center(
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
-                  child: Text(
-                    '${i + 1}',
-                    maxLines: 1,
-                    softWrap: false,
+                  child: AnimatedDefaultTextStyle(
+                    duration: duracionColor,
+                    curve: MovimientoApp.curva,
                     style: TipografiaApp.conCifrasTabulares(
                       TipografiaApp.leyenda.copyWith(
                         color: i == actual
@@ -176,27 +195,44 @@ class LineaTiempo extends StatelessWidget {
                             : FontWeight.w500,
                       ),
                     ),
+                    child: Text('${i + 1}', maxLines: 1, softWrap: false),
                   ),
                 ),
               ),
             ),
           );
+          inicios.add(x);
           piezas.add(
-            _Segmento(
-              ancho: anchos[i],
-              estado: r.estadoDe(i),
-              avance: r.avanceAcotado,
-              estilo: e,
-            ),
+            _Segmento(ancho: anchos[i], estado: r.estadoDe(i), estilo: e),
           );
+          x += anchos[i];
           final marca = tramos[i].marca;
           if (marca != null) {
             numeros.add(const SizedBox(width: FormasApp.pistaTiempo));
             piezas.add(_Marca(marca: marca, estilo: e));
+            x += FormasApp.pistaTiempo;
           } else if (i < tramos.length - 1) {
             hueco(EspaciadoApp.minimo);
           }
         }
+
+        // El centro del cabezal, desde el principio de la fila. No se sale
+        // del tramo: en los extremos queda contra el borde.
+        const lado = FormasApp.cabezalTiempo;
+        const radio = lado / 2;
+        double? centro;
+        if (tramos.isNotEmpty) {
+          final ancho = anchos[actual];
+          centro =
+              inicios[actual] +
+              (ancho <= lado
+                  ? ancho / 2
+                  : (ancho * r.avanceAcotado).clamp(radio, ancho - radio));
+        }
+        final anchoFila = math.max(
+          0.0,
+          restricciones.maxWidth - 2 * _margenPista,
+        );
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -222,7 +258,20 @@ class LineaTiempo extends StatelessWidget {
                 height: FormasApp.pistaTiempo,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: _margenPista),
-                  child: Row(children: piezas),
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Row(children: piezas),
+                      if (centro != null)
+                        _CabezalTiempo(
+                          centro: centro,
+                          tramo: actual,
+                          ruta: tramos,
+                          anchoFila: anchoFila,
+                          estilo: e,
+                        ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -283,101 +332,112 @@ class LineaTiempo extends StatelessWidget {
   }
 }
 
-/// Un segmento de la pista y, si es el actual, el cabezal encima.
+/// Un segmento de la pista: se ensancha cuando pasa a ser el actual (250 ms)
+/// y cambia de color y de punteado (300 ms).
 class _Segmento extends StatelessWidget {
   const _Segmento({
     required this.ancho,
     required this.estado,
-    required this.avance,
     required this.estilo,
   });
 
   final double ancho;
   final EstadoTramo estado;
-  final double avance;
   final EstiloApp estilo;
 
   @override
   Widget build(BuildContext context) {
     final actual = estado == EstadoTramo.actual;
-    const lado = FormasApp.cabezalTiempo;
-    const radio = lado / 2;
-    // El cabezal no se sale del tramo: en los extremos queda contra el
-    // borde.
-    final centro = ancho <= lado
-        ? ancho / 2
-        : (ancho * avance).clamp(radio, ancho - radio);
+    final aspecto = _AspectoSegmento(
+      color: switch (estado) {
+        EstadoTramo.hecho => estilo.hecho,
+        EstadoTramo.actual => estilo.acento,
+        EstadoTramo.siguiente => estilo.siguiente,
+      },
+      hueco: estado == EstadoTramo.siguiente ? FormasApp.huecoRuta : 0,
+    );
     return SizedBox(
       width: ancho,
       height: FormasApp.pistaTiempo,
-      child: Stack(
-        alignment: Alignment.center,
-        clipBehavior: Clip.none,
-        children: [
-          SizedBox(
-            width: ancho,
-            height: actual
+      child: Center(
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(
+            end: actual
                 ? FormasApp.segmentoTiempoActual
                 : FormasApp.segmentoTiempo,
-            child: CustomPaint(
-              painter: _PintorSegmento(
-                color: switch (estado) {
-                  EstadoTramo.hecho => estilo.hecho,
-                  EstadoTramo.actual => estilo.acento,
-                  EstadoTramo.siguiente => estilo.siguiente,
-                },
-                punteado: estado == EstadoTramo.siguiente,
-              ),
-            ),
           ),
-          if (actual)
-            PositionedDirectional(
-              start: centro - radio,
-              top: (FormasApp.pistaTiempo - lado) / 2,
-              child: SizedBox.square(
-                dimension: lado,
-                child: DecoratedBox(
-                  decoration: DecoracionRelieve(
-                    color: estilo.superficie,
-                    circulo: true,
-                    tamano: TamanoRelieve.chico,
-                    borde: BorderSide(
-                      color: estilo.acento,
-                      width: FormasApp.anilloCabezalTiempo,
-                    ),
-                    sombraOscura: estilo.sombraOscura,
-                    sombraClara: estilo.sombraClara,
-                  ),
-                ),
-              ),
-            ),
-        ],
+          duration: MovimientoApp.duracion(
+            context,
+            MovimientoApp.segmentoTiempo,
+          ),
+          curve: MovimientoApp.curva,
+          builder: (context, alto, hijo) =>
+              SizedBox(width: ancho, height: alto, child: hijo),
+          child: TweenAnimationBuilder<_AspectoSegmento>(
+            tween: _TweenAspecto(end: aspecto),
+            duration: MovimientoApp.duracion(context, MovimientoApp.tramo),
+            curve: MovimientoApp.curva,
+            builder: (context, a, _) =>
+                CustomPaint(painter: _PintorSegmento(aspecto: a)),
+          ),
+        ),
       ),
     );
   }
 }
 
-class _PintorSegmento extends CustomPainter {
-  const _PintorSegmento({required this.color, required this.punteado});
+/// El color y el hueco entre guiones de un segmento (0: sólido).
+@immutable
+class _AspectoSegmento {
+  const _AspectoSegmento({required this.color, required this.hueco});
 
   final Color color;
-  final bool punteado;
+  final double hueco;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _AspectoSegmento && other.color == color && other.hueco == hueco;
+
+  @override
+  int get hashCode => Object.hash(color, hueco);
+}
+
+class _TweenAspecto extends Tween<_AspectoSegmento> {
+  _TweenAspecto({super.end});
+
+  @override
+  _AspectoSegmento lerp(double t) {
+    final a = begin ?? end!;
+    final b = end ?? a;
+    return _AspectoSegmento(
+      color: Color.lerp(a.color, b.color, t)!,
+      hueco: a.hueco + (b.hueco - a.hueco) * t,
+    );
+  }
+}
+
+class _PintorSegmento extends CustomPainter {
+  const _PintorSegmento({required this.aspecto});
+
+  final _AspectoSegmento aspecto;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (size.width <= 0) return;
-    final pintura = Paint()..color = color;
+    final pintura = Paint()..color = aspecto.color;
     final radio = Radius.circular(size.height / 2);
-    if (!punteado) {
+    // Con menos de medio píxel de hueco ya se ve sólido.
+    if (aspecto.hueco < 0.5) {
       canvas.drawRRect(
         RRect.fromRectAndRadius(Offset.zero & size, radio),
         pintura,
       );
       return;
     }
-    // Guiones del largo de la ruta del plano, con las puntas redondas.
+    // Guiones del largo de la ruta del plano, con las puntas redondas. Al
+    // pasar a actual, el hueco se achica y los guiones se juntan.
     const guion = FormasApp.guionRuta + 2;
-    const hueco = FormasApp.huecoRuta;
+    final hueco = aspecto.hueco;
     for (var x = 0.0; x < size.width; x += guion + hueco) {
       final ancho = math.min(guion, size.width - x);
       canvas.drawRRect(
@@ -388,8 +448,107 @@ class _PintorSegmento extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_PintorSegmento anterior) =>
-      anterior.color != color || anterior.punteado != punteado;
+  bool shouldRepaint(_PintorSegmento anterior) => anterior.aspecto != aspecto;
+}
+
+/// El cabezal, encima de la pista: un botón redondo levantado con el anillo
+/// de acento. Lo mueve MovimientoCabezal, en su propia capa.
+class _CabezalTiempo extends StatefulWidget {
+  const _CabezalTiempo({
+    required this.centro,
+    required this.tramo,
+    required this.ruta,
+    required this.anchoFila,
+    required this.estilo,
+  });
+
+  /// Dónde va el centro, desde el principio de la fila (dp).
+  final double centro;
+  final int tramo;
+
+  /// Los tramos: otra lista es otra ruta, y el cabezal salta.
+  final List<TramoRuta> ruta;
+
+  /// El ancho de la fila: si cambia (el teléfono se dio vuelta), salta.
+  final double anchoFila;
+  final EstiloApp estilo;
+
+  @override
+  State<_CabezalTiempo> createState() => _CabezalTiempoState();
+}
+
+class _CabezalTiempoState extends State<_CabezalTiempo>
+    with SingleTickerProviderStateMixin {
+  late final MovimientoCabezal _movimiento;
+
+  @override
+  void initState() {
+    super.initState();
+    _movimiento = MovimientoCabezal(vsync: this, valor: widget.centro);
+  }
+
+  @override
+  void didUpdateWidget(covariant _CabezalTiempo anterior) {
+    super.didUpdateWidget(anterior);
+    final otraRuta =
+        !identical(anterior.ruta, widget.ruta) ||
+        anterior.anchoFila != widget.anchoFila;
+    if (otraRuta || MovimientoApp.reducido(context)) {
+      _movimiento.saltarA(widget.centro);
+    } else if (anterior.tramo != widget.tramo) {
+      _movimiento.recorrerHasta(widget.centro);
+    } else if (widget.centro != _movimiento.objetivo) {
+      _movimiento.seguir(widget.centro);
+    }
+  }
+
+  @override
+  void dispose() {
+    _movimiento.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const lado = FormasApp.cabezalTiempo;
+    final rtl = Directionality.of(context) == TextDirection.rtl;
+    final e = widget.estilo;
+    return Positioned(
+      left: 0,
+      top: (FormasApp.pistaTiempo - lado) / 2,
+      child: AnimatedBuilder(
+        animation: _movimiento,
+        child: RepaintBoundary(
+          child: SizedBox.square(
+            dimension: lado,
+            child: DecoratedBox(
+              decoration: DecoracionRelieve(
+                color: e.superficie,
+                circulo: true,
+                tamano: TamanoRelieve.chico,
+                borde: BorderSide(
+                  color: e.acento,
+                  width: FormasApp.anilloCabezalTiempo,
+                ),
+                sombraOscura: e.sombraOscura,
+                sombraClara: e.sombraClara,
+              ),
+            ),
+          ),
+        ),
+        builder: (context, hijo) {
+          // De derecha a izquierda, la fila arranca a la derecha.
+          final centro = rtl
+              ? widget.anchoFila - _movimiento.valor
+              : _movimiento.valor;
+          return Transform.translate(
+            offset: Offset(centro - lado / 2, 0),
+            child: hijo,
+          );
+        },
+      ),
+    );
+  }
 }
 
 /// Lugar de una escalera, un ascensor o el destino adentro de la pista: el
