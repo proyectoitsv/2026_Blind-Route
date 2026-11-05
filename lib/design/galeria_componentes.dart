@@ -107,6 +107,20 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
   double _progreso = 0.45;
   int _tramo = 1;
 
+  /// Lo escrito en el email de ejemplo: vacío, muestra el error.
+  String _emailEjemplo = '';
+
+  /// Lo que se ve en el campo deshabilitado de ejemplo.
+  final TextEditingController _textoDeshabilitado = TextEditingController(
+    text: 'admin@ejemplo.com',
+  );
+
+  @override
+  void dispose() {
+    _textoDeshabilitado.dispose();
+    super.dispose();
+  }
+
   /// Una ruta de ejemplo entre pisos, para la línea de tiempo: ascensor al
   /// piso 1, escalera al piso 2 y el aula.
   static const List<TramoRuta> _tramosPisos = [
@@ -580,12 +594,50 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       etiqueta: 'Buscar un destino',
       ayuda: 'Aula, baño, bar…',
     ),
+    _entreElementos,
+    // El email y la contraseña de un formulario, juntos para autocompletar.
+    AutofillGroup(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          CampoTexto(
+            etiqueta: 'Email',
+            icono: Icons.mail_rounded,
+            tipoTeclado: TextInputType.emailAddress,
+            accionTeclado: TextInputAction.next,
+            autocorrector: false,
+            pistasAutocompletar: const [AutofillHints.email],
+            error: _emailEjemplo.trim().isEmpty ? 'Completá el email.' : null,
+            alCambiar: (v) => setState(() => _emailEjemplo = v),
+          ),
+          _entreElementos,
+          const CampoTexto(
+            etiqueta: 'Contraseña',
+            icono: Icons.lock_rounded,
+            oculto: true,
+            accionTeclado: TextInputAction.done,
+            pistasAutocompletar: [AutofillHints.password],
+          ),
+        ],
+      ),
+    ),
+    _entreElementos,
+    CampoTexto(
+      etiqueta: 'Deshabilitado',
+      icono: Icons.mail_rounded,
+      controlador: _textoDeshabilitado,
+      habilitado: false,
+    ),
     _bajoEncabezado,
     _parrafo(
       e,
       'Hundidos, con borde. Enfocados, el borde pasa al acento. El buscador '
       'no muestra la etiqueta, pero TalkBack la dice, y con algo escrito '
-      'trae el botón «Borrar búsqueda».',
+      'trae el botón «Borrar búsqueda». La contraseña va oculta y sin '
+      'autocorrector; con el email, el teléfono los completa. Con un error '
+      '(el email, mientras esté vacío), el borde pasa al rojo y debajo va '
+      'qué está mal, que TalkBack anuncia. Deshabilitado, el borde se apaga '
+      'y el texto pasa al gris.',
     ),
     _entreSecciones,
     const EncabezadoSeccion(titulo: 'Estados de pantalla'),

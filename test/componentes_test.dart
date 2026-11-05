@@ -1620,6 +1620,204 @@ void main() {
       expect(find.byType(BotonRedondo), findsNothing);
       semantica.dispose();
     });
+
+    testWidgets('la contraseña, oculta y sin autocorrector ni sugerencias; el '
+        'email, sin autocorrector; los dos, con sus pistas para autocompletar '
+        'en un mismo grupo', (tester) async {
+      final semantica = tester.ensureSemantics();
+      await armar(
+        tester,
+        const AutofillGroup(
+          child: Column(
+            children: [
+              CampoTexto(
+                etiqueta: 'Email',
+                tipoTeclado: TextInputType.emailAddress,
+                autocorrector: false,
+                pistasAutocompletar: [AutofillHints.email],
+              ),
+              CampoTexto(
+                etiqueta: 'Contraseña',
+                oculto: true,
+                pistasAutocompletar: [AutofillHints.password],
+              ),
+            ],
+          ),
+        ),
+      );
+      // Lo que recibe el teclado del teléfono.
+      await tester.showKeyboard(find.byType(TextField).first);
+      var teclado = tester.testTextInput.setClientArgs!;
+      expect(teclado['obscureText'], isFalse);
+      expect(teclado['autocorrect'], isFalse);
+      expect(teclado['enableSuggestions'], isTrue);
+      expect(
+        (teclado['inputType'] as Map)['name'],
+        'TextInputType.emailAddress',
+      );
+      expect((teclado['autofill'] as Map)['hints'], [AutofillHints.email]);
+      // Los dos van juntos: el administrador de contraseñas los completa (y
+      // los guarda) de una vez.
+      expect(teclado['fields'], hasLength(2));
+      await tester.enterText(find.byType(TextField).last, 'clave');
+      await tester.pump();
+      teclado = tester.testTextInput.setClientArgs!;
+      expect(teclado['obscureText'], isTrue);
+      expect(teclado['autocorrect'], isFalse);
+      expect(teclado['enableSuggestions'], isFalse);
+      expect((teclado['autofill'] as Map)['hints'], [AutofillHints.password]);
+      // Lo escrito se ve como puntos, y TalkBack sabe que está oculto.
+      expect(
+        tester
+            .state<EditableTextState>(find.byType(EditableText).last)
+            .renderEditable
+            .text!
+            .toPlainText(),
+        '•••••',
+      );
+      expect(
+        tester.getSemantics(find.byType(TextField).last),
+        isSemantics(isTextField: true, isObscured: true),
+      );
+      expect(
+        tester.getSemantics(find.byType(TextField).last).label,
+        contains('Contraseña'),
+      );
+      semantica.dispose();
+    });
+
+    testWidgets('deshabilitado: no se puede escribir y TalkBack dice que está '
+        'desactivado; sigue hundido, con el borde apagado y el texto y la '
+        'etiqueta en gris', (tester) async {
+      final semantica = tester.ensureSemantics();
+      final controlador = TextEditingController(text: 'admin@ejemplo.com');
+      addTearDown(controlador.dispose);
+      await armar(
+        tester,
+        CampoTexto(
+          etiqueta: 'Email',
+          controlador: controlador,
+          habilitado: false,
+        ),
+      );
+      final d = relieveDe(tester, find.byType(CampoTexto));
+      expect(d.elevacion, -1);
+      expect(d.borde.color, ColoresApp.separador);
+      final campo = tester.widget<TextField>(find.byType(TextField));
+      expect(campo.enabled, isFalse);
+      expect(campo.style!.color, ColoresApp.textoSecundario);
+      expect(
+        tester.widget<Text>(find.text('Email')).style!.color,
+        ColoresApp.textoSecundario,
+      );
+      expect(
+        tester.getSemantics(find.byType(TextField)),
+        isSemantics(isTextField: true, hasEnabledState: true, isEnabled: false),
+      );
+      // Tocarlo no lo enfoca ni abre el teclado.
+      await tester.tap(find.byType(TextField), warnIfMissed: false);
+      await tester.pumpAndSettle();
+      expect(tester.testTextInput.hasAnyClients, isFalse);
+      expect(
+        relieveDe(tester, find.byType(CampoTexto)).borde.color,
+        d.borde.color,
+      );
+      semantica.dispose();
+    });
+
+    testWidgets('con un error: debajo del campo, con el ícono y en rojo; el '
+        'borde, rojo (2 px con el foco); TalkBack lo anuncia y lo lee después '
+        'del campo; al irse, el campo sigue con lo escrito y el foco', (
+      tester,
+    ) async {
+      final semantica = tester.ensureSemantics();
+      String? error = 'Completá el email.';
+      late StateSetter cambiar;
+      await armar(
+        tester,
+        StatefulBuilder(
+          builder: (context, setState) {
+            cambiar = setState;
+            return CampoTexto(etiqueta: 'Email', error: error);
+          },
+        ),
+      );
+      final campo = find.byType(CampoTexto);
+      var d = relieveDe(tester, campo);
+      expect(d.borde.color, ColoresApp.error);
+      expect(d.borde.width, FormasApp.grosorLinea);
+      // Debajo del campo, en rojo y con el ícono.
+      final textoError = find.text('Completá el email.');
+      expect(
+        tester.getRect(textoError).top,
+        greaterThan(tester.getRect(find.byType(TextField)).bottom),
+      );
+      expect(tester.widget<Text>(textoError).style!.color, ColoresApp.error);
+      expect(
+        find.descendant(of: campo, matching: find.byIcon(Icons.error_rounded)),
+        findsOneWidget,
+      );
+      // TalkBack: el campo y después el error, que se anuncia al aparecer.
+      expect(
+        tester.getSemantics(textoError),
+        isSemantics(label: 'Completá el email.', isLiveRegion: true),
+      );
+      expect(
+        tester.semantics
+            .simulatedAccessibilityTraversal()
+            .map((nodo) => nodo.label)
+            .where((etiqueta) => etiqueta.isNotEmpty),
+        ['Email', 'Completá el email.'],
+      );
+      // Con el foco, el borde sigue rojo, de 2 px.
+      await tester.tap(find.byType(TextField));
+      await tester.pumpAndSettle();
+      d = relieveDe(tester, campo);
+      expect(d.borde.color, ColoresApp.error);
+      expect(d.borde.width, FormasApp.grosorFoco);
+      // Se escribe con el error a la vista y, cuando se va, el campo es el
+      // mismo: sigue lo escrito, con el foco (y el teclado).
+      await tester.enterText(find.byType(TextField), 'admin@');
+      final editable = tester.state(find.byType(EditableText));
+      cambiar(() => error = null);
+      await tester.pumpAndSettle();
+      expect(textoError, findsNothing);
+      expect(find.byIcon(Icons.error_rounded), findsNothing);
+      expect(tester.state(find.byType(EditableText)), same(editable));
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'admin@',
+      );
+      expect(tester.testTextInput.hasAnyClients, isTrue);
+      d = relieveDe(tester, campo);
+      expect(d.borde.color, ColoresApp.acento);
+
+      // Con la letra al 200 %: se parte en renglones, sin cortarse, y el
+      // ícono queda centrado en el primero.
+      await armar(
+        tester,
+        const CampoTexto(
+          etiqueta: 'Contraseña',
+          oculto: true,
+          error: 'No se pudo iniciar sesión: revisá la conexión.',
+        ),
+        escala: 2,
+      );
+      expect(tester.takeException(), isNull);
+      final largo = find.textContaining('No se pudo iniciar sesión');
+      final parrafo = tester.renderObject<RenderParagraph>(largo);
+      expect(parrafo.didExceedMaxLines, isFalse);
+      final renglon =
+          2 *
+          TipografiaApp.subtitulo.fontSize! *
+          TipografiaApp.subtitulo.height!;
+      expect(tester.getSize(largo).height, greaterThan(renglon));
+      expect(
+        tester.getCenter(find.byIcon(Icons.error_rounded)).dy,
+        moreOrLessEquals(tester.getTopLeft(largo).dy + renglon / 2, epsilon: 1),
+      );
+      semantica.dispose();
+    });
   });
 
   // ── Estado de pantalla ──────────────────────────────────────────────────
