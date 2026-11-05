@@ -21,8 +21,10 @@
 //                            BotonPrincipalGrande (llena el lugar),
 //                            BotonSecundario, BotonRedondo, FilaBotones
 //                            (lado a lado o apilados)
-//   campo_texto.dart         CampoTexto (y CampoTexto.busqueda, con
-//                            "Borrar búsqueda")
+//   campo_texto.dart         CampoTexto (oculto para una contraseña, con
+//                            pistas para autocompletar, deshabilitado y
+//                            con el error debajo) y CampoTexto.busqueda
+//                            (con "Borrar búsqueda")
 //   chips.dart               ChipApp (hundido), ChipFiltro
 //   confirmacion.dart        mostrarConfirmacion (una hoja con "Cancelar"
 //                            y la acción, en lugar del AlertDialog)

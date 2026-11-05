@@ -31,11 +31,23 @@ const Size telefono = Size(360, 780);
 
 /// Anota las rutas que se abren.
 class ObservadorRutas extends NavigatorObserver {
+  /// Todas, también las que se abren en lugar de otra.
   final List<Route<dynamic>> abiertas = [];
+
+  /// Las que se abren en lugar de la pantalla (pushReplacement, como el
+  /// login al entrar).
+  final List<Route<dynamic>> reemplazantes = [];
 
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) =>
       abiertas.add(route);
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    if (newRoute == null) return;
+    abiertas.add(newRoute);
+    reemplazantes.add(newRoute);
+  }
 }
 
 /// Carga Inter con sus cuatro pesos, desde los archivos de la app.
@@ -109,9 +121,11 @@ List<String> textosCortados(WidgetTester tester) => [
 ];
 
 /// Lo que dice TalkBack, en el orden en que recorre la pantalla (sin los
-/// nodos que no dicen nada).
+/// nodos que no dicen nada). Un nodo que junta a los de adentro
+/// (MergeSemantics alrededor de un botón) dice lo de todos: por eso se lee
+/// la etiqueta de sus datos y no la propia, que queda vacía.
 List<String> ordenTalkBack(WidgetTester tester) => tester.semantics
     .simulatedAccessibilityTraversal()
-    .map((nodo) => nodo.label)
+    .map((nodo) => nodo.getSemanticsData().label)
     .where((etiqueta) => etiqueta.isNotEmpty)
     .toList();

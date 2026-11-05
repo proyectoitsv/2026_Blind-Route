@@ -1,16 +1,40 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'design/design.dart';
 import 'lista_edificios.dart';
 import 'supabase_config.dart';
-import 'tema.dart';
 
 /// Login de la app de ADMINISTRADOR. La autenticación real la hace Supabase
 /// Auth (email + contraseña); las cuentas se crean desde el dashboard, con los
 /// registros públicos DESACTIVADOS. Sin una sesión válida, el servidor rechaza
 /// cualquier publicación aunque alguien tenga el APK y la anon key.
+///
+/// ─── Sistema de diseño (fase 5.3 del rediseño) ───
+/// Va envuelta en AmbienteDiseno. Arriba, el ícono de administrador en un
+/// cuadro hundido, "Acceso de administrador" y una frase en gris; después,
+/// Email y Contraseña (CampoTexto, con la etiqueta arriba) y "Ingresar", el
+/// botón principal. Los dos campos van en un AutofillGroup: el teléfono los
+/// completa y, al entrar, ofrece guardar la contraseña. En el teclado,
+/// "Siguiente" pasa del email a la contraseña y "Listo" ingresa.
+///
+/// Los errores van debajo de los campos (antes, en un SnackBar), en rojo y
+/// con un ícono, y TalkBack los anuncia: "Completá el email." y "Completá la
+/// contraseña." debajo del que falte, y el de Supabase debajo de la
+/// contraseña. Escribir en un campo le borra el error.
+///
+/// Mientras ingresa, los campos se deshabilitan y el botón dice "Ingresando…"
+/// (TalkBack lo anuncia), sin nada que gire. Si entra, queda así mientras la
+/// pantalla se va: durante la transición no vuelve a "Ingresar". Mientras
+/// revisa si hay una sesión guardada (dura un cuadro), se ve sólo la barra.
 class PantallaLoginAdmin extends StatefulWidget {
-  const PantallaLoginAdmin({super.key});
+  const PantallaLoginAdmin({super.key, this.configurado});
+
+  /// Si Supabase está configurado. null: lo dice SupabaseConfig, como en la
+  /// app. Los tests lo fijan para ver el aviso "Falta configurar Supabase",
+  /// que con las credenciales cargadas no aparece nunca.
+  @visibleForTesting
+  final bool? configurado;
 
   @override
   State<PantallaLoginAdmin> createState() => _PantallaLoginAdminState();
@@ -19,8 +43,16 @@ class PantallaLoginAdmin extends StatefulWidget {
 class _PantallaLoginAdminState extends State<PantallaLoginAdmin> {
   final _emailCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
+  final _focoContrasena = FocusNode();
   bool _cargando = false;
   bool _verificandoSesion = true;
+
+  /// Lo que está mal, debajo de cada campo. El error de Supabase va debajo
+  /// de la contraseña.
+  String? _errorEmail;
+  String? _errorContrasena;
+
+  bool get _configurado => widget.configurado ?? SupabaseConfig.configurado;
 
   @override
   void initState() {
@@ -37,12 +69,13 @@ class _PantallaLoginAdminState extends State<PantallaLoginAdmin> {
   void dispose() {
     _emailCtrl.dispose();
     _passCtrl.dispose();
+    _focoContrasena.dispose();
     super.dispose();
   }
 
   /// Si ya hay una sesión guardada, saltea el login y entra directo.
   Future<void> _verificarSesionExistente() async {
-    if (!SupabaseConfig.configurado) {
+    if (!_configurado) {
       if (mounted) setState(() => _verificandoSesion = false);
       return;
     }
@@ -58,7 +91,7 @@ class _PantallaLoginAdminState extends State<PantallaLoginAdmin> {
     if (!mounted) return;
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (_) => const ListaEdificios()),
+      RutaApp<void>(builder: (_) => const ListaEdificios()),
     );
   }
 
@@ -66,143 +99,183 @@ class _PantallaLoginAdminState extends State<PantallaLoginAdmin> {
     final email = _emailCtrl.text.trim();
     final pass = _passCtrl.text;
     if (email.isEmpty || pass.isEmpty) {
-      _mostrar('Completá email y contraseña.');
+      // Debajo del que falte (de los dos, si faltan los dos).
+      setState(() {
+        _errorEmail = email.isEmpty ? 'Completá el email.' : null;
+        _errorContrasena = pass.isEmpty ? 'Completá la contraseña.' : null;
+      });
       return;
     }
 
-    setState(() => _cargando = true);
+    setState(() {
+      _cargando = true;
+      _errorEmail = null;
+      _errorContrasena = null;
+    });
     try {
-      await Supabase.instance.client.auth
-          .signInWithPassword(email: email, password: pass);
+      await Supabase.instance.client.auth.signInWithPassword(
+        email: email,
+        password: pass,
+      );
+      // Sigue en "Ingresando…" mientras la pantalla se va: si volviera a
+      // "Ingresar", se vería (y se podría tocar) durante la transición.
       _irAPanel();
     } on AuthException catch (e) {
-      _mostrar(e.message);
+      _mostrarError(e.message);
     } catch (e) {
-      _mostrar('No se pudo iniciar sesión: $e');
-    } finally {
-      if (mounted) setState(() => _cargando = false);
+      _mostrarError('No se pudo iniciar sesión: $e');
     }
   }
 
-  void _mostrar(String msg) {
+  /// El error del inicio de sesión, debajo de la contraseña.
+  void _mostrarError(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+    setState(() {
+      _cargando = false;
+      _errorContrasena = msg;
+    });
+  }
+
+  /// Escribir en un campo le borra el error: ya no dice lo que pasa.
+  void _alCambiarEmail(String _) {
+    if (_errorEmail != null) setState(() => _errorEmail = null);
+  }
+
+  void _alCambiarContrasena(String _) {
+    if (_errorContrasena != null) setState(() => _errorContrasena = null);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        appBar: AppBar(title: const Text('Blind Route — Administrador')),
-        body: _verificandoSesion
-            ? const Center(
-                child: CircularProgressIndicator(color: TemaApp.acento))
-            : !SupabaseConfig.configurado
-                ? _avisoNoConfigurado()
-                : _formulario(),
+    return AmbienteDiseno(
+      child: Builder(
+        builder: (context) {
+          final e = EstiloApp.de(context);
+          return Scaffold(
+            backgroundColor: e.fondo,
+            appBar: const BarraSuperior(
+              titulo: 'Blind Route — Administrador',
+              mostrarVolver: false,
+            ),
+            body: SafeArea(
+              top: false,
+              child: _verificandoSesion
+                  // Dura un cuadro: la barra con el fondo vacío.
+                  ? const SizedBox.shrink()
+                  : !_configurado
+                  ? _avisoNoConfigurado()
+                  : _formulario(e),
+            ),
+          );
+        },
       ),
     );
   }
 
-  Widget _formulario() {
+  Widget _formulario(EstiloApp e) {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.fromLTRB(
+        EspaciadoApp.margenLateral,
+        EspaciadoApp.entreSecciones,
+        EspaciadoApp.margenLateral,
+        EspaciadoApp.entreSecciones,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 12),
-          const Icon(Icons.admin_panel_settings_rounded,
-              color: TemaApp.acento, size: 64),
-          const SizedBox(height: 16),
-          const Text(
-            'Acceso de administrador',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: TemaApp.textoBlanco,
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
+          const Center(
+            child: CuadroIcono(icono: Icons.admin_panel_settings_rounded),
+          ),
+          const SizedBox(height: EspaciadoApp.margenLateral),
+          Semantics(
+            header: true,
+            child: Text(
+              'Acceso de administrador',
+              textAlign: TextAlign.center,
+              style: TipografiaApp.titulo.copyWith(color: e.textoPrincipal),
             ),
           ),
-          const SizedBox(height: 6),
-          const Text(
+          const SizedBox(height: EspaciadoApp.chico),
+          Text(
             'Ingresá con tu cuenta para cargar y publicar mapas.',
             textAlign: TextAlign.center,
-            style: TextStyle(color: TemaApp.textoSecundario, fontSize: 13),
+            style: TipografiaApp.cuerpo.copyWith(color: e.textoSecundario),
           ),
-          const SizedBox(height: 28),
-          TextField(
-            controller: _emailCtrl,
-            keyboardType: TextInputType.emailAddress,
-            autocorrect: false,
-            enabled: !_cargando,
-            style: const TextStyle(color: TemaApp.textoBlanco),
-            decoration: const InputDecoration(
-              labelText: 'Email',
-              prefixIcon: Icon(Icons.mail_outline_rounded),
+          const SizedBox(height: EspaciadoApp.entreSecciones),
+          AutofillGroup(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                CampoTexto(
+                  etiqueta: 'Email',
+                  icono: Icons.mail_rounded,
+                  controlador: _emailCtrl,
+                  tipoTeclado: TextInputType.emailAddress,
+                  accionTeclado: TextInputAction.next,
+                  autocorrector: false,
+                  pistasAutocompletar: const [AutofillHints.email],
+                  habilitado: !_cargando,
+                  error: _errorEmail,
+                  alCambiar: _alCambiarEmail,
+                  // "Siguiente": a la contraseña.
+                  alEnviar: (_) => _focoContrasena.requestFocus(),
+                ),
+                const SizedBox(height: EspaciadoApp.margenLateral),
+                CampoTexto(
+                  etiqueta: 'Contraseña',
+                  icono: Icons.lock_rounded,
+                  controlador: _passCtrl,
+                  focusNode: _focoContrasena,
+                  oculto: true,
+                  accionTeclado: TextInputAction.done,
+                  pistasAutocompletar: const [AutofillHints.password],
+                  habilitado: !_cargando,
+                  error: _errorContrasena,
+                  alCambiar: _alCambiarContrasena,
+                  // "Listo": ingresa.
+                  alEnviar: (_) => _cargando ? null : _ingresar(),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 14),
-          TextField(
-            controller: _passCtrl,
-            obscureText: true,
-            enabled: !_cargando,
-            onSubmitted: (_) => _cargando ? null : _ingresar(),
-            style: const TextStyle(color: TemaApp.textoBlanco),
-            decoration: const InputDecoration(
-              labelText: 'Contraseña',
-              prefixIcon: Icon(Icons.lock_outline_rounded),
+          // Más aire que el alcance de la luz del botón: ninguna sombra cae
+          // sobre el error de la contraseña.
+          const SizedBox(height: EspaciadoApp.entreSecciones),
+          // Mientras ingresa, el botón es una región en vivo: TalkBack dice
+          // "Ingresando…" al cambiar. Fuera de eso no, así al volver a
+          // "Ingresar" (después de un error) sólo se anuncia el error.
+          MergeSemantics(
+            child: Semantics(
+              liveRegion: _cargando,
+              child: BotonPrincipal(
+                texto: _cargando ? 'Ingresando…' : 'Ingresar',
+                icono: _cargando ? null : Icons.login_rounded,
+                alPresionar: _cargando ? null : _ingresar,
+              ),
             ),
-          ),
-          const SizedBox(height: 28),
-          ElevatedButton.icon(
-            onPressed: _cargando ? null : _ingresar,
-            icon: _cargando
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2.4, color: TemaApp.fondo),
-                  )
-                : const Icon(Icons.login_rounded),
-            label: Text(_cargando ? 'Ingresando...' : 'Ingresar'),
           ),
         ],
       ),
     );
   }
 
+  /// En el medio de la pantalla; si con letra grande no entra, se desplaza.
   Widget _avisoNoConfigurado() {
-    return const Padding(
-      padding: EdgeInsets.symmetric(horizontal: 32),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.cloud_off_rounded,
-                size: 64, color: TemaApp.textoSecundario),
-            SizedBox(height: 16),
-            Text(
-              'Falta configurar Supabase',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: TemaApp.textoBlanco,
-                fontSize: 17,
-                fontWeight: FontWeight.w600,
-              ),
+    return const CustomScrollView(
+      slivers: [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(
+            child: EstadoPantalla(
+              icono: Icons.cloud_off_rounded,
+              titulo: 'Falta configurar Supabase',
+              detalle:
+                  'Cargá url y anonKey en supabase_config.dart para usar la '
+                  'app de administrador.',
             ),
-            SizedBox(height: 8),
-            Text(
-              'Cargá url y anonKey en supabase_config.dart para usar la app '
-              'de administrador.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: TemaApp.textoSecundario, fontSize: 13),
-            ),
-          ],
+          ),
         ),
-      ),
+      ],
     );
   }
 }
