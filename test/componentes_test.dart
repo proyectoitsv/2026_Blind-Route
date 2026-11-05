@@ -330,6 +330,146 @@ void main() {
       );
     });
 
+    testWidgets('el principal grande: llena el lugar, acento levantado con '
+        'radio 20, y TalkBack lee el texto sin la aclaración', (tester) async {
+      final semantica = tester.ensureSemantics();
+      var veces = 0;
+      await armar(
+        tester,
+        SizedBox(
+          height: 400,
+          child: BotonPrincipalGrande(
+            icono: Icons.explore_rounded,
+            texto: 'Comenzar a navegar',
+            detalle: 'Tocá para comenzar',
+            alPresionar: () => veces++,
+          ),
+        ),
+      );
+      final boton = find.byType(BotonPrincipalGrande);
+      expect(tester.getSize(boton).height, 400);
+      final d = relieveDe(tester, boton);
+      expect(d.color, ColoresApp.acento);
+      expect(d.elevacion, 1);
+      expect(d.radio, FormasApp.bordeTarjeta);
+      expect(d.borde, BorderSide.none);
+      // El ícono y los textos, del color del texto del botón (11,47 sobre el
+      // acento).
+      final icono = find.byIcon(Icons.explore_rounded);
+      expect(tester.widget<Icon>(icono).size, FormasApp.iconoGrande);
+      expect(
+        IconTheme.of(tester.element(icono)).color,
+        ColoresApp.textoSobreAcento,
+      );
+      final titulo = tester
+          .renderObject<RenderParagraph>(find.text('Comenzar a navegar'))
+          .text
+          .style!;
+      expect(titulo.color, ColoresApp.textoSobreAcento);
+      expect(titulo.fontSize, TipografiaApp.titulo.fontSize);
+      expect(
+        tester
+            .renderObject<RenderParagraph>(find.text('Tocá para comenzar'))
+            .text
+            .style!
+            .color,
+        ColoresApp.textoSobreAcento,
+      );
+      expect(
+        tester.getSemantics(find.byType(FilledButton)),
+        isSemantics(
+          label: 'Comenzar a navegar',
+          isButton: true,
+          isEnabled: true,
+          hasTapAction: true,
+        ),
+      );
+      expect(find.bySemanticsLabel(RegExp('Tocá')), findsNothing);
+      await tester.tap(boton);
+      expect(veces, 1);
+      semantica.dispose();
+    });
+
+    for (final reducido in [false, true]) {
+      testWidgets('el principal grande presionado se hunde sin la luz'
+          '${reducido ? '; con movimiento reducido, sin achicarse' : ' y se '
+                    'achica a 0,97'}', (tester) async {
+        await armar(
+          tester,
+          BotonPrincipalGrande(
+            icono: Icons.explore_rounded,
+            texto: 'Comenzar a navegar',
+            alPresionar: () {},
+          ),
+          sinAnimaciones: reducido,
+        );
+        final boton = find.byType(BotonPrincipalGrande);
+        double escala() => tester
+            .widget<AnimatedScale>(
+              find.descendant(of: boton, matching: find.byType(AnimatedScale)),
+            )
+            .scale;
+        final dedo = await tester.startGesture(tester.getCenter(boton));
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump(MovimientoApp.presion);
+        final hundido = relieveDe(tester, boton);
+        expect(hundido.elevacion, -1);
+        expect(hundido.sombraClara, isNull);
+        expect(escala(), reducido ? 1 : MovimientoApp.escalaPresion);
+        await dedo.up();
+        await tester.pumpAndSettle();
+        expect(relieveDe(tester, boton).elevacion, 1);
+        expect(escala(), 1);
+      });
+    }
+
+    testWidgets('el principal grande con la letra al 200 %: mide lo que pide '
+        'su contenido, sin desbordes', (tester) async {
+      await armar(
+        tester,
+        BotonPrincipalGrande(
+          icono: Icons.explore_rounded,
+          texto: 'Comenzar a navegar',
+          detalle: 'Tocá para comenzar',
+          alPresionar: () {},
+        ),
+        escala: 2,
+      );
+      expect(tester.takeException(), isNull);
+      // En una lista no le dan alto: mide el ícono y los textos, con su aire.
+      expect(
+        tester.getSize(find.byType(BotonPrincipalGrande)).height,
+        greaterThan(
+          FormasApp.iconoGrande +
+              tester.getSize(find.text('Comenzar a navegar')).height +
+              tester.getSize(find.text('Tocá para comenzar')).height,
+        ),
+      );
+    });
+
+    testWidgets('el principal grande deshabilitado queda plano y se sigue '
+        'leyendo', (tester) async {
+      await armar(
+        tester,
+        const BotonPrincipalGrande(
+          icono: Icons.explore_rounded,
+          texto: 'Comenzar a navegar',
+          alPresionar: null,
+        ),
+      );
+      final d = relieveDe(tester, find.byType(BotonPrincipalGrande));
+      expect(d.elevacion, 0);
+      expect(d.color, ColoresApp.superficie);
+      expect(
+        tester
+            .renderObject<RenderParagraph>(find.text('Comenzar a navegar'))
+            .text
+            .style!
+            .color,
+        ColoresApp.textoSecundario,
+      );
+    });
+
     testWidgets('el secundario: levantado, con borde y texto principal', (
       tester,
     ) async {
@@ -748,6 +888,38 @@ void main() {
       );
       await tester.tap(find.text('Vibrar al llegar'));
       expect(nuevo, isTrue);
+      semantica.dispose();
+    });
+
+    testWidgets('con etiqueta propia, TalkBack dice sólo esa', (tester) async {
+      final semantica = tester.ensureSemantics();
+      await armar(
+        tester,
+        GrupoFilas(
+          filas: [
+            FilaGrupo(
+              icono: Icons.settings_rounded,
+              titulo: 'Ajustes',
+              subtitulo: 'Voz, movimiento y vibración',
+              valor: '3',
+              etiquetaSemantica: 'Ajustes: voz, movimiento y vibración',
+              navega: true,
+              alTocar: () {},
+            ),
+          ],
+        ),
+      );
+      expect(
+        tester.getSemantics(find.text('Ajustes')),
+        isSemantics(
+          label: 'Ajustes: voz, movimiento y vibración',
+          isButton: true,
+          hasTapAction: true,
+        ),
+      );
+      // Lo que se ve no cambia.
+      expect(find.text('Voz, movimiento y vibración'), findsOneWidget);
+      expect(find.text('3'), findsOneWidget);
       semantica.dispose();
     });
 
