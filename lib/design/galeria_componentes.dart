@@ -412,6 +412,13 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
     _entreElementos,
     const BotonPrincipal(texto: 'Descargar mapa', alPresionar: null),
     _entreElementos,
+    BotonPrincipalGrande(
+      icono: Icons.explore_rounded,
+      texto: 'Comenzar a navegar',
+      detalle: 'Tocá para comenzar',
+      alPresionar: () => _aviso('Comenzar a navegar (grande)'),
+    ),
+    _entreElementos,
     BotonSecundario(
       texto: 'Mapas disponibles',
       icono: Icons.cloud_download_rounded,
@@ -454,7 +461,8 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       e,
       'Al presionar, se hunden y se achican apenas (120 ms); al soltar, '
       'vuelven (160 ms). Un toque corto también se ve. El segundo está '
-      'deshabilitado: queda plano y se sigue leyendo.',
+      'deshabilitado: queda plano y se sigue leyendo. El tercero es el '
+      'principal en grande, el del inicio: ahí llena el lugar libre.',
     ),
     _entreSecciones,
     const EncabezadoSeccion(titulo: 'Chips'),

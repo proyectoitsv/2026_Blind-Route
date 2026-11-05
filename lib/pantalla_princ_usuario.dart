@@ -1,15 +1,27 @@
 import 'package:flutter/material.dart';
 
+import 'design/design.dart';
 import 'modo_automatico.dart';
 import 'pantalla_ajustes.dart';
 import 'pantalla_mapas_online.dart';
 import 'voz_service.dart';
-import 'tema.dart';
 
 /// Pantalla principal de la app de USUARIO. Solo navegar y descargar mapas.
 /// No contiene ningún acceso al modo administrador: esas pantallas ni siquiera
 /// se compilan en este binario (el punto de entrada main_user.dart no las
 /// referencia).
+///
+/// ─── Sistema de diseño (fase 5.1 del rediseño) ───
+/// Va envuelta en AmbienteDiseno (el tema nuevo y «Reducir movimiento») y
+/// abre las pantallas con RutaApp, con la transición de la tabla de
+/// movimiento. "Comenzar a navegar" es el botón principal en grande: llena
+/// todo el lugar libre, así se acierta sin mirar con cuidado. "Mapas
+/// disponibles" y "Ajustes" son las filas de un grupo, y TalkBack las nombra
+/// como antes ("Mapas disponibles para descargar", "Ajustes: voz, movimiento
+/// y vibración").
+///
+/// Con letra grande o en un teléfono bajo, si no entra todo, la pantalla se
+/// desplaza y el botón grande mide lo que pide su contenido.
 class PantallaPrincipalUsuario extends StatefulWidget {
   const PantallaPrincipalUsuario({super.key});
 
@@ -27,198 +39,92 @@ class _PantallaPrincipalUsuarioState extends State<PantallaPrincipalUsuario> {
     _voz.inicializar();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        appBar: AppBar(
-          title: Row(
-            children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: TemaApp.acento,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: TemaApp.acento.withValues(alpha: 0.6),
-                      blurRadius: 8,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 10),
-              const Text('Blind Route'),
-            ],
-          ),
-          centerTitle: false,
-        ),
-        body: Padding(
-          padding: const EdgeInsets.all(20.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Navegación interior\npara todos',
-                style: TextStyle(
-                  color: TemaApp.textoSecundario,
-                  fontSize: 16,
-                  height: 1.4,
-                ),
-              ),
-              const SizedBox(height: 32),
-
-              // Botón principal: navegar
-              Expanded(
-                flex: 4,
-                child: Semantics(
-                  label: 'Comenzar a navegar',
-                  button: true,
-                  child: GestureDetector(
-                    onTap: () {
-                      _voz.detener();
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const ModoAutomatico(),
-                        ),
-                      );
-                    },
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: TemaApp.acentoSuave,
-                        borderRadius:
-                            BorderRadius.circular(TemaApp.radiusCard),
-                        border: Border.all(
-                          color: TemaApp.acento.withValues(alpha: 0.5),
-                          width: 1.5,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: TemaApp.acento.withValues(alpha: 0.12),
-                            blurRadius: 24,
-                            offset: const Offset(0, 8),
-                          ),
-                        ],
-                      ),
-                      alignment: Alignment.center,
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.explore_rounded,
-                              color: TemaApp.acento, size: 72),
-                          const SizedBox(height: 20),
-                          const Text(
-                            'Comenzar a\nNavegar',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 36,
-                              color: TemaApp.textoBlanco,
-                              fontWeight: FontWeight.w800,
-                              height: 1.2,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: TemaApp.acento.withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: const Text(
-                              'Tocá para comenzar',
-                              style: TextStyle(
-                                color: TemaApp.acento,
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // Catálogo de mapas publicados y ajustes (la voz, el
-              // movimiento y la vibración).
-              _botonSecundario(
-                icono: Icons.cloud_download_rounded,
-                texto: 'Mapas disponibles',
-                etiqueta: 'Mapas disponibles para descargar',
-                pantalla: const PantallaMapasOnline(),
-              ),
-              const SizedBox(height: 12),
-              _botonSecundario(
-                icono: Icons.settings_rounded,
-                texto: 'Ajustes',
-                etiqueta: 'Ajustes: voz, movimiento y vibración',
-                pantalla: const PantallaAjustes(),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+  /// Corta la voz y abre [pantalla].
+  void _abrir(Widget pantalla) {
+    _voz.detener();
+    Navigator.of(context).push(RutaApp<void>(builder: (_) => pantalla));
   }
 
-  /// Botón secundario: objetivo táctil grande y ancho completo (más fácil de
-  /// acertar para personas con baja visión), pero visualmente secundario al
-  /// botón de navegar.
-  Widget _botonSecundario({
-    required IconData icono,
-    required String texto,
-    required String etiqueta,
-    required Widget pantalla,
-  }) {
-    return Semantics(
-      button: true,
-      label: etiqueta,
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(TemaApp.radiusButton),
-          onTap: () {
-            _voz.detener();
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => pantalla),
-            );
-          },
-          child: Ink(
-            height: 76,
-            decoration: BoxDecoration(
-              color: TemaApp.acento.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(TemaApp.radiusButton),
-              border: Border.all(
-                color: TemaApp.acento.withValues(alpha: 0.5),
-                width: 1.5,
+  @override
+  Widget build(BuildContext context) {
+    return AmbienteDiseno(
+      child: Builder(
+        builder: (context) {
+          final e = EstiloApp.de(context);
+          return Scaffold(
+            backgroundColor: e.fondo,
+            appBar: const BarraSuperior(
+              titulo: 'Blind Route',
+              mostrarVolver: false,
+            ),
+            body: SafeArea(
+              top: false,
+              child: CustomScrollView(
+                slivers: [
+                  // Llena la pantalla; si con letra grande no entra todo,
+                  // mide lo que pide el contenido y la pantalla se desplaza.
+                  SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(
+                        EspaciadoApp.margenLateral,
+                        EspaciadoApp.margenLateral,
+                        EspaciadoApp.margenLateral,
+                        EspaciadoApp.entreSecciones,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            'Navegación interior para todos',
+                            style: TipografiaApp.cuerpo.copyWith(
+                              color: e.textoSecundario,
+                            ),
+                          ),
+                          // Más aire que el alcance de la luz del botón:
+                          // ninguna sombra cae sobre el texto.
+                          const SizedBox(height: EspaciadoApp.entreSecciones),
+                          Expanded(
+                            child: BotonPrincipalGrande(
+                              icono: Icons.explore_rounded,
+                              texto: 'Comenzar a navegar',
+                              detalle: 'Tocá para comenzar',
+                              alPresionar: () => _abrir(const ModoAutomatico()),
+                            ),
+                          ),
+                          const SizedBox(height: EspaciadoApp.entreSecciones),
+                          GrupoFilas(
+                            filas: [
+                              FilaGrupo(
+                                icono: Icons.cloud_download_rounded,
+                                titulo: 'Mapas disponibles',
+                                subtitulo: 'Descargá, actualizá o quitá mapas',
+                                etiquetaSemantica:
+                                    'Mapas disponibles para descargar',
+                                navega: true,
+                                alTocar: () =>
+                                    _abrir(const PantallaMapasOnline()),
+                              ),
+                              FilaGrupo(
+                                icono: Icons.settings_rounded,
+                                titulo: 'Ajustes',
+                                subtitulo: 'Voz, movimiento y vibración',
+                                etiquetaSemantica:
+                                    'Ajustes: voz, movimiento y vibración',
+                                navega: true,
+                                alTocar: () => _abrir(const PantallaAjustes()),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(icono, color: TemaApp.acento, size: 30),
-                const SizedBox(width: 14),
-                Text(
-                  texto,
-                  style: const TextStyle(
-                    color: TemaApp.textoBlanco,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+          );
+        },
       ),
     );
   }

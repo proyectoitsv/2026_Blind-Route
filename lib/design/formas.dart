@@ -82,6 +82,10 @@ abstract final class FormasApp {
   /// marcas de la línea de tiempo y adentro del cuadro de un ícono.
   static const double iconoChico = 20;
 
+  /// Ícono del botón principal grande (el de "Comenzar a navegar" en el
+  /// inicio): se ve de lejos. Como los demás, no crece con la letra.
+  static const double iconoGrande = 56;
+
   /// Cuadro hundido (radio 12) con el ícono chico en acento adentro: el
   /// ícono de una tarjeta de dato, de una fila y de una tarjeta de destino.
   static const double cuadroIcono = 40;

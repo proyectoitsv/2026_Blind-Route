@@ -15,8 +15,9 @@
 //                            PestanaBarra (píldora de pestañas),
 //                            BarraAcciones y AccionPildora (píldora de
 //                            acciones)
-//   botones.dart             BotonPrincipal (acento plano), BotonSecundario,
-//                            BotonRedondo
+//   botones.dart             BotonPrincipal (acento plano),
+//                            BotonPrincipalGrande (llena el lugar),
+//                            BotonSecundario, BotonRedondo
 //   campo_texto.dart         CampoTexto (y CampoTexto.busqueda)
 //   chips.dart               ChipApp (hundido), ChipFiltro
 //   control_segmentado.dart  ControlSegmentado, OpcionSegmento

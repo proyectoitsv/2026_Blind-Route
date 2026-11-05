@@ -38,6 +38,8 @@ import 'presion.dart';
 // ─── TalkBack ───
 // Cada fila se lee de una vez ("Velocidad de la voz, 100 %, botón") y el
 // título de la sección es un encabezado, para saltar de sección en sección.
+// Si lo que se ve no alcanza como frase, la fila lleva una etiqueta propia
+// (etiquetaSemantica) y TalkBack dice sólo esa.
 
 /// Título de una sección de la pantalla (20, semibold), con una acción
 /// opcional a la derecha. TalkBack lo anuncia como encabezado.
@@ -174,6 +176,7 @@ class FilaGrupo extends StatelessWidget {
     this.navega = false,
     this.destructiva = false,
     this.alTocar,
+    this.etiquetaSemantica,
   });
 
   /// Fila con un interruptor: toda la fila lo prende y lo apaga, y TalkBack
@@ -221,6 +224,11 @@ class FilaGrupo extends StatelessWidget {
   /// null: la fila no se toca (sólo muestra).
   final VoidCallback? alTocar;
 
+  /// Lo que dice TalkBack en lugar del título, el subtítulo y el valor, si
+  /// hace falta otra redacción ("Mapas disponibles para descargar"). Por
+  /// defecto, lo que se ve.
+  final String? etiquetaSemantica;
+
   /// Hasta qué parte del ancho de la pantalla puede ocupar el [valor] a la
   /// derecha: el resto queda para el título.
   static const double _fraccionValor = 0.4;
@@ -243,16 +251,23 @@ class FilaGrupo extends StatelessWidget {
     final estiloGris = TipografiaApp.subtitulo.copyWith(
       color: e.textoSecundario,
     );
+    // Con una etiqueta propia, el título la lleva y TalkBack saltea el
+    // resto del texto.
+    Widget gris(String texto, {TextAlign? alineacion}) => ExcludeSemantics(
+      excluding: etiquetaSemantica != null,
+      child: Text(texto, textAlign: alineacion, style: estiloGris),
+    );
 
     final textos = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           titulo,
+          semanticsLabel: etiquetaSemantica,
           style: TipografiaApp.destacado.copyWith(color: colorTitulo),
         ),
-        if (subtitulo != null) Text(subtitulo!, style: estiloGris),
-        if (letraGrande && valor != null) Text(valor!, style: estiloGris),
+        if (subtitulo != null) gris(subtitulo!),
+        if (letraGrande && valor != null) gris(valor!),
         if (letraGrande && accesorio != null) accesorio!,
       ],
     );
@@ -286,11 +301,7 @@ class FilaGrupo extends StatelessWidget {
                 constraints: BoxConstraints(
                   maxWidth: MediaQuery.sizeOf(context).width * _fraccionValor,
                 ),
-                child: Text(
-                  valor!,
-                  textAlign: TextAlign.end,
-                  style: estiloGris,
-                ),
+                child: gris(valor!, alineacion: TextAlign.end),
               ),
             ],
             if (!letraGrande && accesorio != null) ...[
