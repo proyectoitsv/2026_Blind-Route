@@ -81,6 +81,9 @@ class CampoTexto extends StatefulWidget {
     this.pistasAutocompletar = const <String>[],
     this.habilitado = true,
     this.error,
+    this.lineas = 1,
+    this.sufijo,
+    this.pie,
   });
 
   /// El buscador: el ícono de la lupa, la ayuda adentro, sin etiqueta a la
@@ -104,7 +107,10 @@ class CampoTexto extends StatefulWidget {
        autocorrector = true,
        pistasAutocompletar = const <String>[],
        habilitado = true,
-       error = null;
+       error = null,
+       lineas = 1,
+       sufijo = null,
+       pie = null;
 
   /// El nombre del campo. TalkBack lo dice siempre.
   final String etiqueta;
@@ -151,6 +157,19 @@ class CampoTexto extends StatefulWidget {
   /// Qué está mal, debajo del campo, en rojo y con un ícono; el borde
   /// también pasa al rojo. TalkBack lo anuncia al aparecer. null: sin error.
   final String? error;
+
+  /// Hasta cuántos renglones crece el campo al escribir (las palabras de un
+  /// lugar). Con más de uno, el teclado trae la tecla para cambiar de
+  /// renglón, salvo que [tipoTeclado] diga otra cosa.
+  final int lineas;
+
+  /// Texto fijo al final de lo escrito, en gris (la unidad: "m").
+  final String? sufijo;
+
+  /// Aclaración debajo del campo, en gris ("Separadas por comas"). TalkBack
+  /// la dice con el campo, después de su nombre. Con un [error], va el error
+  /// en su lugar.
+  final String? pie;
 
   @override
   State<CampoTexto> createState() => _CampoTextoState();
@@ -270,11 +289,14 @@ class _CampoTextoState extends State<CampoTexto> {
               Expanded(
                 child: Semantics(
                   label: widget.etiqueta,
+                  hint: widget.pie,
                   child: TextField(
                     controller: _controlador,
                     focusNode: _foco,
                     enabled: habilitado,
                     autofocus: widget.autofocus,
+                    minLines: 1,
+                    maxLines: widget.lineas,
                     onChanged: widget.alCambiar,
                     onSubmitted: widget.alEnviar,
                     textInputAction: widget.accionTeclado,
@@ -290,6 +312,10 @@ class _CampoTextoState extends State<CampoTexto> {
                     // relieve de alrededor.
                     decoration: InputDecoration(
                       hintText: widget.ayuda,
+                      suffixText: widget.sufijo,
+                      suffixStyle: TipografiaApp.cuerpo.copyWith(
+                        color: e.textoSecundario,
+                      ),
                       // Con letra grande, la ayuda se parte en renglones en
                       // vez de cortarse con "…". El campo mide lo que ella
                       // también con algo escrito (maintainHintSize): no salta
@@ -359,6 +385,15 @@ class _CampoTextoState extends State<CampoTexto> {
         if (error != null) ...[
           const SizedBox(height: EspaciadoApp.chico),
           _ErrorDelCampo(texto: error),
+        ] else if (widget.pie != null) ...[
+          const SizedBox(height: EspaciadoApp.chico),
+          // TalkBack ya la dice en el campo.
+          ExcludeSemantics(
+            child: Text(
+              widget.pie!,
+              style: TipografiaApp.nota.copyWith(color: e.textoSecundario),
+            ),
+          ),
         ],
       ],
     );

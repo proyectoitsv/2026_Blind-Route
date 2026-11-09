@@ -110,6 +110,9 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
   /// Lo escrito en el email de ejemplo: vacío, muestra el error.
   String _emailEjemplo = '';
 
+  /// El valor del deslizador de ejemplo (el tamaño de una celda, en metros).
+  double _celdaEjemplo = 0.8;
+
   /// Lo que se ve en el campo deshabilitado de ejemplo.
   final TextEditingController _textoDeshabilitado = TextEditingController(
     text: 'admin@ejemplo.com',
@@ -766,7 +769,63 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       'dejan lugar; si no, debajo. El tacho pide confirmar; también se '
       'eliminan deslizándolas y, con TalkBack, con la acción «Eliminar».',
     ),
+    // Las secciones nuevas, al final: las de arriba no se corren.
+    _entreSecciones,
+    const EncabezadoSeccion(titulo: 'Deslizadores'),
+    _bajoEncabezado,
+    Deslizador(
+      etiqueta: 'Tamaño de celda',
+      valor: _celdaEjemplo,
+      min: 0.5,
+      max: 1,
+      divisiones: 5,
+      formato: (v) => '${_decimal(v)} m',
+      formatoSemantico: (v) => '${_decimal(v)} metros',
+      ayuda: 'Menor, más precisión en espacios chicos.',
+      alCambiar: (v) => setState(() => _celdaEjemplo = v),
+    ),
+    _entreElementos,
+    Deslizador(
+      etiqueta: 'Deshabilitado',
+      valor: 0.3,
+      min: 0,
+      max: 1,
+      formato: textoPorcentaje,
+      alCambiar: null,
+    ),
+    _bajoEncabezado,
+    _parrafo(
+      e,
+      'La pista hundida, lo elegido en cian y la perilla levantada, que se '
+      'hunde al arrastrarla. El valor va escrito arriba y TalkBack lo dice '
+      'con su unidad.',
+    ),
+    _entreSecciones,
+    const EncabezadoSeccion(titulo: 'Más campos'),
+    _bajoEncabezado,
+    const CampoTexto(
+      etiqueta: 'Largo',
+      ayuda: 'Por ejemplo, 12,5',
+      tipoTeclado: TextInputType.numberWithOptions(decimal: true),
+      sufijo: 'm',
+    ),
+    _entreElementos,
+    const CampoTexto(
+      etiqueta: 'Otras palabras',
+      ayuda: 'el mac, mc',
+      lineas: 3,
+      pie: 'Apodos o marcas, separados por comas.',
+    ),
+    _bajoEncabezado,
+    _parrafo(
+      e,
+      'Con la unidad al final, y uno que crece hasta tres renglones con una '
+      'aclaración debajo, que TalkBack dice con el campo.',
+    ),
   ];
+
+  /// Un número con coma decimal ("0,8").
+  static String _decimal(double v) => v.toStringAsFixed(1).replaceAll('.', ',');
 
   /// Los controles de la vista previa. Escuchan el valor, porque al cambiar
   /// la letra esta pantalla no se vuelve a armar entera. Debajo, los

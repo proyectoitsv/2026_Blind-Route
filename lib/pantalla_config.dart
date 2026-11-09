@@ -18,10 +18,17 @@ import 'grilla_nav.dart';
 import 'asistente_trazo.dart';
 import 'calibracion_model.dart';
 import 'supabase_service.dart';
-import 'tema.dart';
+import 'design/design.dart';
 
 enum _ModoEdicion { beacons, zonas, lugares, escala, calibracion, brujula }
 
+/// Configuración de un piso (app del administrador): beacons, zonas
+/// prohibidas, lugares, escala, calibración y brújula, sobre el plano.
+///
+/// ─── Sistema de diseño (fase 5.6 del rediseño) ───
+/// Va envuelta en AmbienteDiseno: la barra con las acciones de la nube, los
+/// modos en una fila de chips, el plano hundido y, debajo, el panel de cada
+/// modo. Ver "UI" más abajo.
 class PantallaConfiguracion extends StatefulWidget {
   final int pisoId;
   final String rutaImagen;
@@ -64,6 +71,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   int _potenciaMinima = _sinPotenciaMinima;
   static const int _sinPotenciaMinima = -100;
   bool _publicando = false;
+
+  /// Con [_publicando]: si lo que se está haciendo es eliminar el mapa de la
+  /// nube (sólo cambia lo que se ve mientras tanto).
+  bool _eliminandoDeLaNube = false;
   String? _remoteIdPublicado;
   Offset? _posicionUsuario;
 
@@ -77,6 +88,15 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   ({int ix, int iy})? _celdaCalSeleccionada;
   List<CalibracionRegistro> _calibraciones = [];
   final TextEditingController _etiquetaCalCtrl = TextEditingController();
+
+  /// Si la lista de calibraciones guardadas está a la vista (arranca
+  /// plegada, como antes).
+  bool _verCalibraciones = false;
+
+  /// Una clave por chip de modo, para centrar el elegido en la fila.
+  final Map<_ModoEdicion, GlobalKey> _clavesChipModo = {
+    for (final modo in _ModoEdicion.values) modo: GlobalKey(),
+  };
 
   // Escala configurable por eje + grilla derivada.
   late double _escalaX;
@@ -155,7 +175,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// Rumbo medio de la toma, o `null` si no hubo lecturas de brujula.
   double? get _rumboMedioToma {
     if (_muestrasRumbo == 0) return null;
-    final a = atan2(_sumSenoRumbo / _muestrasRumbo, _sumCosRumbo / _muestrasRumbo);
+    final a = atan2(
+      _sumSenoRumbo / _muestrasRumbo,
+      _sumCosRumbo / _muestrasRumbo,
+    );
     return (a * 180 / pi + 360) % 360;
   }
 
@@ -166,10 +189,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   double get _progresoToma {
     final inicio = _inicioToma;
     if (inicio == null) return 0;
-    final t = DateTime.now().difference(inicio).inMilliseconds /
+    final t =
+        DateTime.now().difference(inicio).inMilliseconds /
         _duracionTomaActual.inMilliseconds;
     return t.clamp(0.0, 1.0);
   }
+
   // Acumulador: mac → lista de lecturas RSSI durante la toma
   final Map<String, List<double>> _acumCal = {};
 
@@ -182,8 +207,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   // Medición interactiva de escala: P1 → P2 es el LARGO y P2 → P3 el ANCHO.
   // Se marca igual que una zona prohibida (ver "Escala" más abajo).
   final List<Offset> _puntosEscala = []; // P1, P2 (largo), P3 (ancho)
-  double? _largoMetros;                   // metros del largo (P1→P2)
-  double? _anchoMetros;                   // metros del ancho (P2→P3)
+  double? _largoMetros; // metros del largo (P1→P2)
+  double? _anchoMetros; // metros del ancho (P2→P3)
 
   // Punto de escala que se está arrastrando (null = ninguno) y si se creó en
   // el gesto actual (para descartarlo si el gesto se cancela por un zoom de
@@ -417,8 +442,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// Aplica el asistente al vértice [idx] y lo reubica.
   void _aplicarAsistenteEnVertice(int idx, Offset n) {
     final a = _anclasVertice(idx);
-    final p = _aplicarAsistente(n,
-        ancla: a.ancla, anclaSecundaria: a.sec, diagonales: true);
+    final p = _aplicarAsistente(
+      n,
+      ancla: a.ancla,
+      anclaSecundaria: a.sec,
+      diagonales: true,
+    );
     _moverVertice(idx, p);
   }
 
@@ -428,7 +457,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     _escalaX = widget.escalaX;
     _escalaY = widget.escalaY;
     _tamCelda = widget.tamCeldaMetros;
-    _grilla = GrillaNav(metrosX: _escalaX, metrosY: _escalaY, tamCeldaMetros: _tamCelda);
+    _grilla = GrillaNav(
+      metrosX: _escalaX,
+      metrosY: _escalaY,
+      tamCeldaMetros: _tamCelda,
+    );
     _transformMapa.addListener(_alCambiarZoom);
     _cargarDatosIniciales();
   }
@@ -444,16 +477,33 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   Future<void> _cargarDatosIniciales() async {
     try {
-      final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
-      final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
-      final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(widget.pisoId);
-      final calibraciones = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(widget.pisoId);
+      final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(
+        widget.pisoId,
+      );
+      final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(
+        widget.pisoId,
+      );
+      final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(
+        widget.pisoId,
+      );
+      final calibraciones = await DatabaseHelper.instance
+          .obtenerCalibracionesPorPiso(widget.pisoId);
 
       // Leer rotación del mapa guardada.
       final db = await DatabaseHelper.instance.database;
-      final filas = await db.query('pisos', columns: ['rotacion_mapa', 'remote_id'], where: 'id = ?', whereArgs: [widget.pisoId], limit: 1);
-      final rotGuardada = filas.isNotEmpty ? ((filas.first['rotacion_mapa'] as num?)?.toDouble() ?? 0.0) : 0.0;
-      final remoteId = filas.isNotEmpty ? filas.first['remote_id'] as String? : null;
+      final filas = await db.query(
+        'pisos',
+        columns: ['rotacion_mapa', 'remote_id'],
+        where: 'id = ?',
+        whereArgs: [widget.pisoId],
+        limit: 1,
+      );
+      final rotGuardada = filas.isNotEmpty
+          ? ((filas.first['rotacion_mapa'] as num?)?.toDouble() ?? 0.0)
+          : 0.0;
+      final remoteId = filas.isNotEmpty
+          ? filas.first['remote_id'] as String?
+          : null;
 
       if (mounted) {
         setState(() {
@@ -466,23 +516,25 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         });
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error cargando datos: $e')),
-        );
-      }
+      _avisar('Error cargando datos: $e', error: true);
     }
+  }
+
+  /// Los avisos de la pantalla (mostrarAviso): abajo, se van solos a los 4 s
+  /// y TalkBack los lee. Los errores, en rojo y con el ícono.
+  void _avisar(String texto, {bool error = false}) {
+    if (!mounted) return;
+    mostrarAviso(context, texto, error: error);
   }
 
   Future<void> _sincronizarBeacons() async {
     try {
-      await DatabaseHelper.instance.guardarBeacons(widget.pisoId, _beaconsEnElMapa.values.toList());
+      await DatabaseHelper.instance.guardarBeacons(
+        widget.pisoId,
+        _beaconsEnElMapa.values.toList(),
+      );
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error guardando beacons: $e')),
-        );
-      }
+      _avisar('Error guardando beacons: $e', error: true);
     }
   }
 
@@ -495,24 +547,15 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (_publicando) return;
 
     if (!SupabaseService.instance.configurado) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Falta configurar Supabase (supabase_config.dart) para publicar.',
-          ),
-        ),
+      _avisar(
+        'Falta configurar Supabase (supabase_config.dart) para publicar.',
+        error: true,
       );
       return;
     }
 
     if (_beaconsEnElMapa.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Cargá al menos un beacon antes de publicar el mapa.'),
-        ),
-      );
+      _avisar('Cargá al menos un beacon antes de publicar el mapa.');
       return;
     }
 
@@ -521,8 +564,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       // Asegurar que lo último quede persistido localmente antes de subir.
       await _sincronizarBeacons();
 
-      final info =
-          await DatabaseHelper.instance.obtenerPisoConEdificio(widget.pisoId);
+      final info = await DatabaseHelper.instance.obtenerPisoConEdificio(
+        widget.pisoId,
+      );
       if (info == null) throw Exception('No se encontró el piso.');
 
       final remoteId = await SupabaseService.instance.publicarPiso(
@@ -540,24 +584,21 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         remoteIdExistente: info['remote_id'] as String?,
       );
 
-      await DatabaseHelper.instance
-          .guardarRemoteIdPiso(widget.pisoId, remoteId);
+      await DatabaseHelper.instance.guardarRemoteIdPiso(
+        widget.pisoId,
+        remoteId,
+      );
 
       if (!mounted) return;
       final republicado = (info['remote_id'] as String?) != null;
       setState(() => _remoteIdPublicado = remoteId);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(republicado
-              ? 'Mapa actualizado en la nube'
-              : 'Mapa publicado. Ya se puede descargar.'),
-        ),
+      _avisar(
+        republicado
+            ? 'Mapa actualizado en la nube'
+            : 'Mapa publicado. Ya se puede descargar.',
       );
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al publicar: $e')),
-      );
+      _avisar('Error al publicar: $e', error: true);
     } finally {
       if (mounted) setState(() => _publicando = false);
     }
@@ -569,44 +610,37 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     final remoteId = _remoteIdPublicado;
     if (remoteId == null || _publicando) return;
 
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Eliminar de la nube'),
-        content: const Text(
+    final confirmar = await mostrarConfirmacion(
+      context,
+      titulo: 'Eliminar de la nube',
+      mensaje:
           'Se quita del catálogo y se borra de los teléfonos que ya lo '
-          'tienen.\n\n¿Continuar?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Eliminar'),
-          ),
-        ],
-      ),
+          'tienen.',
+      confirmar: 'Eliminar',
+      destructiva: true,
+      iconoConfirmar: Icons.cloud_off_rounded,
     );
-    if (confirmar != true) return;
+    if (!confirmar || !mounted) return;
 
-    setState(() => _publicando = true);
+    setState(() {
+      _publicando = true;
+      _eliminandoDeLaNube = true;
+    });
     try {
       await SupabaseService.instance.eliminarMapa(remoteId);
       await DatabaseHelper.instance.limpiarRemoteIdPiso(widget.pisoId);
       if (!mounted) return;
       setState(() => _remoteIdPublicado = null);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Mapa eliminado de la nube')),
-      );
+      _avisar('Mapa eliminado de la nube');
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al eliminar: $e')),
-      );
+      _avisar('Error al eliminar: $e', error: true);
     } finally {
-      if (mounted) setState(() => _publicando = false);
+      if (mounted) {
+        setState(() {
+          _publicando = false;
+          _eliminandoDeLaNube = false;
+        });
+      }
     }
   }
 
@@ -615,35 +649,20 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _borrarBeacon(String mac) async {
     try {
       final nombre = _beaconsEnElMapa[mac]?.nombre ?? 'Beacon';
-      final confirmar = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Eliminar beacon?'),
-          content: Text('Se eliminara "$nombre" ($mac) de este piso.'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              style: TextButton.styleFrom(foregroundColor: Colors.red),
-              child: const Text('Eliminar'),
-            ),
-          ],
-        ),
+      final confirmar = await mostrarConfirmacion(
+        context,
+        titulo: '¿Eliminar beacon?',
+        mensaje: 'Se eliminará "$nombre" ($mac) de este piso.',
+        confirmar: 'Eliminar',
+        destructiva: true,
+        iconoConfirmar: Icons.delete_rounded,
       );
-      if (confirmar != true || !mounted) return;
+      if (!confirmar || !mounted) return;
       setState(() => _beaconsEnElMapa.remove(mac));
       await _sincronizarBeacons();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Beacon eliminado')),
-        );
-      }
+      _avisar('Beacon eliminado');
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error eliminando beacon: $e')),
-        );
-      }
+      _avisar('Error eliminando beacon: $e', error: true);
     }
   }
 
@@ -734,8 +753,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     final destino = n + _desfaseAgarreBeacon;
     // posicion es mutable; recortada a [0,1]. El repintado sale del setState.
     setState(() {
-      b.posicion =
-          Offset(destino.dx.clamp(0.0, 1.0), destino.dy.clamp(0.0, 1.0));
+      b.posicion = Offset(
+        destino.dx.clamp(0.0, 1.0),
+        destino.dy.clamp(0.0, 1.0),
+      );
     });
   }
 
@@ -766,11 +787,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
     final ok = await BluetoothHelper.verificarPrecondiciones(context);
     if (!ok) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Bluetooth o permisos no disponibles')),
-        );
-      }
+      _avisar('Bluetooth o permisos no disponibles', error: true);
       return;
     }
 
@@ -784,13 +801,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         setState(() => _dispositivosCercanos = resultados);
         _actualizarSenales(resultados);
       },
-      onError: (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error en scan: $e')),
-          );
-        }
-      },
+      onError: (e) => _avisar('Error en scan: $e', error: true),
     );
 
     if (!scanOk && mounted) {
@@ -816,8 +827,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _actualizarPotenciaLista(List<ScanResult> resultados) {
     final limite = DateTime.now().subtract(_ventanaPotenciaLista);
     for (final r in resultados) {
-      final lecturas =
-          _lecturasLista.putIfAbsent(r.device.remoteId.str, () => []);
+      final lecturas = _lecturasLista.putIfAbsent(
+        r.device.remoteId.str,
+        () => [],
+      );
       if (lecturas.isEmpty || r.timeStamp.isAfter(lecturas.last.t)) {
         lecturas.add((t: r.timeStamp, rssi: r.rssi));
       }
@@ -869,69 +882,22 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     });
   }
 
-  /// Pide el filtro en un diálogo. No se usa un campo fijo bajo el mapa
-  /// porque el body es un Column con el mapa de 380 px: al abrirse el teclado
-  /// ese campo quedaría tapado y el Column desbordaría.
+  /// Pide el filtro en una hoja. No se usa un campo fijo bajo el mapa: al
+  /// abrirse el teclado quedaría tapado. La hoja sube con el teclado.
   Future<void> _pedirFiltro() async {
-    final controller = TextEditingController(text: _filtroNombre);
-    var minima = _potenciaMinima.toDouble();
-    final aplicar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogo) => AlertDialog(
-          title: const Text('Filtrar dispositivos'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                controller: controller,
-                decoration: const InputDecoration(
-                  labelText: 'Nombre',
-                  hintText: 'Ej: BlindRoute (vacío: todos)',
-                  border: OutlineInputBorder(),
-                ),
-                textInputAction: TextInputAction.search,
-                onSubmitted: (_) => Navigator.pop(ctx, true),
-              ),
-              const SizedBox(height: 16),
-              Text(minima <= _sinPotenciaMinima
-                  ? 'Potencia: todas'
-                  : 'Más fuertes que ${minima.round()} dBm'),
-              Slider(
-                value: minima,
-                min: _sinPotenciaMinima.toDouble(),
-                max: -40,
-                divisions: 12,
-                label: '${minima.round()} dBm',
-                onChanged: (v) => setDialogo(() => minima = v),
-              ),
-            ],
-          ),
-          actions: [
-            if (_filtroActivo)
-              TextButton(
-                onPressed: () {
-                  controller.clear();
-                  minima = _sinPotenciaMinima.toDouble();
-                  Navigator.pop(ctx, true);
-                },
-                child: const Text('Quitar filtro'),
-              ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancelar'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Filtrar'),
-            ),
-          ],
-        ),
+    final filtro = await mostrarHoja<({String nombre, int potencia})>(
+      context,
+      titulo: 'Filtrar dispositivos',
+      // La cierran "Cancelar", volver o tocar afuera.
+      botonCerrar: false,
+      contenido: (context) => _HojaFiltro(
+        nombre: _filtroNombre,
+        potencia: _potenciaMinima,
+        hayFiltro: _filtroActivo,
       ),
     );
-    if (aplicar != true) return;
-    _aplicarFiltro(controller.text.trim(), minima.round());
+    if (filtro == null) return;
+    _aplicarFiltro(filtro.nombre, filtro.potencia);
   }
 
   /// Hora de la última lectura NUEVA procesada de cada beacon del piso.
@@ -1003,10 +969,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     // En modo calibración con celda seleccionada: NO actualizar la posición
     // desde BLE. El operador declaró dónde está; BLE solo se usa para
     // acumular muestras, no para mover el ícono.
-    if (_modo == _ModoEdicion.calibracion && _celdaCalSeleccionada != null) return;
+    if (_modo == _ModoEdicion.calibracion && _celdaCalSeleccionada != null) {
+      return;
+    }
 
     try {
-      var activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > -95).toList();
+      var activos = _beaconsEnElMapa.values
+          .where((b) => b.rssiFiltrado > -95)
+          .toList();
       if (activos.length < 2) return;
       // Misma multilateración que la navegación (ver [Posicionador]): el
       // centroide ponderado se sesgaba hacia el centro del layout.
@@ -1016,11 +986,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         final d = ProcesadorSenal.rssiADistanciaConTx(b.rssiFiltrado, tx);
         obs.add(ObservacionRango(b.posicion, d, 1.0 / (d + 1.0)));
       }
-      final p = Posicionador.estimar(obs,
-          metrosX: _grilla.metrosX,
-          metrosY: _grilla.metrosY,
-          posPrevia: _posicionUsuario,
-          factorMovimiento: 0.5);
+      final p = Posicionador.estimar(
+        obs,
+        metrosX: _grilla.metrosX,
+        metrosY: _grilla.metrosY,
+        posPrevia: _posicionUsuario,
+        factorMovimiento: 0.5,
+      );
       if (mounted) setState(() => _posicionUsuario = p);
     } catch (e) {
       // Ignorar
@@ -1037,11 +1009,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   void _cerrarZona() async {
     if (_verticesEnCurso.length < 3) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Necesitas al menos 3 puntos para cerrar la zona')),
-        );
-      }
+      _avisar('Necesitás al menos 3 puntos para cerrar la zona.');
       return;
     }
 
@@ -1069,11 +1037,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         });
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error guardando zona: $e')),
-        );
-      }
+      _avisar('Error guardando zona: $e', error: true);
     }
   }
 
@@ -1089,62 +1053,32 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   void _borrarZona(ZonaNoTransitable zona) async {
     try {
-      final confirmar = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Eliminar zona?'),
-          content: Text('Se eliminara "${zona.nombre}".'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              style: TextButton.styleFrom(foregroundColor: Colors.red),
-              child: const Text('Eliminar'),
-            ),
-          ],
-        ),
+      final confirmar = await mostrarConfirmacion(
+        context,
+        titulo: '¿Eliminar zona?',
+        mensaje: 'Se eliminará "${zona.nombre}".',
+        confirmar: 'Eliminar',
+        destructiva: true,
+        iconoConfirmar: Icons.delete_rounded,
       );
-      if (confirmar != true) return;
+      if (!confirmar) return;
       await DatabaseHelper.instance.eliminarZona(zona.id!);
       if (mounted) {
         setState(() => _zonas = _zonas.where((z) => z.id != zona.id).toList());
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error eliminando zona: $e')),
-        );
-      }
+      _avisar('Error eliminando zona: $e', error: true);
     }
   }
 
-  Future<String?> _pedirNombreZona() async {
-    final controller = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Nombre de la zona (opcional)'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            hintText: 'Ej: Escaleras, Ascensor (vacío: nombre por defecto)',
-            border: OutlineInputBorder(),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, null),
-            child: const Text('Cancelar'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
-    );
-  }
+  /// El nombre de la zona que se cierra, en una hoja. null: se canceló (y la
+  /// zona en curso se descarta, como antes).
+  Future<String?> _pedirNombreZona() => mostrarHoja<String>(
+    context,
+    titulo: 'Nombre de la zona',
+    botonCerrar: false,
+    contenido: (context) => const _HojaNombreZona(),
+  );
 
   // -- Zonas: arrastre de vértices -------------------------------------------
   //
@@ -1233,8 +1167,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     setState(() {
       _limpiarGuias();
       if (_verticeReciente && _verticesEnCurso.isNotEmpty) {
-        _verticesEnCurso =
-            _verticesEnCurso.sublist(0, _verticesEnCurso.length - 1);
+        _verticesEnCurso = _verticesEnCurso.sublist(
+          0,
+          _verticesEnCurso.length - 1,
+        );
       }
       _verticeArrastrado = null;
       _verticeReciente = false;
@@ -1245,8 +1181,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _quitarUltimoVertice() {
     if (!mounted || _verticesEnCurso.isEmpty) return;
     setState(() {
-      _verticesEnCurso =
-          _verticesEnCurso.sublist(0, _verticesEnCurso.length - 1);
+      _verticesEnCurso = _verticesEnCurso.sublist(
+        0,
+        _verticesEnCurso.length - 1,
+      );
       _verticeArrastrado = null;
       _verticeReciente = false;
       _limpiarGuias();
@@ -1262,9 +1200,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// da su entrada. La navegación sólo necesita las escaleras del piso donde
   /// está el usuario, y así cada piso sigue siendo un mapa independiente.
   void _agregarLugar(Offset normalizado) async {
-    final datos = await showDialog<_DatosNuevoLugar>(
-      context: context,
-      builder: (ctx) => const _DialogoNuevoLugar(),
+    final datos = await mostrarHoja<_DatosNuevoLugar>(
+      context,
+      titulo: 'Nuevo lugar',
+      botonCerrar: false,
+      contenido: (context) => const _HojaLugar(),
     );
     if (datos == null) return;
 
@@ -1286,11 +1226,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         setState(() => _lugares.add(lugar.copyWith(id: id)));
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error guardando lugar: $e')),
-        );
-      }
+      _avisar('Error guardando lugar: $e', error: true);
     }
   }
 
@@ -1299,9 +1235,15 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// posición no cambia acá (para eso se arrastra en el mapa).
   Future<void> _editarLugar(LugarInteres lugar) async {
     if (lugar.id == null) return;
-    final datos = await showDialog<_DatosNuevoLugar>(
-      context: context,
-      builder: (ctx) => _DialogoNuevoLugar(inicial: lugar),
+    final datos = await mostrarHoja<_DatosNuevoLugar>(
+      context,
+      titulo: !lugar.esEscalera
+          ? 'Editar lugar'
+          : lugar.esAscensor
+          ? 'Editar ascensor'
+          : 'Editar escalera',
+      botonCerrar: false,
+      contenido: (context) => _HojaLugar(inicial: lugar),
     );
     if (datos == null || !mounted) return;
 
@@ -1329,16 +1271,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       await DatabaseHelper.instance.actualizarLugarInteres(editado);
       if (mounted) {
         setState(() {
-          _lugares =
-              _lugares.map((l) => l.id == editado.id ? editado : l).toList();
+          _lugares = _lugares
+              .map((l) => l.id == editado.id ? editado : l)
+              .toList();
         });
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error guardando los cambios: $e')),
-        );
-      }
+      _avisar('Error guardando los cambios: $e', error: true);
     }
   }
 
@@ -1355,8 +1294,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     double mejorDist = double.infinity;
     // Todo en la misma unidad que _distanciaAgarre: fracción del lado mayor.
     final lado = max(_grilla.metrosX, _grilla.metrosY);
-    final mitadEscalera =
-        lado > 0 ? MapaWidget.anchoEscaleraMetros * 0.75 / lado : 0.0;
+    final mitadEscalera = lado > 0
+        ? MapaWidget.anchoEscaleraMetros * 0.75 / lado
+        : 0.0;
     // Cuánto hay que bajar el dedo (en y normalizado) para compararlo con el
     // ícono, que está por encima de la punta.
     final bajarY = _grilla.metrosY > 0
@@ -1371,8 +1311,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         radio = max(_radioAgarreLugar, mitadEscalera);
       } else {
         final dPunto = _distanciaAgarre(l.posicion, n);
-        final dIcono =
-            _distanciaAgarre(l.posicion, Offset(n.dx, n.dy + bajarY));
+        final dIcono = _distanciaAgarre(
+          l.posicion,
+          Offset(n.dx, n.dy + bajarY),
+        );
         d = min(dPunto, dIcono);
         radio = _radioAgarreLugar;
       }
@@ -1393,7 +1335,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     //    cayó apenas afuera, el más cercano dentro del radio de agarre.
     final tocado = _lugarTocado;
     _lugarTocado = null;
-    final l = (tocado == null
+    final l =
+        (tocado == null
             ? null
             : _lugares.where((x) => x.id == tocado).firstOrNull) ??
         _lugarCercano(n);
@@ -1427,12 +1370,17 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       _lugarEnMovimiento = true;
     }
     final destino = n + _desfaseAgarreLugar;
-    final nueva = Offset(destino.dx.clamp(0.0, 1.0), destino.dy.clamp(0.0, 1.0));
+    final nueva = Offset(
+      destino.dx.clamp(0.0, 1.0),
+      destino.dy.clamp(0.0, 1.0),
+    );
     setState(() {
       // Se reasigna la lista (no se muta in-place) para que el mapa se
       // entere del cambio, igual que con las zonas.
       _lugares = _lugares
-          .map((l) => l.id == _lugarArrastrado ? l.copyWith(posicion: nueva) : l)
+          .map(
+            (l) => l.id == _lugarArrastrado ? l.copyWith(posicion: nueva) : l,
+          )
           .toList();
     });
   }
@@ -1454,11 +1402,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     try {
       await DatabaseHelper.instance.actualizarPosicionLugar(id, lugar.posicion);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error guardando la nueva ubicación: $e')),
-        );
-      }
+      _avisar('Error guardando la nueva ubicación: $e', error: true);
     }
   }
 
@@ -1467,36 +1411,38 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   void _onArrastreFinLugar() => _terminarArrastreLugar();
   void _onArrastreCancelarLugar() => _terminarArrastreLugar();
 
+  /// Con el modo borrar activo, el toque sobre el marcador de un lugar.
   void _borrarLugar(LugarInteres lugar) async {
-    // Sólo se llega acá con el modo borrar activo (toque sobre el marcador) o
-    // desde el tacho de la lista: ya no hay que distinguirlo de un arrastre.
+    if (await _eliminarLugar(lugar)) _sacarLugar(lugar);
+  }
+
+  /// Pide confirmar y elimina el lugar de la base. Devuelve si se eliminó.
+  /// Lo usan el modo borrar y la tarjeta del lugar en la lista (el tacho,
+  /// deslizarla y la acción "Eliminar" de TalkBack): ya no hay que
+  /// distinguirlo de un arrastre.
+  Future<bool> _eliminarLugar(LugarInteres lugar) async {
     try {
-      final confirmar = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Eliminar lugar?'),
-          content: Text('Se eliminara "${lugar.nombre}".'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              style: TextButton.styleFrom(foregroundColor: Colors.red),
-              child: const Text('Eliminar'),
-            ),
-          ],
-        ),
+      final confirmar = await mostrarConfirmacion(
+        context,
+        titulo: '¿Eliminar lugar?',
+        mensaje: 'Se eliminará "${lugar.nombre}".',
+        confirmar: 'Eliminar',
+        destructiva: true,
+        iconoConfirmar: Icons.delete_rounded,
       );
-      if (confirmar != true) return;
+      if (!confirmar) return false;
       await DatabaseHelper.instance.eliminarLugarInteres(lugar.id!);
-      if (mounted) {
-        setState(() => _lugares.removeWhere((l) => l.id == lugar.id));
-      }
+      return true;
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error eliminando lugar: $e')),
-        );
-      }
+      _avisar('Error eliminando lugar: $e', error: true);
+      return false;
+    }
+  }
+
+  /// Saca de la lista (y del mapa) el lugar ya eliminado de la base.
+  void _sacarLugar(LugarInteres lugar) {
+    if (mounted) {
+      setState(() => _lugares.removeWhere((l) => l.id == lugar.id));
     }
   }
 
@@ -1518,7 +1464,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         setState(() {
           _beaconsEnElMapa[mac] = BeaconMarcado(
             posicion: normalizado,
-            nombre: _seleccionado!.device.advName.isEmpty ? 'Beacon' : _seleccionado!.device.advName,
+            nombre: _seleccionado!.device.advName.isEmpty
+                ? 'Beacon'
+                : _seleccionado!.device.advName,
             mac: mac,
           );
           _seleccionado = null;
@@ -1563,11 +1511,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (_escaneando) return;
     final ok = await BluetoothHelper.verificarPrecondiciones(context);
     if (!ok) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Bluetooth o permisos no disponibles')),
-        );
-      }
+      _avisar('Bluetooth o permisos no disponibles', error: true);
       return;
     }
     if (mounted) setState(() => _escaneando = true);
@@ -1579,13 +1523,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         setState(() => _dispositivosCercanos = resultados);
         _actualizarSenales(resultados);
       },
-      onError: (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error en scan: $e')),
-          );
-        }
-      },
+      onError: (e) => _avisar('Error en scan: $e', error: true),
     );
     if (!scanOk && mounted) setState(() => _escaneando = false);
   }
@@ -1633,11 +1571,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       await DatabaseHelper.instance.actualizarRotacionMapa(widget.pisoId, v);
       return true;
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error guardando el offset: $e')),
-        );
-      }
+      _avisar('Error guardando el offset: $e', error: true);
       return false;
     }
   }
@@ -1655,11 +1589,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (!mounted || !identical(_tomaRumbo, toma)) return;
     setState(() => _tomaRumbo = null);
 
-    void avisar(String texto) => ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(texto)));
-
     if (toma.length < 3) {
-      avisar('No llegaron lecturas de la brújula. Probá de nuevo.');
+      _avisar(
+        'No llegaron lecturas de la brújula. Probá de nuevo.',
+        error: true,
+      );
       return;
     }
     double s = 0, c = 0;
@@ -1670,16 +1604,21 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     s /= toma.length;
     c /= toma.length;
     if (sqrt(s * s + c * c) < _consistenciaMinTomaRumbo) {
-      avisar('El teléfono se movió durante la toma. Quedate quieto y probá '
-          'de nuevo.');
+      _avisar(
+        'El teléfono se movió durante la toma. Quedate quieto y probá '
+        'de nuevo.',
+        error: true,
+      );
       return;
     }
     final precisa = (_precisionBrujula ?? 999) <= 15;
     if (!await _fijarRotacion(atan2(s, c) * 180 / pi) || !mounted) return;
-    avisar(precisa
-        ? 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°'
-        : 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°, con la '
-            'brújula imprecisa. Calibrala (un 8 en el aire) y repetí.');
+    _avisar(
+      precisa
+          ? 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°'
+          : 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°, con la '
+                'brújula imprecisa. Calibrala (un 8 en el aire) y repetí.',
+    );
   }
 
   // -- Calibración de posición: toma multi-muestra ---------------------------
@@ -1782,8 +1721,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           _muestrasAcumuladas = 0;
           _acumCal.clear();
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No se acumularon lecturas válidas. Activá el escáner.')),
+        _avisar(
+          'No se acumularon lecturas válidas. Activá el escáner.',
+          error: true,
         );
       }
       return;
@@ -1799,11 +1739,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           _muestrasAcumuladas = 0;
           _acumCal.clear();
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(
-            'Punto clave no guardado: se ven ${lecturas.length} beacon(s) y '
-            'hacen falta 3.',
-          )),
+        _avisar(
+          'Punto clave no guardado: se '
+          '${lecturas.length == 1 ? 've 1 beacon' : 'ven ${lecturas.length} beacons'}'
+          ' y hacen falta 3.',
+          error: true,
         );
       }
       return;
@@ -1826,26 +1766,22 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
     try {
       await DatabaseHelper.instance.guardarCalibracion(registro);
-      final nuevas = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(widget.pisoId);
+      final nuevas = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(
+        widget.pisoId,
+      );
       if (mounted) {
         setState(() {
           _calibraciones = nuevas;
           _acumCal.clear();
           _muestrasAcumuladas = 0;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(
-            'Calibración registrada en (${celda.ix},${celda.iy}) '
-            'con ${lecturas.length} beacons.',
-          )),
+        _avisar(
+          'Calibración registrada en (${celda.ix}, ${celda.iy}) '
+          'con ${lecturas.length} beacons.',
         );
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error guardando calibración: $e')),
-        );
-      }
+      _avisar('Error guardando calibración: $e', error: true);
     } finally {
       // Pase lo que pase, la guardia se libera: si quedara trabada en true,
       // no se podria calibrar nunca mas sin reiniciar la pantalla.
@@ -1865,21 +1801,20 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     try {
       final borradas = await DatabaseHelper.instance
           .eliminarCalibracionesDuplicadas(widget.pisoId);
-      final nuevas = await DatabaseHelper.instance
-          .obtenerCalibracionesPorPiso(widget.pisoId);
+      final nuevas = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(
+        widget.pisoId,
+      );
       if (!mounted) return;
       setState(() => _calibraciones = nuevas);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(borradas == 0
+      _avisar(
+        borradas == 0
             ? 'No había duplicados.'
-            : 'Se eliminaron $borradas calibraciones duplicadas.')),
+            : borradas == 1
+            ? 'Se eliminó 1 calibración duplicada.'
+            : 'Se eliminaron $borradas calibraciones duplicadas.',
       );
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error limpiando duplicados: $e')),
-        );
-      }
+      _avisar('Error limpiando duplicados: $e', error: true);
     }
   }
 
@@ -1893,85 +1828,67 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// guardado llegaría después y quedaría sola, sin que el admin lo note.
   Future<void> _eliminarTodasLasCalibraciones() async {
     if (_tomandoMuestras || _guardandoCalibracion) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Esperá a que termine la toma en curso.')),
-      );
+      _avisar('Esperá a que termine la toma en curso.');
       return;
     }
     final puntosClave = _calibraciones.where((c) => c.esFingerprint).length;
     final comunes = _calibraciones.length - puntosClave;
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('¿Borrar todas las calibraciones?'),
-        content: Text(
+    final confirmar = await mostrarConfirmacion(
+      context,
+      titulo: '¿Borrar todas las calibraciones?',
+      mensaje:
           'Se borran $comunes '
           '${comunes == 1 ? "calibración" : "calibraciones"} y $puntosClave '
           '${puntosClave == 1 ? "punto clave" : "puntos clave"} de este piso. '
           'No se puede deshacer.'
           '${_remoteIdPublicado != null ? '\n\nLa copia publicada no cambia hasta que vuelvas a publicar el piso.' : ''}',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Borrar todo'),
-          ),
-        ],
-      ),
+      confirmar: 'Borrar todo',
+      destructiva: true,
+      iconoConfirmar: Icons.delete_sweep_rounded,
     );
-    if (confirmar != true) return;
+    if (!confirmar) return;
     try {
       final borradas = await DatabaseHelper.instance
           .eliminarCalibracionesDelPiso(widget.pisoId);
-      final nuevas = await DatabaseHelper.instance
-          .obtenerCalibracionesPorPiso(widget.pisoId);
+      final nuevas = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(
+        widget.pisoId,
+      );
       if (!mounted) return;
       setState(() => _calibraciones = nuevas);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(borradas == 1
+      _avisar(
+        borradas == 1
             ? 'Se borró 1 calibración.'
-            : 'Se borraron $borradas calibraciones.')),
+            : 'Se borraron $borradas calibraciones.',
       );
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error borrando calibraciones: $e')),
-        );
-      }
+      _avisar('Error borrando calibraciones: $e', error: true);
     }
   }
 
   Future<void> _eliminarCalibracion(CalibracionRegistro c) async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('¿Eliminar calibración?'),
-        content: Text(c.etiqueta ?? 'Celda (${c.celdaIx},${c.celdaIy})'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Eliminar'),
-          ),
-        ],
-      ),
+    final confirmar = await mostrarConfirmacion(
+      context,
+      titulo: '¿Eliminar calibración?',
+      mensaje: 'Se eliminará "${_nombreCalibracion(c)}".',
+      confirmar: 'Eliminar',
+      destructiva: true,
+      iconoConfirmar: Icons.delete_rounded,
     );
-    if (confirmar != true || c.id == null) return;
+    if (!confirmar || c.id == null) return;
     try {
       await DatabaseHelper.instance.eliminarCalibracion(c.id!);
-      final nuevas = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(widget.pisoId);
+      final nuevas = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(
+        widget.pisoId,
+      );
       if (mounted) setState(() => _calibraciones = nuevas);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error eliminando calibración: $e')),
-        );
-      }
+      _avisar('Error eliminando calibración: $e', error: true);
     }
   }
+
+  /// Cómo se nombra una calibración: su etiqueta o su celda.
+  String _nombreCalibracion(CalibracionRegistro c) =>
+      c.etiqueta ?? 'Celda (${c.celdaIx}, ${c.celdaIy})';
 
   // -- Escala (puntos desplazables, como las zonas) --------------------------
   //
@@ -2117,13 +2034,17 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// guarda. Si se cancela el diálogo, los puntos quedan donde están.
   Future<void> _ponerMedidaEscala() async {
     if (_faltaMedidaLargo) {
-      final metros = await _pedirMetros('Largo de la línea',
-          '¿Cuántos metros mide el largo en la realidad?');
+      final metros = await _pedirMetros(
+        'Largo de la línea',
+        '¿Cuántos metros mide el largo en la realidad?',
+      );
       if (metros == null || !mounted) return;
       setState(() => _largoMetros = metros);
     } else if (_faltaMedidaAncho) {
-      final metros = await _pedirMetros('Ancho de la línea',
-          '¿Cuántos metros mide el ancho en la realidad?');
+      final metros = await _pedirMetros(
+        'Ancho de la línea',
+        '¿Cuántos metros mide el ancho en la realidad?',
+      );
       if (metros == null || !mounted) return;
       setState(() => _anchoMetros = metros);
       await _recalcularYGuardarEscala(mostrarAviso: true);
@@ -2133,12 +2054,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// Con el largo y el ancho ya medidos (y sus metros de referencia guardados),
   /// calcula la escala por eje a partir de las posiciones ACTUALES de los puntos
   /// y persiste el resultado. No borra los puntos: quedan en pantalla para poder
-  /// reacomodarlos y recalcular. [mostrarAviso] muestra el SnackBar de confirmación
+  /// reacomodarlos y recalcular. [mostrarAviso] muestra el aviso de confirmación
   /// (true al completar la medición; false en los reajustes finos de puntos).
   Future<void> _recalcularYGuardarEscala({required bool mostrarAviso}) async {
     final largoMetros = _largoMetros;
     final anchoMetros = _anchoMetros;
-    if (largoMetros == null || anchoMetros == null || _puntosEscala.length < 3) {
+    if (largoMetros == null ||
+        anchoMetros == null ||
+        _puntosEscala.length < 3) {
       return;
     }
 
@@ -2163,31 +2086,38 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
 
     try {
-      await DatabaseHelper.instance.actualizarEscalaPiso(widget.pisoId, escalaX, escalaY);
+      await DatabaseHelper.instance.actualizarEscalaPiso(
+        widget.pisoId,
+        escalaX,
+        escalaY,
+      );
       if (mounted) {
         setState(() {
           _escalaX = escalaX;
           _escalaY = escalaY;
-          _grilla = GrillaNav(metrosX: escalaX, metrosY: escalaY, tamCeldaMetros: _tamCelda);
+          _grilla = GrillaNav(
+            metrosX: escalaX,
+            metrosY: escalaY,
+            tamCeldaMetros: _tamCelda,
+          );
           // Medición completa: los puntos SIGUEN en pantalla para reacomodarlos.
         });
         if (mostrarAviso) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(
-              'Escala guardada: ${escalaX.toStringAsFixed(1)} × ${escalaY.toStringAsFixed(1)} m '
-              '(grilla de ${_grilla.celdasX} × ${_grilla.celdasY}, celdas de ${_tamCelda.toStringAsFixed(1)} m).',
-            )),
+          _avisar(
+            'Escala guardada: ${_decimal(escalaX)} × ${_decimal(escalaY)} m '
+            '(grilla de ${_grilla.celdasX} × ${_grilla.celdasY}, celdas de '
+            '${_decimal(_tamCelda)} m).',
           );
         }
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error guardando escala: $e')),
-        );
-      }
+      _avisar('Error guardando escala: $e', error: true);
     }
   }
+
+  /// Un número con un decimal y coma ("12,5"), para lo que se lee en la
+  /// pantalla.
+  static String _decimal(double v) => v.toStringAsFixed(1).replaceAll('.', ',');
 
   /// Cambia el lado de celda de la grilla (0.5–1.0 m), regenera la grilla con
   /// la escala actual y persiste el valor. No requiere re-medir la escala.
@@ -2198,417 +2128,387 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (mounted) {
       setState(() {
         _tamCelda = v;
-        _grilla = GrillaNav(metrosX: _escalaX, metrosY: _escalaY, tamCeldaMetros: _tamCelda);
+        _grilla = GrillaNav(
+          metrosX: _escalaX,
+          metrosY: _escalaY,
+          tamCeldaMetros: _tamCelda,
+        );
       });
     }
     try {
-      await DatabaseHelper.instance.actualizarTamCeldaPiso(widget.pisoId, _tamCelda);
+      await DatabaseHelper.instance.actualizarTamCeldaPiso(
+        widget.pisoId,
+        _tamCelda,
+      );
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error guardando tamaño de celda: $e')),
-        );
-      }
+      _avisar('Error guardando tamaño de celda: $e', error: true);
     }
   }
 
-  Future<double?> _pedirMetros(String titulo, String mensaje) async {
-    final controller = TextEditingController();
-    return showDialog<double>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text(titulo),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(mensaje, style: const TextStyle(fontSize: 13)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                hintText: 'Ej: 12.5',
-                suffixText: 'm',
-                border: OutlineInputBorder(),
-              ),
-              autofocus: true,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
-          ElevatedButton(
-            onPressed: () {
-              final v = double.tryParse(controller.text.trim().replaceAll(',', '.'));
-              if (v != null && v > 0) Navigator.pop(ctx, v);
-            },
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
-    );
-  }
+  /// Los metros del largo o del ancho, en una hoja. null: se canceló (los
+  /// puntos quedan donde están).
+  Future<double?> _pedirMetros(String titulo, String mensaje) =>
+      mostrarHoja<double>(
+        context,
+        titulo: titulo,
+        botonCerrar: false,
+        contenido: (context) => _HojaMetros(mensaje: mensaje),
+      );
 
   // -- UI --------------------------------------------------------------------
+  //
+  // ─── Sistema de diseño (fase 5.6 del rediseño) ───
+  // La pantalla va envuelta en AmbienteDiseno. De arriba a abajo:
+  //   · la barra, con "Publicar el mapa en la nube" y, si está publicado,
+  //     "Eliminar el mapa de la nube". Mientras tanto, sin la ruedita: las
+  //     dos acciones se apagan y sobre el plano aparece "Publicando…" (o
+  //     "Eliminando de la nube…"), que TalkBack anuncia;
+  //   · los seis modos, en una fila de chips que se desplaza (antes, un
+  //     SegmentedButton);
+  //   · el plano, hundido y con borde (rojo y de 2 px en el modo borrar), con
+  //     el botón "Borrar" / "Listo" encima. Lo que se dibuja adentro
+  //     (MapaWidget) no cambió: se comparte con la navegación y se migra en
+  //     la 5.7;
+  //   · debajo, un panel que se desplaza solo: la ayuda del modo y sus
+  //     controles. La ayuda va acá, abajo del plano, para que el plano no se
+  //     corra cuando cambia su texto.
+  // El plano mide 380 como antes; sólo se achica si no entra (con el teclado
+  // abierto o con letra grande), así el panel siempre tiene lugar. Su alto no
+  // depende de lo que diga la ayuda: no cambia mientras se dibuja.
+  //
+  // Los diálogos pasaron a hojas (mostrarHoja), las confirmaciones a
+  // mostrarConfirmacion y los avisos a mostrarAviso. La lógica, los gestos
+  // del plano y los textos de la toma no cambiaron.
 
-  /// Botón flotante sobre el mapa que entra y sale del modo borrar. Va encima
-  /// del mapa (y no en una fila propia) porque el alto de esta pantalla está
-  /// contado: una fila más desbordaría en teléfonos chicos.
-  Widget _buildBotonBorrar() {
-    // Con una zona a medio dibujar no se entra a borrar: primero hay que
-    // cerrarla o descartarla, para no perder los puntos marcados.
-    final bloqueado =
-        !_modoBorrar && _modo == _ModoEdicion.zonas && _verticesEnCurso.isNotEmpty;
-    final activo = _borrando;
-    final Color fondo = activo
-        ? TemaApp.zonaRestringidaRelleno
-        : TemaApp.fondoSurface.withValues(alpha: 0.92);
-    final Color frente = bloqueado
-        ? TemaApp.textoSecundario
-        : (activo ? Colors.white : TemaApp.zonaRestringidaBorde);
-    return Semantics(
-      button: true,
-      toggled: activo,
-      label: activo ? 'Salir del modo borrar' : 'Entrar al modo borrar',
-      child: Material(
-        color: fondo,
-        elevation: 3,
-        shape: StadiumBorder(
-          side: BorderSide(color: frente.withValues(alpha: 0.7), width: 1.2),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: bloqueado
-              ? null
-              : () {
-                  if (!mounted) return;
-                  setState(() {
-                    _modoBorrar = !_modoBorrar;
-                    // Entrar a borrar suelta lo que hubiera a medio hacer.
-                    _seleccionado = null;
-                    _beaconArrastrado = null;
-                    _beaconEnMovimiento = false;
-                    _beaconTocado = null;
-                    _inicioAgarreBeacon = null;
-                    _lugarArrastrado = null;
-                    _lugarEnMovimiento = false;
-                    _lugarTocado = null;
-                    _inicioAgarreLugar = null;
-                  });
-                },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  activo ? Icons.check_rounded : Icons.delete_outline_rounded,
-                  size: 20,
-                  color: frente,
-                ),
-                const SizedBox(width: 6),
-                ExcludeSemantics(
-                  child: Text(
-                    activo ? 'Listo' : 'Borrar',
-                    style: TextStyle(
-                      color: frente,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+  /// Alto del plano con lugar de sobra: el de siempre.
+  static const double _altoPlano = 380;
+
+  /// Lo mínimo que se le deja al plano (con el teclado abierto).
+  static const double _altoPlanoMinimo = 160;
+
+  /// Lo mínimo que se le deja al panel de abajo, para que se vean al menos
+  /// dos o tres elementos de una lista.
+  static const double _altoPanelMinimo = 220;
+
+  /// Los modos, en el orden de la fila de arriba.
+  static const List<({_ModoEdicion modo, String texto})> _modos = [
+    (modo: _ModoEdicion.beacons, texto: 'Beacons'),
+    (modo: _ModoEdicion.zonas, texto: 'Zonas'),
+    (modo: _ModoEdicion.lugares, texto: 'Lugares'),
+    (modo: _ModoEdicion.escala, texto: 'Escala'),
+    (modo: _ModoEdicion.calibracion, texto: 'Calibrar'),
+    (modo: _ModoEdicion.brujula, texto: 'Brújula'),
+  ];
+
+  /// Pasa a [nuevoModo]. Es lo que hacía el SegmentedButton de antes al
+  /// elegir otro segmento (tocar el elegido no hace nada).
+  void _cambiarModo(_ModoEdicion nuevoModo) {
+    if (!mounted || nuevoModo == _modo) return;
+    // Detener brújula si salimos del modo brujula.
+    // La brujula hace falta en el modo brujula Y en calibracion
+    // (los puntos clave guardan el rumbo de captura), asi que solo
+    // se apaga al salir hacia un modo que no la usa.
+    const usanBrujula = {_ModoEdicion.brujula, _ModoEdicion.calibracion};
+    if (usanBrujula.contains(_modo) && !usanBrujula.contains(nuevoModo)) {
+      _detenerCompass();
+    }
+    // Al salir del modo calibración: liberar el anclado de posición.
+    if (_modo == _ModoEdicion.calibracion &&
+        nuevoModo != _ModoEdicion.calibracion) {
+      _celdaCalSeleccionada = null;
+      _posicionUsuario = null;
+      _tomandoMuestras = false;
+      _acumCal.clear();
+      _muestrasAcumuladas = 0;
+    }
+    setState(() {
+      _modo = nuevoModo;
+      _modoBorrar = false;
+      // Gesto de arrastre que hubiera quedado a medias.
+      _beaconArrastrado = null;
+      _beaconEnMovimiento = false;
+      _beaconTocado = null;
+      _inicioAgarreBeacon = null;
+      _lugarArrastrado = null;
+      _lugarEnMovimiento = false;
+      _lugarTocado = null;
+      _inicioAgarreLugar = null;
+      _verticesEnCurso = [];
+      _seleccionado = null;
+      // Reiniciar la medición de escala al cambiar de modo.
+      _puntosEscala.clear();
+      _largoMetros = null;
+      _anchoMetros = null;
+      _puntoArrastrado = null;
+      _puntoEscalaReciente = false;
+      _verticeArrastrado = null;
+      _verticeReciente = false;
+      _limpiarGuias();
+    });
+    _centrarChipModo(nuevoModo);
+    // Las lecturas en vivo de calibración necesitan el escáner activo.
+    if (nuevoModo == _ModoEdicion.calibracion) {
+      _asegurarEscaneando();
+      _iniciarCompass();
+    }
+    // Iniciar brújula en vivo al entrar al modo brujula.
+    if (nuevoModo == _ModoEdicion.brujula) {
+      _iniciarCompass();
+    }
+  }
+
+  /// Deja el chip elegido en el medio de la fila, con sus vecinos a la vista.
+  /// El de antes, al perder el tilde, se achica y corre a los que le siguen:
+  /// sin esto, un chip tocado contra el borde quedaba cortado.
+  void _centrarChipModo(_ModoEdicion modo) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final chip = _clavesChipModo[modo]!.currentContext;
+      if (chip == null || !chip.mounted) return;
+      Scrollable.ensureVisible(
+        chip,
+        alignment: 0.5,
+        duration: MovimientoApp.duracion(chip, MovimientoApp.seleccion),
+        curve: MovimientoApp.curva,
+      );
+    });
+  }
+
+  /// Entra y sale del modo borrar (el botón sobre el plano).
+  void _conmutarModoBorrar() {
+    if (!mounted) return;
+    setState(() {
+      _modoBorrar = !_modoBorrar;
+      // Entrar a borrar suelta lo que hubiera a medio hacer.
+      _seleccionado = null;
+      _beaconArrastrado = null;
+      _beaconEnMovimiento = false;
+      _beaconTocado = null;
+      _inicioAgarreBeacon = null;
+      _lugarArrastrado = null;
+      _lugarEnMovimiento = false;
+      _lugarTocado = null;
+      _inicioAgarreLugar = null;
+    });
+  }
+
+  /// "Cancelar" durante una toma de calibración.
+  void _cancelarToma() {
+    if (mounted) {
+      setState(() {
+        _tomandoMuestras = false;
+        _muestrasAcumuladas = 0;
+        _acumCal.clear();
+        _inicioToma = null;
+      });
+    }
   }
 
   String _hintTexto() {
     if (_borrando) {
       switch (_modo) {
         case _ModoEdicion.beacons:
-          return 'BORRAR: tocá un beacon. "Listo" para salir.';
+          return 'Modo borrar: tocá un beacon. «Listo» para salir.';
         case _ModoEdicion.zonas:
-          return 'BORRAR: tocá una zona. "Listo" para salir.';
+          return 'Modo borrar: tocá una zona. «Listo» para salir.';
         default:
-          return 'BORRAR: tocá un lugar, escalera o ascensor. "Listo" para salir.';
+          return 'Modo borrar: tocá un lugar, escalera o ascensor. «Listo» '
+              'para salir.';
       }
     }
     switch (_modo) {
       case _ModoEdicion.beacons:
-        return 'Elegí un dispositivo de la lista y tocá el mapa para ubicarlo. Arrastrá la mira de un beacon para moverlo.';
+        return 'Elegí un dispositivo de la lista y tocá el mapa para ubicarlo. '
+            'Arrastrá la mira de un beacon para moverlo.';
       case _ModoEdicion.zonas:
         if (_verticesEnCurso.isEmpty) {
-          return 'Tocá el mapa para marcar los vértices (mínimo 3). Arrastrá sin soltar para afinar.';
+          return 'Tocá el mapa para marcar los vértices (mínimo 3). Arrastrá '
+              'sin soltar para afinar.';
         }
-        return '${_verticesEnCurso.length} punto(s). Tocá para agregar, arrastrá para corregir o cerrá la zona.';
+        final n = _verticesEnCurso.length;
+        return '${n == 1 ? '1 punto' : '$n puntos'}. Tocá para agregar, '
+            'arrastrá para corregir o cerrá la zona.';
       case _ModoEdicion.lugares:
-        return 'Tocá el mapa para agregar un lugar, escalera o ascensor. Arrastralo para moverlo; se edita desde la lista.';
+        return 'Tocá el mapa para agregar un lugar, escalera o ascensor. '
+            'Arrastralo para moverlo; se edita desde la lista.';
       case _ModoEdicion.escala:
-        final actual = 'Escala actual: ${_escalaX.toStringAsFixed(1)} m × ${_escalaY.toStringAsFixed(1)} m '
-            '(grilla ${_grilla.celdasX}×${_grilla.celdasY}).';
+        final actual =
+            'Escala actual: ${_decimal(_escalaX)} × ${_decimal(_escalaY)} m '
+            '(grilla de ${_grilla.celdasX} × ${_grilla.celdasY}).';
+        final largo = _largoMetros;
+        final textoLargo = largo == null ? '' : 'Largo: ${_decimal(largo)} m. ';
         switch (_puntosEscala.length) {
           case 0:
-            return '$actual Marcá el primer punto del LARGO.';
+            return '$actual Marcá el primer punto del largo.';
           case 1:
-            return '$actual Marcá el segundo punto del LARGO.';
+            return '$actual Marcá el segundo punto del largo.';
           case 2:
-            if (_largoMetros == null) {
-              return '$actual Acomodá los puntos y tocá "Medida del largo".';
+            if (largo == null) {
+              return '$actual Acomodá los puntos y tocá «Medida del largo».';
             }
-            return '$actual Largo: ${_largoMetros!.toStringAsFixed(1)} m. Marcá el tercer punto: el ANCHO va desde el segundo.';
+            return '$actual ${textoLargo}Marcá el tercer punto: el ancho va '
+                'desde el segundo.';
         }
         if (_anchoMetros == null) {
-          return '$actual Largo: ${_largoMetros?.toStringAsFixed(1)} m. Acomodá el tercer punto y tocá "Medida del ancho".';
+          return '$actual ${textoLargo}Acomodá el tercer punto y tocá «Medida '
+              'del ancho».';
         }
-        return '$actual Medición lista. Arrastrá los puntos para ajustar o "Reiniciar" para medir de nuevo.';
+        return '$actual Medición lista. Arrastrá los puntos para ajustar o '
+            '«Reiniciar» para medir de nuevo.';
       case _ModoEdicion.calibracion:
         if (_celdaCalSeleccionada == null) {
           return 'Tocá la celda donde estás parado.';
         }
         final c = _celdaCalSeleccionada!;
-        return 'Celda (${c.ix},${c.iy}). Tomá la calibración desde el panel de abajo.';
+        return 'Celda (${c.ix}, ${c.iy}). Tomá la calibración acá abajo.';
       case _ModoEdicion.brujula:
-        return 'Apuntá el teléfono hacia el "arriba" del plano y tocá "Usar la dirección actual".';
+        return 'Apuntá el teléfono hacia el «arriba» del plano y tocá «Usar la '
+            'dirección actual».';
     }
   }
 
   @override
   Widget build(BuildContext context) {
     // Los más fuertes primero (ver _potenciaDe).
-    final dispositivosVisibles = _dispositivosCercanos
-        .where(_coincideFiltro)
-        .toList()
-      ..sort((a, b) => _potenciaDe(b).compareTo(_potenciaDe(a)));
-    final filtroActivo = _filtroActivo;
+    final dispositivosVisibles =
+        _dispositivosCercanos.where(_coincideFiltro).toList()
+          ..sort((a, b) => _potenciaDe(b).compareTo(_potenciaDe(a)));
 
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        appBar: AppBar(
-          title: const Text('Configuración de Piso'),
-          actions: [
-            if (_publicando)
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 18),
-                child: Center(
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.4,
-                      color: TemaApp.acento,
-                    ),
+    return AmbienteDiseno(
+      child: Builder(
+        builder: (context) {
+          final e = EstiloApp.de(context);
+          return Scaffold(
+            backgroundColor: e.fondo,
+            appBar: BarraSuperior(
+              titulo: 'Configuración del piso',
+              acciones: [
+                if (_remoteIdPublicado != null)
+                  AccionBarra(
+                    icono: Icons.cloud_off_rounded,
+                    etiqueta: 'Eliminar el mapa de la nube',
+                    alPresionar: _publicando ? null : _eliminarMapaPublicado,
                   ),
+                AccionBarra(
+                  icono: Icons.cloud_upload_rounded,
+                  etiqueta: 'Publicar el mapa en la nube',
+                  alPresionar: _publicando ? null : _publicarPiso,
                 ),
-              )
-            else ...[
-              if (_remoteIdPublicado != null)
-                IconButton(
-                  onPressed: _eliminarMapaPublicado,
-                  icon: const Icon(Icons.cloud_off_rounded),
-                  tooltip: 'Eliminar mapa de la nube',
-                ),
-              IconButton(
-                onPressed: _publicarPiso,
-                icon: const Icon(Icons.cloud_upload_rounded),
-                tooltip: 'Publicar mapa a la nube',
-              ),
-            ],
-          ],
-        ),
-        body: Column(
-        children: [
-          // Selector de modo
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 10, 10, 0),
-            // Scroll horizontal: con 5 modos los segmentos no entran en pantallas
-            // angostas. Permite desplazarlos en lugar de provocar overflow.
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SegmentedButton<_ModoEdicion>(
-                segments: const [
-                  ButtonSegment(
-                    value: _ModoEdicion.beacons,
-                    icon: Icon(Icons.router),
-                    label: Text('Beacons'),
-                  ),
-                  ButtonSegment(
-                    value: _ModoEdicion.zonas,
-                    icon: Icon(Icons.block),
-                    label: Text('Zonas'),
-                  ),
-                  ButtonSegment(
-                    value: _ModoEdicion.lugares,
-                    icon: Icon(Icons.place),
-                    label: Text('Lugares'),
-                  ),
-                  ButtonSegment(
-                    value: _ModoEdicion.escala,
-                    icon: Icon(Icons.straighten),
-                    label: Text('Escala'),
-                  ),
-                  ButtonSegment(
-                    value: _ModoEdicion.calibracion,
-                    icon: Icon(Icons.gps_fixed),
-                    label: Text('Calibrar'),
-                  ),
-                  ButtonSegment(
-                    value: _ModoEdicion.brujula,
-                    icon: Icon(Icons.explore),
-                    label: Text('Brújula'),
-                  ),
-                ],
-                selected: {_modo},
-                onSelectionChanged: (s) {
-                  if (!mounted) return;
-                  final nuevoModo = s.first;
-                  // Detener brújula si salimos del modo brujula.
-                  // La brujula hace falta en el modo brujula Y en calibracion
-                  // (los puntos clave guardan el rumbo de captura), asi que solo
-                  // se apaga al salir hacia un modo que no la usa.
-                  const usanBrujula = {
-                    _ModoEdicion.brujula,
-                    _ModoEdicion.calibracion,
-                  };
-                  if (usanBrujula.contains(_modo) &&
-                      !usanBrujula.contains(nuevoModo)) {
-                    _detenerCompass();
-                  }
-                  // Al salir del modo calibración: liberar el anclado de posición.
-                  if (_modo == _ModoEdicion.calibracion && nuevoModo != _ModoEdicion.calibracion) {
-                    _celdaCalSeleccionada = null;
-                    _posicionUsuario = null;
-                    _tomandoMuestras = false;
-                    _acumCal.clear();
-                    _muestrasAcumuladas = 0;
-                  }
-                  setState(() {
-                    _modo = nuevoModo;
-                    _modoBorrar = false;
-                    // Gesto de arrastre que hubiera quedado a medias.
-                    _beaconArrastrado = null;
-                    _beaconEnMovimiento = false;
-                    _beaconTocado = null;
-                    _inicioAgarreBeacon = null;
-                    _lugarArrastrado = null;
-                    _lugarEnMovimiento = false;
-                    _lugarTocado = null;
-                    _inicioAgarreLugar = null;
-                    _verticesEnCurso = [];
-                    _seleccionado = null;
-                    // Reiniciar la medición de escala al cambiar de modo.
-                    _puntosEscala.clear();
-                    _largoMetros = null;
-                    _anchoMetros = null;
-                    _puntoArrastrado = null;
-                    _puntoEscalaReciente = false;
-                    _verticeArrastrado = null;
-                    _verticeReciente = false;
-                    _limpiarGuias();
-                  });
-                  // Las lecturas en vivo de calibración necesitan el escáner activo.
-                  if (nuevoModo == _ModoEdicion.calibracion) {
-                    _asegurarEscaneando();
-                    _iniciarCompass();
-                  }
-                  // Iniciar brújula en vivo al entrar al modo brujula.
-                  if (nuevoModo == _ModoEdicion.brujula) {
-                    _iniciarCompass();
-                  }
-                },
-              ),
+              ],
             ),
-          ),
-
-          // Hint contextual
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: Text(
-              _hintTexto(),
-              style: TextStyle(
-                fontSize: 12,
-                color: _borrando
-                    ? TemaApp.zonaRestringidaBorde
-                    : Colors.grey[600],
-                fontWeight: _borrando ? FontWeight.w600 : FontWeight.normal,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ),
-
-          // Asistente de trazo: solo tiene sentido donde se dibujan líneas.
-          if (_modo == _ModoEdicion.escala || _modo == _ModoEdicion.zonas)
-            SizedBox(
-              // Alto acotado: el body es un Column con un Expanded abajo y el
-              // mapa ocupa 380 px fijos, así que esta fila tiene que sumar lo
-              // mínimo para no desbordar en pantallas chicas.
-              height: 36,
-              child: Padding(
-              padding: const EdgeInsets.only(left: 12, right: 4),
-              child: Row(
+            body: SafeArea(
+              top: false,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Icon(
-                    Icons.architecture,
-                    size: 18,
-                    color: _asistenteRecto
-                        ? TemaApp.guiaAlineacion
-                        : TemaApp.textoSecundario,
-                  ),
-                  const SizedBox(width: 6),
+                  _selectorModo(),
                   Expanded(
-                    child: Text(
-                      _modo == _ModoEdicion.zonas
-                          ? 'Líneas rectas: imanta a 0°, 45° y 90°'
-                          : 'Líneas rectas: imanta a 0° y 90°',
-                      style: const TextStyle(fontSize: 12),
+                    child: LayoutBuilder(
+                      builder: (context, restricciones) {
+                        final alto = restricciones.maxHeight;
+                        final altoPlano = min(
+                          alto,
+                          (alto - _altoPanelMinimo).clamp(
+                            _altoPlanoMinimo,
+                            _altoPlano,
+                          ),
+                        );
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            SizedBox(
+                              height: altoPlano,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: EspaciadoApp.margenLateral,
+                                ),
+                                child: _plano(e),
+                              ),
+                            ),
+                            Expanded(
+                              child: _panel(context, e, dispositivosVisibles),
+                            ),
+                          ],
+                        );
+                      },
                     ),
-                  ),
-                  Switch(
-                    value: _asistenteRecto,
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    onChanged: (v) {
-                      if (!mounted) return;
-                      setState(() {
-                        _asistenteRecto = v;
-                        _limpiarGuias();
-                      });
-                    },
                   ),
                 ],
               ),
-              ),
             ),
+          );
+        },
+      ),
+    );
+  }
 
-          // Mapa
-          SizedBox(
-            height: 380,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                LayoutBuilder(builder: (context, restricciones) {
+  /// Los seis modos, en una fila de chips que se desplaza de costado: elegido,
+  /// en acento con la tilde. TalkBack los lee como opciones de las que se
+  /// elige una.
+  Widget _selectorModo() {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      // Sin recorte: las sombras de los chips no se cortan arriba ni abajo.
+      clipBehavior: Clip.none,
+      padding: const EdgeInsets.fromLTRB(
+        EspaciadoApp.margenLateral,
+        EspaciadoApp.minimo,
+        EspaciadoApp.margenLateral,
+        EspaciadoApp.medio,
+      ),
+      child: Row(
+        children: [
+          for (final (i, m) in _modos.indexed) ...[
+            if (i > 0) const SizedBox(width: EspaciadoApp.chico),
+            ChipFiltro(
+              key: _clavesChipModo[m.modo],
+              texto: m.texto,
+              exclusivo: true,
+              seleccionado: _modo == m.modo,
+              alCambiar: (_) => _cambiarModo(m.modo),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// El plano, hundido: la sombra interior y el borde van encima de la
+  /// imagen. En el modo borrar, el borde pasa al rojo de 2 px (antes, un
+  /// marco rojo encima), que deja a la vista el modo aunque no se mire el
+  /// botón.
+  Widget _plano(EstiloApp e) {
+    final borrando = _borrando;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // Para TalkBack, el plano tiene nombre (antes, un área que se tocaba
+        // sin nombre); los nombres de los lugares de adentro se leen con él.
+        Semantics(
+          container: true,
+          label: 'Plano del piso',
+          child: PanelRelieve(
+            hundido: true,
+            sombraEncima: true,
+            relleno: EdgeInsets.zero,
+            borde: BorderSide(
+              color: borrando ? e.error : e.borde,
+              width: borrando ? FormasApp.grosorFoco : FormasApp.grosorLinea,
+            ),
+            child: LayoutBuilder(
+              builder: (context, restricciones) {
                 _tamVisor = restricciones.biggest;
                 return InteractiveViewer(
                   transformationController: _transformMapa,
                   maxScale: _zoomMaximo,
-                  // En escala y en zonas, UN dedo dibuja o arrastra puntos, así
-                  // que se desactiva el pan de un dedo; el zoom de dos dedos
-                  // queda siempre activo (al apoyar el segundo dedo el gesto en
-                  // curso se cancela y el InteractiveViewer hace zoom).
-                  // En escala, zonas y beacons UN dedo dibuja/arrastra puntos,
-                  // así que se desactiva el pan de un dedo; el zoom de dos dedos
-                  // queda siempre activo.
+                  // En escala, zonas, beacons y lugares UN dedo dibuja o
+                  // arrastra puntos, así que se desactiva el pan de un dedo; el
+                  // zoom de dos dedos queda siempre activo (al apoyar el segundo
+                  // dedo el gesto en curso se cancela y el InteractiveViewer
+                  // hace zoom).
                   // En modo borrar nadie dibuja ni arrastra, así que un dedo
                   // vuelve a desplazar el mapa.
-                  panEnabled: _borrando ||
+                  panEnabled:
+                      _borrando ||
                       (_modo != _ModoEdicion.escala &&
                           _modo != _ModoEdicion.zonas &&
                           _modo != _ModoEdicion.beacons &&
@@ -2635,7 +2535,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     // arrastre (apoyar y corregir el vértice en un solo gesto).
                     // En modo borrar no se agrega nada: el toque sobre el
                     // plano vacío no hace nada.
-                    onTapMapa: _borrando ||
+                    onTapMapa:
+                        _borrando ||
                             _modo == _ModoEdicion.zonas ||
                             _modo == _ModoEdicion.escala
                         ? null
@@ -2660,8 +2561,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                         ? _onAgarreLugar
                         : null,
                     verticesEnCurso: _verticesEnCurso,
-                    verticeArrastrado:
-                        _modo == _ModoEdicion.zonas ? _verticeArrastrado : null,
+                    verticeArrastrado: _modo == _ModoEdicion.zonas
+                        ? _verticeArrastrado
+                        : null,
                     // Guías del asistente de trazo (magenta punteado).
                     guias: _guias,
                     guiaPunto: _guiaPunto,
@@ -2669,7 +2571,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     // Copia nueva en cada build: el painter compara por
                     // referencia, así que al mover un punto (mutación in-place)
                     // esta copia fuerza el repintado en cada frame del arrastre.
-                    puntosMedicion: _modo == _ModoEdicion.escala ? List.of(_puntosEscala) : const [],
+                    puntosMedicion: _modo == _ModoEdicion.escala
+                        ? List.of(_puntosEscala)
+                        : const [],
                     // Gestos de un dedo: la medición de escala y la edición de
                     // vértices de zonas comparten el mismo canal.
                     // (En modo borrar no hay arrastres: los cuatro quedan
@@ -2679,867 +2583,959 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                         : _modo == _ModoEdicion.escala
                         ? _onArrastreInicio
                         : _modo == _ModoEdicion.zonas
-                            ? _onArrastreInicioZona
-                            : _modo == _ModoEdicion.beacons
-                                ? _onArrastreInicioBeacon
-                                : _modo == _ModoEdicion.lugares
-                                    ? _onArrastreInicioLugar
-                                    : null,
+                        ? _onArrastreInicioZona
+                        : _modo == _ModoEdicion.beacons
+                        ? _onArrastreInicioBeacon
+                        : _modo == _ModoEdicion.lugares
+                        ? _onArrastreInicioLugar
+                        : null,
                     onArrastreActualizar: _borrando
                         ? null
                         : _modo == _ModoEdicion.escala
                         ? _onArrastreActualizar
                         : _modo == _ModoEdicion.zonas
-                            ? _onArrastreActualizarZona
-                            : _modo == _ModoEdicion.beacons
-                                ? _onArrastreActualizarBeacon
-                                : _modo == _ModoEdicion.lugares
-                                    ? _onArrastreActualizarLugar
-                                    : null,
+                        ? _onArrastreActualizarZona
+                        : _modo == _ModoEdicion.beacons
+                        ? _onArrastreActualizarBeacon
+                        : _modo == _ModoEdicion.lugares
+                        ? _onArrastreActualizarLugar
+                        : null,
                     onArrastreFin: _borrando
                         ? null
                         : _modo == _ModoEdicion.escala
                         ? _onArrastreFin
                         : _modo == _ModoEdicion.zonas
-                            ? _onArrastreFinZona
-                            : _modo == _ModoEdicion.beacons
-                                ? _onArrastreFinBeacon
-                                : _modo == _ModoEdicion.lugares
-                                    ? _onArrastreFinLugar
-                                    : null,
+                        ? _onArrastreFinZona
+                        : _modo == _ModoEdicion.beacons
+                        ? _onArrastreFinBeacon
+                        : _modo == _ModoEdicion.lugares
+                        ? _onArrastreFinLugar
+                        : null,
                     onArrastreCancelar: _borrando
                         ? null
                         : _modo == _ModoEdicion.escala
                         ? _onArrastreCancelar
                         : _modo == _ModoEdicion.zonas
-                            ? _onArrastreCancelarZona
-                            : _modo == _ModoEdicion.beacons
-                                ? _onArrastreCancelarBeacon
-                                : _modo == _ModoEdicion.lugares
-                                    ? _onArrastreCancelarLugar
-                                    : null,
+                        ? _onArrastreCancelarZona
+                        : _modo == _ModoEdicion.beacons
+                        ? _onArrastreCancelarBeacon
+                        : _modo == _ModoEdicion.lugares
+                        ? _onArrastreCancelarLugar
+                        : null,
                     // Se resaltan recién cuando el dedo se movió de verdad:
                     // un toque al lado de un marcador no lo "agarra" a la vista.
                     beaconArrastrado:
                         _modo == _ModoEdicion.beacons && _beaconEnMovimiento
-                            ? _beaconArrastrado
-                            : null,
+                        ? _beaconArrastrado
+                        : null,
                     lugarArrastrado:
                         _modo == _ModoEdicion.lugares && _lugarEnMovimiento
-                            ? _lugarArrastrado
-                            : null,
-                    // Calibración: celda seleccionada (amarillo) + pines de celdas calibradas.
-                    celdaResaltada: _modo == _ModoEdicion.calibracion && _celdaCalSeleccionada != null
-                        ? Offset(_grilla.centroX(_celdaCalSeleccionada!.ix),
-                            _grilla.centroY(_celdaCalSeleccionada!.iy))
+                        ? _lugarArrastrado
+                        : null,
+                    // Calibración: celda seleccionada (amarillo) + pines de
+                    // celdas calibradas.
+                    celdaResaltada:
+                        _modo == _ModoEdicion.calibracion &&
+                            _celdaCalSeleccionada != null
+                        ? Offset(
+                            _grilla.centroX(_celdaCalSeleccionada!.ix),
+                            _grilla.centroY(_celdaCalSeleccionada!.iy),
+                          )
                         : null,
                     celdasCalibradas: _modo == _ModoEdicion.calibracion
                         ? _calibraciones
-                            .map((c) => Offset(_grilla.centroX(c.celdaIx), _grilla.centroY(c.celdaIy)))
-                            .toList()
+                              .map(
+                                (c) => Offset(
+                                  _grilla.centroX(c.celdaIx),
+                                  _grilla.centroY(c.celdaIy),
+                                ),
+                              )
+                              .toList()
                         : const [],
                   ),
                 );
-                }),
-                    // Marco rojo: deja a la vista que el mapa está en modo
-                    // borrar aunque no se esté mirando el botón.
-                    if (_borrando)
-                      IgnorePointer(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: TemaApp.zonaRestringidaBorde,
-                              width: 3,
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (_modoAdmiteBorrar)
-                      Positioned(
-                        top: 8,
-                        right: 8,
-                        child: _buildBotonBorrar(),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          // Botones de accion para zonas
-          if (_modo == _ModoEdicion.zonas)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              child: Row(
-                children: [
-                  // Deshacer el último punto: ahora cualquier toque sobre el
-                  // plano crea un vértice, así que hace falta una forma de
-                  // sacar uno solo sin descartar la zona entera.
-                  IconButton(
-                    onPressed: _verticesEnCurso.isNotEmpty ? _quitarUltimoVertice : null,
-                    icon: const Icon(Icons.undo),
-                    tooltip: 'Quitar último punto',
-                    color: Colors.orange,
-                  ),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _verticesEnCurso.isNotEmpty ? _descartarZonaEnCurso : null,
-                      icon: const Icon(Icons.delete_outline),
-                      label: const Text('Descartar'),
-                      style: OutlinedButton.styleFrom(foregroundColor: Colors.orange),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: _verticesEnCurso.length >= 3 ? _cerrarZona : null,
-                      icon: const Icon(Icons.check),
-                      label: const Text('Cerrar zona'),
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal[700]),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // Botones de accion para escala
-          if (_modo == _ModoEdicion.escala)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              child: Row(
-                children: [
-                  // Igual que en las zonas: deshacer sólo el último punto.
-                  IconButton(
-                    onPressed: _puntosEscala.isNotEmpty ? _quitarUltimoPuntoEscala : null,
-                    icon: const Icon(Icons.undo),
-                    tooltip: 'Quitar último punto',
-                    color: Colors.orange,
-                  ),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _puntosEscala.isNotEmpty ? _reiniciarMedicion : null,
-                      icon: const Icon(Icons.restart_alt),
-                      label: const Text('Reiniciar'),
-                      style: OutlinedButton.styleFrom(foregroundColor: Colors.orange),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: _faltaMedidaLargo || _faltaMedidaAncho
-                          ? _ponerMedidaEscala
-                          : null,
-                      icon: const Icon(Icons.straighten),
-                      label: Text(
-                        _medicionEscalaCompleta
-                            ? 'Escala lista'
-                            : _largoMetros == null
-                                ? 'Medida del largo'
-                                : 'Medida del ancho',
-                      ),
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal[700]),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // Selector de tamaño de celda de la grilla (0.5–1.0 m). Junto a los
-          // controles de escala porque define la resolución de la misma grilla.
-          if (_modo == _ModoEdicion.escala)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Tamaño de celda: ${_tamCelda.toStringAsFixed(1)} m '
-                    '(grilla ${_grilla.celdasX}×${_grilla.celdasY})',
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                  ),
-                  Slider(
-                    value: _tamCelda.clamp(0.5, 1.0),
-                    min: 0.5,
-                    max: 1.0,
-                    divisions: 5, // pasos de 0.1 m: 0.5, 0.6, … 1.0
-                    label: '${_tamCelda.toStringAsFixed(1)} m',
-                    onChanged: _cambiarTamCelda,
-                  ),
-                  Text(
-                    'Menor = más precisión en espacios chicos. Mayor = grilla más liviana.',
-                    style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-                  ),
-                ],
-              ),
-            ),
-
-          // Lista de dispositivos BLE
-          if (_modo == _ModoEdicion.beacons)
-            Expanded(
-              child: Column(
-                children: [
-                  ListTile(
-                    leading: Icon(
-                      _escaneando ? Icons.bluetooth_searching : Icons.bluetooth_disabled,
-                      color: _escaneando ? Colors.teal : Colors.grey,
-                    ),
-                    title: Text(_escaneando ? 'Buscando dispositivos...' : 'Escaner detenido'),
-                    trailing: ElevatedButton.icon(
-                      onPressed: _conmutarEscaner,
-                      icon: Icon(_escaneando ? Icons.stop : Icons.play_arrow),
-                      label: Text(_escaneando ? 'Detener' : 'Escanear'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _escaneando ? Colors.red : Colors.teal,
-                        foregroundColor: Colors.white,
-                      ),
-                    ),
-                  ),
-                  // Filtro por nombre y potencia. Mismo alto acotado que la
-                  // fila del asistente de trazo (que no aparece en este
-                  // modo), para no sumar altura al Column en pantallas chicas.
-                  SizedBox(
-                    height: 36,
-                    child: InkWell(
-                      onTap: _pedirFiltro,
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: 16, right: 4),
-                        child: Row(
-                          children: [
-                            Icon(
-                              filtroActivo ? Icons.filter_alt : Icons.search,
-                              size: 18,
-                              color: filtroActivo ? Colors.teal : TemaApp.textoSecundario,
-                            ),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                filtroActivo
-                                    ? [
-                                        if (_filtroNombre.isNotEmpty)
-                                          'Nombre contiene "$_filtroNombre"',
-                                        if (_potenciaMinima > _sinPotenciaMinima)
-                                          'desde $_potenciaMinima dBm',
-                                        '${dispositivosVisibles.length} de ${_dispositivosCercanos.length}',
-                                      ].join(' · ')
-                                    : 'Filtrar por nombre o potencia · más fuertes primero',
-                                style: const TextStyle(fontSize: 12),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            if (filtroActivo)
-                              IconButton(
-                                icon: const Icon(Icons.close, size: 18),
-                                tooltip: 'Quitar filtro',
-                                visualDensity: VisualDensity.compact,
-                                onPressed: () =>
-                                    _aplicarFiltro('', _sinPotenciaMinima),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: filtroActivo &&
-                            dispositivosVisibles.isEmpty &&
-                            _dispositivosCercanos.isNotEmpty
-                        ? const Center(
-                            child: Text(
-                              'Ningún dispositivo pasa el filtro',
-                              style: TextStyle(color: TemaApp.textoSecundario),
-                            ),
-                          )
-                        : ListView.builder(
-                      itemCount: dispositivosVisibles.length,
-                      itemBuilder: (context, i) {
-                        final d = dispositivosVisibles[i];
-                        final mac = d.device.remoteId.str;
-                        final yaUbicado = _beaconsEnElMapa.containsKey(mac);
-                        final seleccionado = _seleccionado == d;
-                        return ListTile(
-                          dense: true,
-                          leading: Icon(
-                            yaUbicado ? Icons.check_circle : Icons.bluetooth,
-                            color: yaUbicado ? Colors.green : (seleccionado ? Colors.teal : Colors.grey),
-                          ),
-                          title: Text(d.device.advName.isEmpty ? 'Dispositivo desconocido' : d.device.advName),
-                          subtitle: Text('MAC: $mac  |  RSSI: ${_potenciaDe(d)} dBm'),
-                          trailing: seleccionado
-                              ? const Icon(Icons.touch_app, color: Colors.teal)
-                              : null,
-                          onTap: yaUbicado
-                              ? null
-                              : () {
-                                  if (mounted) setState(() => _seleccionado = d);
-                                },
-                          tileColor: seleccionado ? Colors.teal.withValues(alpha: 0.1) : null,
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // Lista de lugares de interes
-          if (_modo == _ModoEdicion.lugares)
-            Expanded(
-              child: _lugares.isEmpty
-                  ? const Center(child: Text('No hay lugares de interes agregados'))
-                  : ListView.builder(
-                      itemCount: _lugares.length,
-                      itemBuilder: (context, i) {
-                        final l = _lugares[i];
-                        // Rubro y palabras propias, lo que haya.
-                        final rubro = Rubros.porId(l.rubro);
-                        final detalle = [
-                          if (rubro != null) 'Rubro: ${rubro.nombre}',
-                          if (l.palabrasClave.isNotEmpty)
-                            'Otras palabras: ${l.palabrasClave.join(', ')}',
-                        ].join('\n');
-                        return ListTile(
-                          dense: true,
-                          leading: Icon(
-                            !l.esEscalera
-                                ? Icons.place
-                                : (l.esAscensor ? Icons.elevator : Icons.stairs),
-                            color: l.esEscalera ? Colors.orange : Colors.purple,
-                          ),
-                          title: Text(l.nombre),
-                          subtitle: detalle.isEmpty ? null : Text(detalle),
-                          // Tocar la fila edita el lugar (nombre, rubro,
-                          // descripción, palabras propias).
-                          onTap: () => _editarLugar(l),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.edit, color: TemaApp.acento),
-                                tooltip: 'Editar',
-                                onPressed: () => _editarLugar(l),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.red),
-                                tooltip: 'Eliminar',
-                                onPressed: () => _borrarLugar(l),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-            ),
-
-          // Panel de calibración
-          if (_modo == _ModoEdicion.calibracion)
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (_celdaCalSeleccionada == null)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 16),
-                        child: Text(
-                          'Tocá una celda en el mapa para empezar a calibrar.',
-                          style: TextStyle(fontSize: 14),
-                        ),
-                      )
-                    else ...[
-                      Text(
-                        'Celda seleccionada: (${_celdaCalSeleccionada!.ix}, ${_celdaCalSeleccionada!.iy})',
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: _etiquetaCalCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Etiqueta (opcional)',
-                          hintText: 'Ej: Entrada, Pasillo norte',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Lecturas BLE actuales (${_beaconsEnElMapa.length} beacons):',
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 4),
-                      if (_beaconsEnElMapa.isEmpty)
-                        const Text('No hay beacons configurados en este piso.',
-                            style: TextStyle(fontSize: 12, color: Colors.grey))
-                      else
-                        ..._beaconsEnElMapa.values.map((b) {
-                          final valido = b.rssiFiltrado > -95 && b.rssiFiltrado < 0;
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 2),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  valido ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-                                  size: 16,
-                                  color: valido ? TemaApp.acento : TemaApp.textoSecundario,
-                                ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    '${b.nombre}  ·  ${b.mac}',
-                                    style: const TextStyle(fontSize: 12),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                Text(
-                                  '${b.rssiFiltrado.toStringAsFixed(0)} dBm',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    color: valido ? TemaApp.textoBlanco : TemaApp.textoSecundario,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          );
-                        }),
-                      const SizedBox(height: 12),
-
-                      // ── PUNTO CLAVE (fingerprint) ───────────────────────
-                      // Vive dentro del propio modo calibracion: un punto clave
-                      // ES una calibracion, solo que medida mas tiempo y
-                      // marcada para que ademas se use como patron en vivo.
-                      Container(
-                        decoration: BoxDecoration(
-                          color: _tomaEsFingerprint
-                              ? TemaApp.acentoSuave
-                              : TemaApp.fondoSurface,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: _tomaEsFingerprint
-                                ? TemaApp.acento.withValues(alpha: 0.5)
-                                : Colors.transparent,
-                          ),
-                        ),
-                        child: Column(
-                          children: [
-                            SwitchListTile(
-                              dense: true,
-                              value: _tomaEsFingerprint,
-                              onChanged: _tomandoMuestras
-                                  ? null
-                                  : (v) => setState(() => _tomaEsFingerprint = v),
-                              secondary: Icon(
-                                Icons.push_pin,
-                                color: _tomaEsFingerprint
-                                    ? TemaApp.acento
-                                    : TemaApp.textoSecundario,
-                              ),
-                              title: const Text(
-                                'Punto clave (fingerprint)',
-                                style: TextStyle(
-                                    fontWeight: FontWeight.w600, fontSize: 14),
-                              ),
-                              subtitle: Text(
-                                !_tomaEsFingerprint
-                                    ? 'Para esquinas donde se dobla, puertas o el pie de '
-                                        'una escalera.'
-                                    : _headingEnVivo == null
-                                        ? 'Medición de ${_duracionFingerprint.inSeconds} s. '
-                                            'Sin brújula: se guarda sin rumbo y es menos '
-                                            'preciso.'
-                                        : 'Medición de ${_duracionFingerprint.inSeconds} s. '
-                                            'Mirá hacia donde se llega caminando (ahora: '
-                                            '${_headingEnVivo!.toStringAsFixed(0)}°). Si se llega '
-                                            'desde dos lados, tomá uno por cada sentido.',
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-
-                      // ── Toma multi-muestra ──────────────────────────────
-                      if (_tomandoMuestras) ...[
-                        // Barra de progreso y botón cancelar
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _tomaEsFingerprint
-                                        ? 'Midiendo punto clave: '
-                                            '${(_progresoToma * _duracionTomaActual.inSeconds).round()}'
-                                            ' / ${_duracionTomaActual.inSeconds} s'
-                                        : 'Tomando muestras: '
-                                            '${(_progresoToma * _duracionTomaActual.inSeconds).round()}'
-                                            ' / ${_duracionTomaActual.inSeconds} s',
-                                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  LinearProgressIndicator(
-                                    value: _progresoToma,
-                                    backgroundColor: TemaApp.fondoSurface,
-                                    color: TemaApp.acento,
-                                    minHeight: 8,
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            TextButton.icon(
-                              onPressed: () {
-                                if (mounted) {
-                                  setState(() {
-                                    _tomandoMuestras = false;
-                                    _muestrasAcumuladas = 0;
-                                    _acumCal.clear();
-                                    _inicioToma = null;
-                                  });
-                                }
-                              },
-                              icon: const Icon(Icons.cancel_outlined, size: 18),
-                              label: const Text('Cancelar'),
-                              style: TextButton.styleFrom(foregroundColor: TemaApp.zonaRestringidaBorde),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          _tomaEsFingerprint
-                              ? 'No te muevas ni gires. Teléfono como para navegar, '
-                                  'mirando siempre hacia el mismo lado. '
-                                  '(${_rumboMedioToma == null ? "sin brújula" : "rumbo ${_rumboMedioToma!.toStringAsFixed(0)}°"}'
-                                  ' · $_muestrasAcumuladas lecturas)'
-                              : 'No te muevas de la celda. '
-                                  '($_muestrasAcumuladas lecturas)',
-                          style: const TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
-                        ),
-                      ] else ...[
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            onPressed: _escaneando ? _iniciarTomaCalibracion : null,
-                            icon: Icon(_tomaEsFingerprint
-                                ? Icons.push_pin
-                                : Icons.add_location_alt),
-                            label: Text(
-                              !_escaneando
-                                  ? 'Activá el escáner primero'
-                                  : _tomaEsFingerprint
-                                      ? 'Medir punto clave '
-                                          '(${_duracionFingerprint.inSeconds} s)'
-                                      : 'Iniciar toma de calibración '
-                                          '(${_duracionCalibracion.inSeconds} s)',
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                    const Divider(height: 24),
-                    ExpansionTile(
-                      tilePadding: EdgeInsets.zero,
-                      title: Text(
-                        'Calibraciones guardadas (${_calibraciones.length})',
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      children: _calibraciones.isEmpty
-                          ? [
-                              const ListTile(
-                                dense: true,
-                                title: Text('Todavía no hay calibraciones.'),
-                              )
-                            ]
-                          : <Widget>[
-                              ListTile(
-                                dense: true,
-                                leading: const Icon(Icons.cleaning_services,
-                                    color: TemaApp.textoSecundario),
-                                title: const Text('Quitar duplicados',
-                                    style: TextStyle(fontSize: 14)),
-                                subtitle: const Text(
-                                  'Borra las copias idénticas de una misma toma.',
-                                  style: TextStyle(fontSize: 11),
-                                ),
-                                onTap: _limpiarCalibracionesDuplicadas,
-                              ),
-                              ListTile(
-                                dense: true,
-                                leading: const Icon(Icons.delete_sweep,
-                                    color: Colors.red),
-                                title: const Text('Borrar todas',
-                                    style: TextStyle(fontSize: 14)),
-                                subtitle: const Text(
-                                  'Calibraciones y puntos clave del piso. '
-                                  'Si se movió o cambió un beacon.',
-                                  style: TextStyle(fontSize: 11),
-                                ),
-                                onTap: _eliminarTodasLasCalibraciones,
-                              ),
-                              const Divider(height: 1),
-                            ] + _calibraciones.map((c) {
-                              return ListTile(
-                                dense: true,
-                                leading: Icon(
-                                  c.esFingerprint
-                                      ? Icons.push_pin
-                                      : Icons.check_circle,
-                                  color: c.esFingerprint
-                                      ? TemaApp.acento
-                                      : Colors.green,
-                                ),
-                                title: Text(c.etiqueta ?? 'Celda (${c.celdaIx},${c.celdaIy})'),
-                                subtitle: Text(
-                                    '${c.esFingerprint ? "PUNTO CLAVE · " : ""}'
-                                    '${c.esFingerprint && c.rumboCaptura != null ? "rumbo ${c.rumboCaptura!.toStringAsFixed(0)}° · " : ""}'
-                                    '${c.esFingerprint && c.rumboCaptura == null ? "sin rumbo · " : ""}'
-                                    '${c.lecturasBle.length} beacons · ${_formatearTimestamp(c.timestamp)}'),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.delete, color: Colors.red),
-                                  onPressed: () => _eliminarCalibracion(c),
-                                ),
-                              );
-                            }).toList(),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-          // ── Panel de calibración de brújula ────────────────────────────────
-          if (_modo == _ModoEdicion.brujula)
-            Expanded(
-              child: _buildPanelBrujula(),
-            ),
-        ],
-      ),
-    ),
-    );
-  }
-
-  /// Panel para calibrar la rotación del mapa respecto al norte real.
-  ///
-  /// El operador apunta el teléfono hacia lo que en el plano es "arriba" y
-  /// toca "Usar la dirección actual": se promedia el heading unos segundos y
-  /// ese es el offset. El slider y los presets quedan para ajustar a mano.
-  /// Todo se guarda solo. El valor guardado (rotacion_mapa, en grados) es el
-  /// offset que PantallaNavegacion resta al heading de FlutterCompass para
-  /// alinear la brújula con el plano.
-  Widget _buildPanelBrujula() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Instrucción
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: TemaApp.acentoSuave,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: TemaApp.acento.withValues(alpha: 0.4)),
-            ),
-            child: const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(children: [
-                  Icon(Icons.info_outline, color: TemaApp.acento, size: 18),
-                  SizedBox(width: 8),
-                  Text('Cómo calibrar', style: TextStyle(color: TemaApp.acento, fontWeight: FontWeight.w700, fontSize: 15)),
-                ]),
-                SizedBox(height: 6),
-                Text(
-                  '1. Si la precisión no es alta, hacé un 8 en el aire.\n'
-                  '2. Apuntá el borde superior del teléfono hacia el "arriba" del plano.\n'
-                  '3. Tocá "Usar la dirección actual" y quedate quieto 2 s.\n'
-                  'Se guarda solo. El ajuste fino va con el slider.',
-                  style: TextStyle(color: TemaApp.textoBlanco, fontSize: 14, height: 1.5),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-
-          // Visualizador de flecha en vivo
-          Center(
-            child: Column(
-              children: [
-                Container(
-                  width: 140, height: 140,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: TemaApp.fondoSurface,
-                    border: Border.all(color: TemaApp.acento.withValues(alpha: 0.4), width: 2),
-                  ),
-                  child: Center(
-                    child: _headingEnVivo == null
-                        ? Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const SizedBox(
-                                width: 28, height: 28,
-                                child: CircularProgressIndicator(strokeWidth: 2.5, color: TemaApp.acento),
-                              ),
-                              const SizedBox(height: 8),
-                              const Text('Esperando\nbrújula...', textAlign: TextAlign.center,
-                                  style: TextStyle(color: TemaApp.textoSecundario, fontSize: 12)),
-                            ],
-                          )
-                        : AnimatedRotation(
-                            // La flecha muestra el heading COMPENSADO: (heading_real - offset).
-                            // Cuando el offset esté bien calibrado, la flecha apuntará exactamente
-                            // hacia ARRIBA cuando el teléfono mire el borde superior del mapa.
-                            // Al mover el slider, la flecha se mueve en tiempo real → el operador
-                            // ajusta hasta que la flecha quede derecha con el teléfono apuntando
-                            // al borde superior del plano.
-                            turns: ((_headingEnVivo! - _rotacionMapa) % 360 + 360) % 360 / 360,
-                            duration: const Duration(milliseconds: 200),
-                            child: const Icon(Icons.navigation, color: TemaApp.acento, size: 80),
-                          ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _headingEnVivo != null
-                      ? 'Norte magnético: ${_headingEnVivo!.toStringAsFixed(0)}°  |  Offset actual: ${_rotacionMapa.toStringAsFixed(0)}°'
-                      : 'Sin señal de brújula',
-                  style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 13),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          _indicadorPrecisionBrujula(),
-          const SizedBox(height: 16),
-
-          // Toma promediada del rumbo: la forma principal de calibrar.
-          SizedBox(
-            width: double.infinity,
-            height: TemaApp.targetTactil,
-            child: ElevatedButton.icon(
-              onPressed: _headingEnVivo == null || _tomaRumbo != null
-                  ? null
-                  : _tomarDireccionActual,
-              icon: _tomaRumbo != null
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2.4, color: TemaApp.fondo),
-                    )
-                  : const Icon(Icons.my_location_rounded),
-              label: Text(_tomaRumbo != null
-                  ? 'Midiendo… quedate quieto'
-                  : 'Usar la dirección actual'),
-            ),
-          ),
-          const SizedBox(height: 24),
-
-          // Slider de offset: ajuste fino. Se guarda al soltarlo.
-          Text(
-            'Ajuste fino: ${_rotacionMapa.toStringAsFixed(0)}°',
-            style: const TextStyle(color: TemaApp.textoBlanco, fontSize: 16, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '0° = Norte arriba · 90° = Este arriba · 180° = Sur arriba · 270° = Oeste arriba',
-            style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 12),
-          ),
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              activeTrackColor: TemaApp.acento,
-              thumbColor: TemaApp.acento,
-              inactiveTrackColor: TemaApp.fondoSurface,
-              overlayColor: TemaApp.acento.withValues(alpha: 0.15),
-              valueIndicatorColor: TemaApp.acento,
-              valueIndicatorTextStyle: const TextStyle(color: TemaApp.fondo, fontWeight: FontWeight.bold),
-            ),
-            child: Slider(
-              value: _rotacionMapa.clamp(0.0, 359.0),
-              min: 0,
-              max: 359,
-              divisions: 359,
-              label: '${_rotacionMapa.toStringAsFixed(0)}°',
-              onChanged: (v) {
-                if (mounted) setState(() => _rotacionMapa = v.roundToDouble());
               },
-              onChangeEnd: _fijarRotacion,
             ),
           ),
+        ),
+        if (_publicando)
+          Positioned(
+            top: EspaciadoApp.chico,
+            left: EspaciadoApp.chico,
+            child: _estadoNube(),
+          ),
+        if (_modoAdmiteBorrar)
+          Positioned(
+            top: EspaciadoApp.chico,
+            right: EspaciadoApp.chico,
+            child: _botonBorrar(),
+          ),
+      ],
+    );
+  }
 
-          // Botones de presets rápidos
-          const SizedBox(height: 4),
-          Wrap(
-            spacing: 8, runSpacing: 8,
-            children: [
-              for (final preset in [
-                (label: 'Norte (0°)', valor: 0.0),
-                (label: 'Este (90°)', valor: 90.0),
-                (label: 'Sur (180°)', valor: 180.0),
-                (label: 'Oeste (270°)', valor: 270.0),
-              ])
-                OutlinedButton(
-                  onPressed: () => _fijarRotacion(preset.valor),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: TemaApp.acento,
-                    side: BorderSide(color: TemaApp.acento.withValues(alpha: 0.5)),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    minimumSize: Size.zero,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                  child: Text(preset.label, style: const TextStyle(fontSize: 13)),
-                ),
-            ],
+  /// Mientras se publica o se elimina de la nube: un chip quieto (sin nada
+  /// que gire) sobre el plano, que TalkBack anuncia.
+  Widget _estadoNube() => Semantics(
+    container: true,
+    liveRegion: true,
+    child: ChipApp(
+      texto: _eliminandoDeLaNube ? 'Eliminando de la nube…' : 'Publicando…',
+      icono: _eliminandoDeLaNube
+          ? Icons.cloud_off_rounded
+          : Icons.cloud_upload_rounded,
+    ),
+  );
+
+  /// Botón sobre el plano que entra y sale del modo borrar: "Borrar" con el
+  /// tacho en rojo y, adentro del modo, "Listo". TalkBack lo lee como un
+  /// interruptor, con los nombres de antes.
+  Widget _botonBorrar() {
+    // Con una zona a medio dibujar no se entra a borrar: primero hay que
+    // cerrarla o descartarla, para no perder los puntos marcados.
+    final bloqueado =
+        !_modoBorrar &&
+        _modo == _ModoEdicion.zonas &&
+        _verticesEnCurso.isNotEmpty;
+    final activo = _borrando;
+    return MergeSemantics(
+      child: Semantics(
+        toggled: activo,
+        child: BotonSecundario(
+          texto: activo ? 'Listo' : 'Borrar',
+          icono: activo ? Icons.check_rounded : Icons.delete_rounded,
+          destructivo: !activo,
+          compacto: true,
+          etiquetaSemantica: activo
+              ? 'Salir del modo borrar'
+              : 'Entrar al modo borrar',
+          alPresionar: bloqueado ? null : _conmutarModoBorrar,
+        ),
+      ),
+    );
+  }
+
+  /// El panel de abajo del plano: la ayuda y lo del modo, con su propio
+  /// desplazamiento. Cada modo arranca arriba de todo.
+  Widget _panel(
+    BuildContext context,
+    EstiloApp e,
+    List<ScanResult> dispositivosVisibles,
+  ) {
+    return CustomScrollView(
+      key: ValueKey<_ModoEdicion>(_modo),
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(
+            EspaciadoApp.margenLateral,
+            EspaciadoApp.margenLateral,
+            EspaciadoApp.margenLateral,
+            0,
+          ),
+          sliver: SliverToBoxAdapter(child: _ayuda(context, e)),
+        ),
+        ...switch (_modo) {
+          _ModoEdicion.beacons => _sliversBeacons(
+            context,
+            e,
+            dispositivosVisibles,
+          ),
+          _ModoEdicion.lugares => _sliversLugares(),
+          _ModoEdicion.zonas => [_bloque(_controlesZonas())],
+          _ModoEdicion.escala => [_bloque(_controlesEscala())],
+          _ModoEdicion.calibracion => [_bloque(_contenidoCalibracion(e))],
+          _ModoEdicion.brujula => [_bloque(_contenidoBrujula(e))],
+        },
+        const SliverToBoxAdapter(
+          child: SizedBox(height: EspaciadoApp.entreSecciones),
+        ),
+      ],
+    );
+  }
+
+  /// Una columna de controles del panel, con los márgenes de la pantalla.
+  Widget _bloque(List<Widget> hijos) => SliverPadding(
+    padding: const EdgeInsets.symmetric(horizontal: EspaciadoApp.margenLateral),
+    sliver: SliverList.list(children: hijos),
+  );
+
+  /// La ayuda del modo, con un ícono; en el modo borrar, en rojo (5,94 sobre
+  /// el fondo) y con el tacho.
+  Widget _ayuda(BuildContext context, EstiloApp e) {
+    final borrando = _borrando;
+    final color = borrando ? e.error : e.textoSecundario;
+    const estilo = TipografiaApp.subtitulo;
+    // El ícono, centrado en el primer renglón, crezca o no la letra.
+    final renglon =
+        MediaQuery.textScalerOf(context).scale(estilo.fontSize!) *
+        estilo.height!;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: EdgeInsets.only(
+            top: max(0, (renglon - FormasApp.iconoChico) / 2),
+          ),
+          child: ExcludeSemantics(
+            child: Icon(
+              borrando ? Icons.delete_rounded : Icons.info_outline_rounded,
+              size: FormasApp.iconoChico,
+              color: color,
+            ),
+          ),
+        ),
+        const SizedBox(width: EspaciadoApp.chico),
+        Expanded(
+          child: Text(_hintTexto(), style: estilo.copyWith(color: color)),
+        ),
+      ],
+    );
+  }
+
+  // ─── Zonas y escala ───────────────────────────────────────────────────────
+
+  /// El asistente de trazo: sólo tiene sentido donde se dibujan líneas.
+  Widget _interruptorLineasRectas() => GrupoFilas(
+    filas: [
+      FilaGrupo.interruptor(
+        titulo: 'Líneas rectas',
+        subtitulo: _modo == _ModoEdicion.zonas
+            ? 'Imanta a 0°, 45° y 90°'
+            : 'Imanta a 0° y 90°',
+        icono: Icons.architecture_rounded,
+        valor: _asistenteRecto,
+        alCambiar: (v) {
+          if (!mounted) return;
+          setState(() {
+            _asistenteRecto = v;
+            _limpiarGuias();
+          });
+        },
+      ),
+    ],
+  );
+
+  /// Deshacer el último punto (un botón redondo) y los botones del modo, del
+  /// mismo ancho (o apilados, si no entran).
+  Widget _filaAcciones({
+    required Widget deshacer,
+    required List<Widget> botones,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // El botón redondo (48) a la altura de los de 52.
+        Padding(padding: const EdgeInsets.only(top: 2), child: deshacer),
+        const SizedBox(width: EspaciadoApp.medio),
+        Expanded(child: FilaBotones(children: botones)),
+      ],
+    );
+  }
+
+  List<Widget> _controlesZonas() => [
+    const SizedBox(height: EspaciadoApp.entreSecciones),
+    _interruptorLineasRectas(),
+    const SizedBox(height: EspaciadoApp.margenLateral),
+    _filaAcciones(
+      // Deshacer el último punto: cualquier toque sobre el plano crea un
+      // vértice, así que hace falta una forma de sacar uno solo sin
+      // descartar la zona entera.
+      deshacer: BotonRedondo(
+        icono: Icons.undo_rounded,
+        etiqueta: 'Quitar el último punto',
+        alPresionar: _verticesEnCurso.isNotEmpty ? _quitarUltimoVertice : null,
+      ),
+      botones: [
+        BotonSecundario(
+          texto: 'Descartar',
+          icono: Icons.delete_rounded,
+          destructivo: true,
+          alPresionar: _verticesEnCurso.isNotEmpty
+              ? _descartarZonaEnCurso
+              : null,
+        ),
+        BotonPrincipal(
+          texto: 'Cerrar zona',
+          icono: Icons.check_rounded,
+          expandido: false,
+          alPresionar: _verticesEnCurso.length >= 3 ? _cerrarZona : null,
+        ),
+      ],
+    ),
+  ];
+
+  List<Widget> _controlesEscala() => [
+    const SizedBox(height: EspaciadoApp.entreSecciones),
+    _interruptorLineasRectas(),
+    const SizedBox(height: EspaciadoApp.margenLateral),
+    _filaAcciones(
+      // Igual que en las zonas: deshacer sólo el último punto.
+      deshacer: BotonRedondo(
+        icono: Icons.undo_rounded,
+        etiqueta: 'Quitar el último punto',
+        alPresionar: _puntosEscala.isNotEmpty ? _quitarUltimoPuntoEscala : null,
+      ),
+      botones: [
+        BotonSecundario(
+          texto: 'Reiniciar',
+          icono: Icons.restart_alt_rounded,
+          alPresionar: _puntosEscala.isNotEmpty ? _reiniciarMedicion : null,
+        ),
+        BotonPrincipal(
+          texto: _medicionEscalaCompleta
+              ? 'Escala lista'
+              : _largoMetros == null
+              ? 'Medida del largo'
+              : 'Medida del ancho',
+          icono: Icons.straighten_rounded,
+          expandido: false,
+          alPresionar: _faltaMedidaLargo || _faltaMedidaAncho
+              ? _ponerMedidaEscala
+              : null,
+        ),
+      ],
+    ),
+    const SizedBox(height: EspaciadoApp.entreSecciones),
+    // El tamaño de celda de la grilla (0,5 a 1 m): junto a la escala porque
+    // define la resolución de la misma grilla.
+    Deslizador(
+      etiqueta: 'Tamaño de celda',
+      valor: _tamCelda.clamp(0.5, 1.0),
+      min: 0.5,
+      max: 1.0,
+      divisiones: 5, // pasos de 0,1 m: 0,5, 0,6, … 1,0
+      formato: (v) => '${_decimal(v)} m',
+      formatoSemantico: (v) => '${_decimal(v)} metros',
+      ayuda:
+          'Grilla de ${_grilla.celdasX} × ${_grilla.celdasY}. Menor, más '
+          'precisión en espacios chicos; mayor, una grilla más liviana.',
+      alCambiar: _cambiarTamCelda,
+    ),
+  ];
+
+  // ─── Beacons ──────────────────────────────────────────────────────────────
+
+  List<Widget> _sliversBeacons(
+    BuildContext context,
+    EstiloApp e,
+    List<ScanResult> visibles,
+  ) {
+    final sinCoincidencias =
+        _filtroActivo && visibles.isEmpty && _dispositivosCercanos.isNotEmpty;
+    return [
+      _bloque([
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        _filaEscaner(context, e),
+        const SizedBox(height: EspaciadoApp.margenLateral),
+        _filaFiltro(visibles.length),
+        const SizedBox(height: EspaciadoApp.margenLateral),
+      ]),
+      if (sinCoincidencias)
+        SliverToBoxAdapter(
+          child: EstadoPantalla(
+            icono: Icons.filter_alt_off_rounded,
+            titulo: 'Ningún dispositivo pasa el filtro',
+            accion: BotonSecundario(
+              texto: 'Quitar filtro',
+              icono: Icons.close_rounded,
+              alPresionar: () => _aplicarFiltro('', _sinPotenciaMinima),
+            ),
+          ),
+        )
+      else
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: EspaciadoApp.margenLateral,
+          ),
+          sliver: SliverList.separated(
+            itemCount: visibles.length,
+            separatorBuilder: (_, _) =>
+                const SizedBox(height: EspaciadoApp.entreTarjetas),
+            itemBuilder: (context, i) => _tarjetaDispositivo(visibles[i]),
+          ),
+        ),
+    ];
+  }
+
+  /// El estado del escáner (que TalkBack anuncia al cambiar) y el botón para
+  /// prenderlo ("Escanear", el principal) o apagarlo.
+  Widget _filaEscaner(BuildContext context, EstiloApp e) {
+    final estado = Semantics(
+      container: true,
+      liveRegion: true,
+      child: Row(
+        children: [
+          CuadroIcono(
+            icono: _escaneando
+                ? Icons.bluetooth_searching_rounded
+                : Icons.bluetooth_disabled_rounded,
+          ),
+          const SizedBox(width: EspaciadoApp.medio),
+          Expanded(
+            child: Text(
+              _escaneando ? 'Buscando dispositivos…' : 'Escáner detenido',
+              style: TipografiaApp.destacado.copyWith(color: e.textoPrincipal),
+            ),
           ),
         ],
       ),
     );
+    final boton = _escaneando
+        ? BotonSecundario(
+            texto: 'Detener',
+            icono: Icons.stop_rounded,
+            alPresionar: _conmutarEscaner,
+          )
+        : BotonPrincipal(
+            texto: 'Escanear',
+            icono: Icons.play_arrow_rounded,
+            expandido: false,
+            alPresionar: _conmutarEscaner,
+          );
+    if (TipografiaApp.esLetraGrande(context)) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          estado,
+          const SizedBox(height: EspaciadoApp.margenLateral),
+          boton,
+        ],
+      );
+    }
+    return Row(
+      children: [
+        Expanded(child: estado),
+        // Más aire que el alcance de la luz del botón: no cae sobre el texto.
+        const SizedBox(width: EspaciadoApp.margenLateral + EspaciadoApp.minimo),
+        boton,
+      ],
+    );
   }
+
+  /// El filtro por nombre y potencia: una fila que abre la hoja, con lo que
+  /// filtra y cuántos pasan. Con un filtro puesto, al lado, el botón para
+  /// quitarlo.
+  Widget _filaFiltro(int visibles) {
+    final activo = _filtroActivo;
+    final fila = GrupoFilas(
+      filas: [
+        FilaGrupo(
+          icono: activo ? Icons.filter_alt_rounded : Icons.search_rounded,
+          titulo: activo
+              ? [
+                  if (_filtroNombre.isNotEmpty)
+                    'Nombre contiene «$_filtroNombre»',
+                  if (_potenciaMinima > _sinPotenciaMinima)
+                    'desde $_potenciaMinima dBm',
+                ].join(' · ')
+              : 'Filtrar por nombre o potencia',
+          subtitulo: activo
+              ? '$visibles de ${_dispositivosCercanos.length} dispositivos'
+              : 'Los más fuertes, primero',
+          navega: true,
+          alTocar: _pedirFiltro,
+        ),
+      ],
+    );
+    if (!activo) return fila;
+    return Row(
+      children: [
+        Expanded(child: fila),
+        const SizedBox(width: EspaciadoApp.chico),
+        BotonRedondo(
+          icono: Icons.close_rounded,
+          etiqueta: 'Quitar filtro',
+          alPresionar: () => _aplicarFiltro('', _sinPotenciaMinima),
+        ),
+      ],
+    );
+  }
+
+  /// Un dispositivo de la lista, que se elige para ubicarlo en el mapa (uno
+  /// solo: borde y tilde en acento). Los que ya están en el mapa, apagados.
+  Widget _tarjetaDispositivo(ScanResult d) {
+    final mac = d.device.remoteId.str;
+    final yaUbicado = _beaconsEnElMapa.containsKey(mac);
+    final potencia = _potenciaDe(d);
+    return TarjetaDestino(
+      key: ValueKey<String>(mac),
+      icono: yaUbicado ? Icons.check_circle_rounded : Icons.bluetooth_rounded,
+      nombre: d.device.advName.isEmpty
+          ? 'Dispositivo desconocido'
+          : d.device.advName,
+      detalle: yaUbicado
+          ? '$mac · $potencia dBm · ya está en el mapa'
+          : '$mac · $potencia dBm',
+      seleccionada: _seleccionado == d,
+      alTocar: yaUbicado
+          ? null
+          : () {
+              if (mounted) setState(() => _seleccionado = d);
+            },
+    );
+  }
+
+  // ─── Lugares ──────────────────────────────────────────────────────────────
+
+  List<Widget> _sliversLugares() {
+    if (_lugares.isEmpty) {
+      return const [
+        SliverToBoxAdapter(
+          child: EstadoPantalla(
+            icono: Icons.place_rounded,
+            titulo: 'No hay lugares de interés',
+            detalle:
+                'Tocá el mapa para agregar un lugar, una escalera o un '
+                'ascensor.',
+          ),
+        ),
+      ];
+    }
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.fromLTRB(
+          EspaciadoApp.margenLateral,
+          EspaciadoApp.entreSecciones,
+          EspaciadoApp.margenLateral,
+          0,
+        ),
+        sliver: SliverList.separated(
+          itemCount: _lugares.length,
+          separatorBuilder: (_, _) =>
+              const SizedBox(height: EspaciadoApp.entreTarjetas),
+          itemBuilder: (context, i) {
+            final l = _lugares[i];
+            // Tocar la tarjeta edita el lugar (nombre, rubro, palabras
+            // propias); el tacho, deslizarla o la acción "Eliminar" de
+            // TalkBack lo eliminan, con la misma confirmación.
+            return TarjetaLista(
+              key: ValueKey<Object?>(l.id),
+              icono: !l.esEscalera
+                  ? Icons.place_rounded
+                  : (l.esAscensor
+                        ? Icons.elevator_rounded
+                        : Icons.stairs_rounded),
+              titulo: l.nombre,
+              subtitulo: _detalleLugar(l),
+              alTocar: () => _editarLugar(l),
+              alEliminar: () => _eliminarLugar(l),
+              alEliminada: () => _sacarLugar(l),
+            );
+          },
+        ),
+      ),
+    ];
+  }
+
+  /// Lo que dice la tarjeta de un lugar debajo del nombre: el rubro y las
+  /// otras palabras; en una escalera o un ascensor, para dónde va.
+  String? _detalleLugar(LugarInteres l) {
+    if (l.esEscalera) {
+      final sentido = l.sube && l.baja
+          ? 'sube y baja'
+          : l.sube
+          ? 'sube'
+          : l.baja
+          ? 'baja'
+          : null;
+      return [l.esAscensor ? 'Ascensor' : 'Escalera', ?sentido].join(' · ');
+    }
+    final rubro = Rubros.porId(l.rubro);
+    final detalle = [
+      if (rubro != null) 'Rubro: ${rubro.nombre}',
+      if (l.palabrasClave.isNotEmpty)
+        'Otras palabras: ${l.palabrasClave.join(', ')}',
+    ];
+    return detalle.isEmpty ? null : detalle.join('\n');
+  }
+
+  // ─── Calibración ──────────────────────────────────────────────────────────
+
+  List<Widget> _contenidoCalibracion(EstiloApp e) {
+    final celda = _celdaCalSeleccionada;
+    return [
+      if (celda != null) ...[
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        EncabezadoSeccion(titulo: 'Celda (${celda.ix}, ${celda.iy})'),
+        const SizedBox(height: EspaciadoApp.medio),
+        CampoTexto(
+          etiqueta: 'Etiqueta (opcional)',
+          ayuda: 'Por ejemplo, Entrada o Pasillo norte',
+          controlador: _etiquetaCalCtrl,
+          capitalizacion: TextCapitalization.sentences,
+          accionTeclado: TextInputAction.done,
+        ),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        _lecturasActuales(e),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        // ── PUNTO CLAVE (fingerprint) ──
+        // Vive dentro del propio modo calibracion: un punto clave ES una
+        // calibracion, solo que medida mas tiempo y marcada para que ademas
+        // se use como patron en vivo.
+        GrupoFilas(filas: [_filaPuntoClave()]),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        // ── Toma multi-muestra ──
+        if (_tomandoMuestras) ..._tomaEnCurso(e) else _botonToma(),
+      ],
+      const SizedBox(height: EspaciadoApp.entreSecciones),
+      ..._calibracionesGuardadas(e),
+    ];
+  }
+
+  /// Lo que se oye ahora de cada beacon del piso: el nombre, la MAC y la
+  /// potencia filtrada. Sin señal, el ícono en gris.
+  Widget _lecturasActuales(EstiloApp e) {
+    final beacons = _beaconsEnElMapa.values.toList();
+    final titulo = 'Lecturas actuales (${beacons.length} beacons)';
+    if (beacons.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          EncabezadoSeccion(titulo: titulo),
+          const SizedBox(height: EspaciadoApp.chico),
+          Text(
+            'No hay beacons configurados en este piso.',
+            style: TipografiaApp.subtitulo.copyWith(color: e.textoSecundario),
+          ),
+        ],
+      );
+    }
+    return GrupoFilas(
+      titulo: titulo,
+      filas: [
+        for (final b in beacons)
+          FilaGrupo(
+            inicio: CuadroIcono(
+              icono: b.rssiFiltrado > -95 && b.rssiFiltrado < 0
+                  ? Icons.bluetooth_connected_rounded
+                  : Icons.bluetooth_disabled_rounded,
+              color: b.rssiFiltrado > -95 && b.rssiFiltrado < 0
+                  ? null
+                  : e.textoSecundario,
+            ),
+            titulo: b.nombre,
+            subtitulo: b.mac,
+            valor: '${b.rssiFiltrado.toStringAsFixed(0)} dBm',
+          ),
+      ],
+    );
+  }
+
+  FilaGrupo _filaPuntoClave() => FilaGrupo.interruptor(
+    titulo: 'Punto clave (fingerprint)',
+    subtitulo: !_tomaEsFingerprint
+        ? 'Para esquinas donde se dobla, puertas o el pie de una escalera.'
+        : _headingEnVivo == null
+        ? 'Medición de ${_duracionFingerprint.inSeconds} s. Sin brújula: se '
+              'guarda sin rumbo y es menos preciso.'
+        : 'Medición de ${_duracionFingerprint.inSeconds} s. Mirá hacia donde '
+              'se llega caminando (ahora: '
+              '${_headingEnVivo!.toStringAsFixed(0)}°). Si se llega desde dos '
+              'lados, tomá uno por cada sentido.',
+    icono: Icons.push_pin_rounded,
+    valor: _tomaEsFingerprint,
+    alCambiar: _tomandoMuestras
+        ? null
+        : (v) => setState(() => _tomaEsFingerprint = v),
+  );
+
+  /// Empezar la toma: el botón principal del modo.
+  Widget _botonToma() => BotonPrincipal(
+    texto: !_escaneando
+        ? 'Activá el escáner primero'
+        : _tomaEsFingerprint
+        ? 'Medir punto clave (${_duracionFingerprint.inSeconds} s)'
+        : 'Iniciar toma de calibración (${_duracionCalibracion.inSeconds} s)',
+    icono: _tomaEsFingerprint
+        ? Icons.push_pin_rounded
+        : Icons.add_location_alt_rounded,
+    alPresionar: _escaneando ? _iniciarTomaCalibracion : null,
+  );
+
+  /// La toma en curso: cuánto va, la barra de progreso (sin nada que gire),
+  /// qué hacer mientras tanto y "Cancelar".
+  List<Widget> _tomaEnCurso(EstiloApp e) {
+    final total = _duracionTomaActual.inSeconds;
+    final van = (_progresoToma * total).round();
+    final rumbo = _rumboMedioToma;
+    return [
+      Text(
+        _tomaEsFingerprint
+            ? 'Midiendo punto clave: $van / $total s'
+            : 'Tomando muestras: $van / $total s',
+        style: TipografiaApp.conCifrasTabulares(
+          TipografiaApp.destacado,
+        ).copyWith(color: e.textoPrincipal),
+      ),
+      const SizedBox(height: EspaciadoApp.medio),
+      BarraProgreso(
+        valor: _progresoToma,
+        etiqueta: _tomaEsFingerprint
+            ? 'Medición del punto clave'
+            : 'Toma de calibración',
+        valorSemantico: '$van de $total segundos',
+      ),
+      const SizedBox(height: EspaciadoApp.medio),
+      Text(
+        _tomaEsFingerprint
+            ? 'No te muevas ni gires. Teléfono como para navegar, mirando '
+                  'siempre hacia el mismo lado. '
+                  '(${rumbo == null ? "sin brújula" : "rumbo ${rumbo.toStringAsFixed(0)}°"}'
+                  ' · $_muestrasAcumuladas lecturas)'
+            : 'No te muevas de la celda. ($_muestrasAcumuladas lecturas)',
+        style: TipografiaApp.subtitulo.copyWith(color: e.textoSecundario),
+      ),
+      const SizedBox(height: EspaciadoApp.entreSecciones),
+      BotonSecundario(
+        texto: 'Cancelar',
+        icono: Icons.close_rounded,
+        destructivo: true,
+        expandido: true,
+        alPresionar: _cancelarToma,
+      ),
+    ];
+  }
+
+  /// Las calibraciones guardadas: plegadas al entrar, como antes. "Ver" las
+  /// muestra con "Quitar duplicados" y "Borrar todas" arriba, y cada una con
+  /// su tacho.
+  List<Widget> _calibracionesGuardadas(EstiloApp e) {
+    final n = _calibraciones.length;
+    return [
+      EncabezadoSeccion(
+        titulo: 'Calibraciones guardadas ($n)',
+        accion: n == 0
+            ? null
+            : BotonSecundario(
+                texto: _verCalibraciones ? 'Ocultar' : 'Ver',
+                icono: _verCalibraciones
+                    ? Icons.expand_less_rounded
+                    : Icons.expand_more_rounded,
+                compacto: true,
+                etiquetaSemantica: _verCalibraciones
+                    ? 'Ocultar las calibraciones guardadas'
+                    : 'Ver las calibraciones guardadas',
+                alPresionar: () =>
+                    setState(() => _verCalibraciones = !_verCalibraciones),
+              ),
+      ),
+      if (n == 0) ...[
+        const SizedBox(height: EspaciadoApp.chico),
+        Text(
+          'Todavía no hay calibraciones.',
+          style: TipografiaApp.subtitulo.copyWith(color: e.textoSecundario),
+        ),
+      ] else if (_verCalibraciones) ...[
+        const SizedBox(height: EspaciadoApp.margenLateral),
+        GrupoFilas(
+          filas: [
+            FilaGrupo(
+              icono: Icons.cleaning_services_rounded,
+              titulo: 'Quitar duplicados',
+              subtitulo: 'Borra las copias idénticas de una misma toma.',
+              alTocar: _limpiarCalibracionesDuplicadas,
+            ),
+            FilaGrupo(
+              icono: Icons.delete_sweep_rounded,
+              titulo: 'Borrar todas',
+              subtitulo:
+                  'Calibraciones y puntos clave del piso. Si se movió o '
+                  'cambió un beacon.',
+              destructiva: true,
+              alTocar: _eliminarTodasLasCalibraciones,
+            ),
+          ],
+        ),
+        const SizedBox(height: EspaciadoApp.margenLateral),
+        GrupoFilas(
+          filas: [
+            for (final c in _calibraciones)
+              _FilaCalibracion(
+                puntoClave: c.esFingerprint,
+                titulo: _nombreCalibracion(c),
+                detalle: _detalleCalibracion(c),
+                alEliminar: () => _eliminarCalibracion(c),
+              ),
+          ],
+        ),
+      ],
+    ];
+  }
+
+  String _detalleCalibracion(CalibracionRegistro c) => [
+    if (c.esFingerprint) 'Punto clave',
+    if (c.esFingerprint)
+      c.rumboCaptura != null
+          ? 'rumbo ${c.rumboCaptura!.toStringAsFixed(0)}°'
+          : 'sin rumbo',
+    '${c.lecturasBle.length} beacons',
+    _formatearTimestamp(c.timestamp),
+  ].join(' · ');
+
+  // ─── Brújula ──────────────────────────────────────────────────────────────
+  //
+  // Panel para calibrar la rotación del mapa respecto al norte real.
+  //
+  // El operador apunta el teléfono hacia lo que en el plano es "arriba" y
+  // toca "Usar la dirección actual": se promedia el heading unos segundos y
+  // ese es el offset. El deslizador y los atajos quedan para ajustar a mano.
+  // Todo se guarda solo. El valor guardado (rotacion_mapa, en grados) es el
+  // offset que PantallaNavegacion resta al heading de FlutterCompass para
+  // alinear la brújula con el plano.
+
+  List<Widget> _contenidoBrujula(EstiloApp e) {
+    final heading = _headingEnVivo;
+    return [
+      const SizedBox(height: EspaciadoApp.entreSecciones),
+      // Instrucción
+      PanelRelieve(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const CuadroIcono(icono: Icons.info_outline_rounded),
+                const SizedBox(width: EspaciadoApp.medio),
+                Expanded(
+                  child: Semantics(
+                    header: true,
+                    child: Text(
+                      'Cómo calibrar',
+                      style: TipografiaApp.destacado.copyWith(
+                        color: e.textoPrincipal,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: EspaciadoApp.medio),
+            Text(
+              '1. Si la precisión no es alta, hacé un 8 en el aire.\n'
+              '2. Apuntá el borde superior del teléfono hacia el «arriba» del '
+              'plano.\n'
+              '3. Tocá «Usar la dirección actual» y quedate quieto 2 s.\n'
+              'Se guarda solo. El ajuste fino va con el deslizador.',
+              style: TipografiaApp.cuerpo.copyWith(color: e.textoPrincipal),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: EspaciadoApp.entreSecciones),
+      // La flecha muestra el heading COMPENSADO: (heading_real - offset).
+      // Cuando el offset esté bien calibrado, la flecha apuntará exactamente
+      // hacia ARRIBA cuando el teléfono mire el borde superior del mapa. Al
+      // mover el deslizador, la flecha se mueve en tiempo real: el operador
+      // ajusta hasta que la flecha quede derecha con el teléfono apuntando al
+      // borde superior del plano.
+      Center(
+        child: _FlechaBrujula(
+          grados: heading == null
+              ? null
+              : ((heading - _rotacionMapa) % 360 + 360) % 360,
+        ),
+      ),
+      const SizedBox(height: EspaciadoApp.medio),
+      Text(
+        heading != null
+            ? 'Norte magnético: ${heading.toStringAsFixed(0)}° · offset '
+                  'actual: ${_rotacionMapa.toStringAsFixed(0)}°'
+            : 'Sin señal de brújula',
+        textAlign: TextAlign.center,
+        style: TipografiaApp.conCifrasTabulares(
+          TipografiaApp.subtitulo,
+        ).copyWith(color: e.textoSecundario),
+      ),
+      if (heading != null) ...[
+        const SizedBox(height: EspaciadoApp.margenLateral),
+        _indicadorPrecisionBrujula(e),
+      ],
+      const SizedBox(height: EspaciadoApp.entreSecciones),
+      // Toma promediada del rumbo: la forma principal de calibrar.
+      BotonPrincipal(
+        texto: _tomaRumbo != null
+            ? 'Midiendo… quedate quieto'
+            : 'Usar la dirección actual',
+        icono: Icons.my_location_rounded,
+        alPresionar: heading == null || _tomaRumbo != null
+            ? null
+            : _tomarDireccionActual,
+      ),
+      const SizedBox(height: EspaciadoApp.entreSecciones),
+      // Ajuste fino. Se guarda al soltarlo.
+      Deslizador(
+        etiqueta: 'Ajuste fino',
+        valor: _rotacionMapa.clamp(0.0, 359.0),
+        min: 0,
+        max: 359,
+        divisiones: 359,
+        formato: (v) => '${v.round()}°',
+        formatoSemantico: (v) => '${v.round()} grados',
+        ayuda:
+            '0° = Norte arriba · 90° = Este arriba · 180° = Sur arriba · '
+            '270° = Oeste arriba',
+        alCambiar: (v) {
+          if (mounted) setState(() => _rotacionMapa = v.roundToDouble());
+        },
+        alTerminar: _fijarRotacion,
+      ),
+      const SizedBox(height: EspaciadoApp.entreSecciones),
+      // Atajos.
+      FilaBotones(children: [_atajo('Norte', 0), _atajo('Este', 90)]),
+      const SizedBox(height: EspaciadoApp.medio),
+      FilaBotones(children: [_atajo('Sur', 180), _atajo('Oeste', 270)]),
+    ];
+  }
+
+  Widget _atajo(String nombre, double grados) => BotonSecundario(
+    texto: '$nombre (${grados.round()}°)',
+    compacto: true,
+    alPresionar: () => _fijarRotacion(grados),
+  );
 
   /// Precisión del sensor de la brújula, con la indicación de calibrarlo
-  /// cuando no es alta (ver [_precisionBrujula]).
-  Widget _indicadorPrecisionBrujula() {
-    if (_headingEnVivo == null) return const SizedBox.shrink();
+  /// cuando no es alta (ver [_precisionBrujula]): en un recuadro hundido, con
+  /// la tilde o, si no es alta, en ámbar con el aviso. TalkBack la anuncia
+  /// cuando cambia.
+  Widget _indicadorPrecisionBrujula(EstiloApp e) {
     final p = _precisionBrujula;
     final alta = p != null && p <= 15;
     final texto = alta
         ? 'Precisión de la brújula: alta.'
         : p == null
-            ? 'Precisión de la brújula: desconocida. Hacé un 8 en el aire '
-                'antes de calibrar.'
-            : p <= 30
-                ? 'Precisión de la brújula: media. Hacé un 8 en el aire hasta '
-                    'que sea alta.'
-                : 'Precisión de la brújula: baja. Hacé un 8 en el aire hasta '
-                    'que sea alta.';
-    final color = alta ? TemaApp.instruccionAccent : TemaApp.advertencia;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: alta ? TemaApp.instruccion : TemaApp.fondoAdvertencia,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            alta ? Icons.check_circle_outline : Icons.warning_amber_rounded,
-            color: color,
-            size: 20,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              texto,
-              style: TextStyle(color: color, fontSize: 13, height: 1.4),
+        ? 'Precisión de la brújula: desconocida. Hacé un 8 en el aire '
+              'antes de calibrar.'
+        : p <= 30
+        ? 'Precisión de la brújula: media. Hacé un 8 en el aire hasta '
+              'que sea alta.'
+        : 'Precisión de la brújula: baja. Hacé un 8 en el aire hasta '
+              'que sea alta.';
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      child: PanelRelieve(
+        hundido: true,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ExcludeSemantics(
+              child: Icon(
+                alta ? Icons.check_circle_rounded : Icons.warning_rounded,
+                size: FormasApp.iconoChico,
+                color: alta ? e.textoSecundario : e.advertencia,
+              ),
             ),
-          ),
-        ],
+            const SizedBox(width: EspaciadoApp.medio),
+            Expanded(
+              child: Text(
+                texto,
+                style: TipografiaApp.subtitulo.copyWith(
+                  color: alta ? e.textoPrincipal : e.advertencia,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -3550,10 +3546,390 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   }
 }
 
+// ─── CALIBRACIÓN GUARDADA ───────────────────────────────────────────────────
 
-// ─── DIÁLOGO DE ALTA DE LUGAR / ESCALERA ────────────────────────────────────
+/// Una calibración guardada en la lista: el ícono (un punto clave, el pin),
+/// el nombre y el detalle, que TalkBack lee juntos, y el tacho aparte.
+class _FilaCalibracion extends StatelessWidget {
+  const _FilaCalibracion({
+    required this.puntoClave,
+    required this.titulo,
+    required this.detalle,
+    required this.alEliminar,
+  });
 
-/// Resultado del diálogo de alta.
+  final bool puntoClave;
+  final String titulo;
+  final String detalle;
+  final VoidCallback alEliminar;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    final letraGrande = TipografiaApp.esLetraGrande(context);
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: FormasApp.altoFilaMinimo),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          EspaciadoApp.rellenoTarjeta,
+          EspaciadoApp.chico,
+          EspaciadoApp.chico,
+          EspaciadoApp.chico,
+        ),
+        child: Row(
+          children: [
+            // Con letra grande, sin el cuadro (decorativo): el texto se queda
+            // con el ancho.
+            if (!letraGrande) ...[
+              CuadroIcono(
+                icono: puntoClave
+                    ? Icons.push_pin_rounded
+                    : Icons.check_circle_rounded,
+              ),
+              const SizedBox(width: EspaciadoApp.medio),
+            ],
+            Expanded(
+              child: MergeSemantics(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      titulo,
+                      style: TipografiaApp.destacado.copyWith(
+                        color: e.textoPrincipal,
+                      ),
+                    ),
+                    Text(
+                      detalle,
+                      style: TipografiaApp.subtitulo.copyWith(
+                        color: e.textoSecundario,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: EspaciadoApp.medio),
+            BotonRedondo(
+              icono: Icons.delete_rounded,
+              etiqueta: 'Eliminar $titulo',
+              destructivo: true,
+              alPresionar: alEliminar,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── FLECHA DE LA BRÚJULA ───────────────────────────────────────────────────
+
+/// La flecha de la brújula en un círculo hundido, en acento (9,79 sobre lo
+/// hundido). Sin brújula todavía, un reloj de arena quieto (nada gira). Es
+/// decorativa: lo que dice va escrito debajo.
+class _FlechaBrujula extends StatefulWidget {
+  const _FlechaBrujula({required this.grados});
+
+  /// Hacia dónde apunta, en grados (0 = arriba). null: todavía no hay
+  /// lecturas de la brújula.
+  final double? grados;
+
+  @override
+  State<_FlechaBrujula> createState() => _FlechaBrujulaState();
+}
+
+class _FlechaBrujulaState extends State<_FlechaBrujula> {
+  static const double _diametro = 140;
+
+  /// Las vueltas que se le dan a la flecha. No se quedan en [0, 1): de 359° a
+  /// 1° la flecha gira 2° hacia adelante, no una vuelta entera hacia atrás.
+  late double _vueltas = (widget.grados ?? 0) / 360;
+
+  @override
+  void didUpdateWidget(covariant _FlechaBrujula anterior) {
+    super.didUpdateWidget(anterior);
+    final grados = widget.grados;
+    if (grados == null) return;
+    final destino = grados / 360;
+    _vueltas = destino + (_vueltas - destino).roundToDouble();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    return ExcludeSemantics(
+      child: SizedBox.square(
+        dimension: _diametro,
+        child: DecoratedBox(
+          decoration: DecoracionRelieve(
+            color: e.hundido,
+            circulo: true,
+            elevacion: -1,
+            sombraOscura: e.sombraOscura,
+            sombraClara: e.sombraClara,
+          ),
+          child: Center(
+            child: widget.grados == null
+                ? Icon(
+                    Icons.hourglass_empty_rounded,
+                    size: FormasApp.iconoGrande,
+                    color: e.textoSecundario,
+                  )
+                : AnimatedRotation(
+                    turns: _vueltas,
+                    // La brújula cambia decenas de veces por segundo: como
+                    // mucho 120 ms, lo de un cambio frecuente (sección 5.1 del
+                    // prompt). Con movimiento reducido, sigue al dato directo.
+                    duration: MovimientoApp.duracion(
+                      context,
+                      MovimientoApp.cambioProgreso,
+                    ),
+                    curve: MovimientoApp.curva,
+                    child: Icon(
+                      Icons.navigation_rounded,
+                      size: 80,
+                      color: e.acento,
+                    ),
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── HOJAS ──────────────────────────────────────────────────────────────────
+
+/// La hoja "Filtrar dispositivos": el nombre y la potencia mínima. Devuelve
+/// el filtro nuevo, o null si se cancela.
+class _HojaFiltro extends StatefulWidget {
+  const _HojaFiltro({
+    required this.nombre,
+    required this.potencia,
+    required this.hayFiltro,
+  });
+
+  final String nombre;
+  final int potencia;
+
+  /// Si ya hay un filtro puesto: entonces está "Quitar filtro".
+  final bool hayFiltro;
+
+  @override
+  State<_HojaFiltro> createState() => _HojaFiltroState();
+}
+
+class _HojaFiltroState extends State<_HojaFiltro> {
+  static const int _sin = _PantallaConfiguracionState._sinPotenciaMinima;
+
+  late final TextEditingController _nombre = TextEditingController(
+    text: widget.nombre,
+  );
+  late double _minima = widget.potencia.toDouble();
+
+  @override
+  void dispose() {
+    _nombre.dispose();
+    super.dispose();
+  }
+
+  void _filtrar() => Navigator.of(
+    context,
+  ).pop((nombre: _nombre.text.trim(), potencia: _minima.round()));
+
+  static String _potencia(double v) =>
+      v <= _sin ? 'Todas' : 'Desde ${v.round()} dBm';
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        CampoTexto(
+          etiqueta: 'Nombre',
+          ayuda: 'Por ejemplo, BlindRoute (vacío: todos)',
+          controlador: _nombre,
+          accionTeclado: TextInputAction.search,
+          autocorrector: false,
+          alEnviar: (_) => _filtrar(),
+        ),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        Deslizador(
+          etiqueta: 'Potencia mínima',
+          valor: _minima,
+          min: _sin.toDouble(),
+          max: -40,
+          divisiones: 12,
+          formato: _potencia,
+          alCambiar: (v) => setState(() => _minima = v),
+        ),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        if (widget.hayFiltro) ...[
+          BotonSecundario(
+            texto: 'Quitar filtro',
+            icono: Icons.filter_alt_off_rounded,
+            expandido: true,
+            alPresionar: () =>
+                Navigator.of(context).pop((nombre: '', potencia: _sin)),
+          ),
+          const SizedBox(height: EspaciadoApp.medio),
+        ],
+        FilaBotones(
+          children: [
+            BotonSecundario(
+              texto: 'Cancelar',
+              alPresionar: () => Navigator.of(context).pop(),
+            ),
+            BotonPrincipal(
+              texto: 'Filtrar',
+              icono: Icons.filter_alt_rounded,
+              expandido: false,
+              alPresionar: _filtrar,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// La hoja "Nombre de la zona": el nombre, que puede quedar vacío. Devuelve
+/// lo escrito, o null si se cancela.
+class _HojaNombreZona extends StatefulWidget {
+  const _HojaNombreZona();
+
+  @override
+  State<_HojaNombreZona> createState() => _HojaNombreZonaState();
+}
+
+class _HojaNombreZonaState extends State<_HojaNombreZona> {
+  final TextEditingController _nombre = TextEditingController();
+
+  @override
+  void dispose() {
+    _nombre.dispose();
+    super.dispose();
+  }
+
+  void _guardar() => Navigator.of(context).pop(_nombre.text.trim());
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        CampoTexto(
+          etiqueta: 'Nombre (opcional)',
+          ayuda: 'Por ejemplo, Escaleras o Ascensor',
+          pie: 'Si lo dejás vacío, se llama «Zona prohibida».',
+          controlador: _nombre,
+          autofocus: true,
+          capitalizacion: TextCapitalization.sentences,
+          accionTeclado: TextInputAction.done,
+          alEnviar: (_) => _guardar(),
+        ),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        FilaBotones(
+          children: [
+            BotonSecundario(
+              texto: 'Cancelar',
+              alPresionar: () => Navigator.of(context).pop(),
+            ),
+            BotonPrincipal(
+              texto: 'Guardar',
+              icono: Icons.check_rounded,
+              expandido: false,
+              alPresionar: _guardar,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// La hoja de los metros del largo o del ancho de la escala. Devuelve los
+/// metros, o null si se cancela. Si lo escrito no es un número mayor que 0,
+/// lo dice debajo del campo (antes no pasaba nada).
+class _HojaMetros extends StatefulWidget {
+  const _HojaMetros({required this.mensaje});
+
+  /// La pregunta ("¿Cuántos metros mide el largo en la realidad?").
+  final String mensaje;
+
+  @override
+  State<_HojaMetros> createState() => _HojaMetrosState();
+}
+
+class _HojaMetrosState extends State<_HojaMetros> {
+  final TextEditingController _metros = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _metros.dispose();
+    super.dispose();
+  }
+
+  void _guardar() {
+    final v = double.tryParse(_metros.text.trim().replaceAll(',', '.'));
+    if (v != null && v > 0) {
+      Navigator.of(context).pop(v);
+      return;
+    }
+    setState(() => _error = 'Escribí un número mayor que 0.');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          widget.mensaje,
+          style: TipografiaApp.cuerpo.copyWith(color: e.textoPrincipal),
+        ),
+        const SizedBox(height: EspaciadoApp.margenLateral),
+        CampoTexto(
+          etiqueta: 'Metros',
+          ayuda: 'Por ejemplo, 12,5',
+          sufijo: 'm',
+          controlador: _metros,
+          tipoTeclado: const TextInputType.numberWithOptions(decimal: true),
+          autofocus: true,
+          accionTeclado: TextInputAction.done,
+          error: _error,
+          // Escribir le borra el error.
+          alCambiar: (_) {
+            if (_error != null) setState(() => _error = null);
+          },
+          alEnviar: (_) => _guardar(),
+        ),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        FilaBotones(
+          children: [
+            BotonSecundario(
+              texto: 'Cancelar',
+              alPresionar: () => Navigator.of(context).pop(),
+            ),
+            BotonPrincipal(
+              texto: 'Guardar',
+              icono: Icons.check_rounded,
+              expandido: false,
+              alPresionar: _guardar,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+// ─── HOJA DE ALTA DE LUGAR / ESCALERA ───────────────────────────────────────
+
+/// Resultado de la hoja de alta.
 class _DatosNuevoLugar {
   final String nombre;
   final TipoLugar tipo;
@@ -3579,17 +3955,23 @@ class _DatosNuevoLugar {
 /// Conexiones posibles de una escalera desde el piso donde se carga.
 enum _SentidoEscalera { sube, baja, ambas }
 
-class _DialogoNuevoLugar extends StatefulWidget {
+/// La hoja de un lugar, una escalera o un ascensor (antes, un diálogo): lo
+/// mismo que antes, con los componentes del sistema de diseño. El tipo es un
+/// control segmentado; el rubro, una fila que abre la lista de rubros en otra
+/// hoja (antes, un desplegable); escalera o ascensor, para dónde va y hacia
+/// dónde da la entrada, chips que se eligen. Lo que falta para guardar, en
+/// ámbar debajo.
+class _HojaLugar extends StatefulWidget {
   /// Lugar que se está editando. Null = alta de uno nuevo.
   final LugarInteres? inicial;
 
-  const _DialogoNuevoLugar({this.inicial});
+  const _HojaLugar({this.inicial});
 
   @override
-  State<_DialogoNuevoLugar> createState() => _DialogoNuevoLugarState();
+  State<_HojaLugar> createState() => _HojaLugarState();
 }
 
-class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
+class _HojaLugarState extends State<_HojaLugar> {
   final _nombreCtrl = TextEditingController();
   final _clavesCtrl = TextEditingController();
 
@@ -3603,10 +3985,8 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
   /// Con tipo escalera: si lo que se está cargando es un ascensor.
   bool _esAscensor = false;
 
-  /// "la escalera" / "el ascensor", para los textos del diálogo.
+  /// "la escalera" / "el ascensor", para los textos de la hoja.
   String get _elMedio => _esAscensor ? 'el ascensor' : 'la escalera';
-
-  bool get _editando => widget.inicial != null;
 
   @override
   void initState() {
@@ -3616,7 +3996,7 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
     _nombreCtrl.text = l.nombre;
     _clavesCtrl.text = LugarInteres.palabrasATexto(l.palabrasClave) ?? '';
     // Si el mapa trae un rubro que esta versión no conoce, se muestra como
-    // "sin rubro" (el desplegable exige que el valor exista en la lista).
+    // "sin rubro" (la lista exige que el valor exista).
     _rubro = Rubros.porId(l.rubro)?.id;
     _tipo = l.tipo;
     if (l.esEscalera) {
@@ -3624,10 +4004,10 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
       _sentido = l.sube && l.baja
           ? _SentidoEscalera.ambas
           : l.sube
-              ? _SentidoEscalera.sube
-              : l.baja
-                  ? _SentidoEscalera.baja
-                  : null;
+          ? _SentidoEscalera.sube
+          : l.baja
+          ? _SentidoEscalera.baja
+          : null;
       _direccion = l.direccionEntrada;
     }
   }
@@ -3655,15 +4035,26 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
         '${r.palabras.length > muestra ? '…' : ''}';
   }
 
-  /// Abre el catálogo de rubros. Al volver, el desplegable se rearma con lo
-  /// que haya quedado y, si se borró el rubro elegido, queda "Sin rubro".
+  /// Abre el catálogo de rubros. Al volver, la fila del rubro se rearma con
+  /// lo que haya quedado y, si se borró el rubro elegido, queda "Sin rubro".
   Future<void> _administrarRubros() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const PantallaRubros()),
+      RutaApp<void>(builder: (_) => const PantallaRubros()),
     );
     if (!mounted) return;
     setState(() => _rubro = Rubros.porId(_rubro)?.id);
+  }
+
+  /// Elige el rubro en otra hoja, con la lista de rubros.
+  Future<void> _elegirRubro() async {
+    final elegido = await mostrarHoja<String>(
+      context,
+      titulo: 'Rubro',
+      contenido: (context) => _ListaRubros(actual: _rubro),
+    );
+    if (elegido == null || !mounted) return;
+    setState(() => _rubro = elegido.isEmpty ? null : elegido);
   }
 
   /// Qué falta para poder guardar (null = se puede guardar).
@@ -3698,303 +4089,326 @@ class _DialogoNuevoLugarState extends State<_DialogoNuevoLugar> {
             : nombre,
         tipo: TipoLugar.escalera,
         esAscensor: _esAscensor,
-        sube: _sentido == _SentidoEscalera.sube ||
+        sube:
+            _sentido == _SentidoEscalera.sube ||
             _sentido == _SentidoEscalera.ambas,
-        baja: _sentido == _SentidoEscalera.baja ||
+        baja:
+            _sentido == _SentidoEscalera.baja ||
             _sentido == _SentidoEscalera.ambas,
         direccionEntrada: _direccion,
       ),
     );
   }
 
-  Widget _botonDireccion(double grados, IconData icono, String etiqueta) {
-    final elegido = _direccion == grados;
-    return Semantics(
-      button: true,
-      selected: elegido,
-      label: 'Entrada hacia $etiqueta del plano',
-      child: SizedBox(
-        width: 56,
-        height: 56,
-        child: ElevatedButton(
-          onPressed: () => setState(() => _direccion = grados),
-          style: ElevatedButton.styleFrom(
-            padding: EdgeInsets.zero,
-            backgroundColor: elegido ? TemaApp.acento : TemaApp.acentoSuave,
-            foregroundColor: elegido ? TemaApp.fondo : TemaApp.textoBlanco,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+  /// Una pregunta de la hoja ("¿Qué es?"), arriba de sus opciones.
+  Widget _pregunta(EstiloApp e, String texto) => Text(
+    texto,
+    style: TipografiaApp.destacado.copyWith(color: e.textoPrincipal),
+  );
+
+  /// El rubro: una fila que abre la lista de rubros, con el ícono del rubro
+  /// elegido y las palabras con que se encuentra.
+  Widget _selectorRubro(EstiloApp e) {
+    final r = Rubros.porId(_rubro);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // TalkBack lo dice en la fila.
+        ExcludeSemantics(child: _pregunta(e, 'Rubro')),
+        const SizedBox(height: EspaciadoApp.medio),
+        GrupoFilas(
+          filas: [
+            FilaGrupo(
+              inicio: CuadroIcono(
+                icono: r == null ? Icons.label_off_rounded : iconoRubro(r.id),
+                color: r == null ? e.textoSecundario : null,
+              ),
+              titulo: r?.nombre ?? 'Sin rubro',
+              subtitulo: _ayudaRubro,
+              navega: true,
+              etiquetaSemantica:
+                  'Rubro: ${r?.nombre ?? 'sin rubro'}. $_ayudaRubro',
+              alTocar: _elegirRubro,
             ),
-          ),
-          child: Icon(icono, size: 28),
+          ],
         ),
-      ),
+      ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(!_esEscalera
-          ? (_editando ? 'Editar lugar' : 'Nuevo lugar de interés')
-          : _esAscensor
-              ? (_editando ? 'Editar ascensor' : 'Nuevo ascensor')
-              : (_editando ? 'Editar escalera' : 'Nueva escalera')),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SegmentedButton<TipoLugar>(
-              segments: const [
-                ButtonSegment(
-                  value: TipoLugar.comun,
-                  icon: Icon(Icons.place),
-                  label: Text('Lugar'),
-                ),
-                ButtonSegment(
-                  value: TipoLugar.escalera,
-                  icon: Icon(Icons.stairs),
-                  // Escalera o ascensor: se elige abajo, al entrar acá.
-                  label: Text('Escalera'),
-                ),
-              ],
-              selected: {_tipo},
-              onSelectionChanged: (s) => setState(() => _tipo = s.first),
+    final e = EstiloApp.de(context);
+    final faltante = _faltante;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ControlSegmentado<TipoLugar>(
+          etiqueta: 'Tipo',
+          opciones: const [
+            OpcionSegmento(
+              valor: TipoLugar.comun,
+              texto: 'Lugar',
+              icono: Icons.place_rounded,
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _nombreCtrl,
-              onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                hintText: !_esEscalera
-                    ? 'Nombre (ej: Baño, Terminal 5)'
-                    : _esAscensor
-                        ? 'Nombre (opcional, ej: Ascensor norte)'
-                        : 'Nombre (opcional, ej: Escalera norte)',
-                border: const OutlineInputBorder(),
-              ),
+            // Escalera o ascensor: se elige abajo, al entrar acá.
+            OpcionSegmento(
+              valor: TipoLugar.escalera,
+              texto: 'Escalera',
+              icono: Icons.stairs_rounded,
+              etiquetaSemantica: 'Escalera o ascensor',
             ),
-            if (!_esEscalera) ...[
-              const SizedBox(height: 12),
-              // Rubro: trae cargadas las palabras con las que la gente pide
-              // ese tipo de lugar (ver rubros.dart).
-              InputDecorator(
-                decoration: InputDecoration(
-                  labelText: 'Rubro',
-                  border: const OutlineInputBorder(),
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  helperText: _ayudaRubro,
-                  helperMaxLines: 3,
-                ),
-                child: DropdownButtonHideUnderline(
-                  // "Sin rubro" va como texto vacío y no como null: para el
-                  // desplegable, null significa "no hay nada elegido" y
-                  // dejaría el campo EN BLANCO en vez de mostrar "Sin rubro".
-                  child: DropdownButton<String>(
-                    value: _rubro ?? '',
-                    isExpanded: true,
-                    items: [
-                      const DropdownMenuItem<String>(
-                        value: '',
-                        child: _OpcionRubro(
-                          icono: Icons.label_off_outlined,
-                          nombre: 'Sin rubro',
-                          apagada: true,
-                        ),
-                      ),
-                      for (final r in Rubros.todos)
-                        DropdownMenuItem<String>(
-                          value: r.id,
-                          child: _OpcionRubro(
-                            icono: iconoRubro(r.id),
-                            nombre: r.nombre,
-                          ),
-                        ),
-                    ],
-                    onChanged: (v) => setState(
-                        () => _rubro = (v == null || v.isEmpty) ? null : v),
-                  ),
-                ),
-              ),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton.icon(
-                  onPressed: _administrarRubros,
-                  style: TextButton.styleFrom(
-                    minimumSize: const Size(0, 44),
-                    textStyle: const TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w600),
-                  ),
-                  icon: const Icon(Icons.tune, size: 20),
-                  label: const Text('Editar rubros'),
-                ),
-              ),
-              const SizedBox(height: 4),
-              TextField(
-                controller: _clavesCtrl,
-                minLines: 1,
-                maxLines: 3,
-                textCapitalization: TextCapitalization.none,
-                decoration: const InputDecoration(
-                  labelText: 'Otras palabras (opcional)',
-                  hintText: 'el mac, mc',
-                  helperText:
-                      'Apodos o marcas de este lugar, separados por comas. Lo '
-                      'general ya lo pone el rubro.',
-                  helperMaxLines: 3,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
-            if (_esEscalera) ...[
-              const SizedBox(height: 16),
-              const Text('¿Qué es?',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 8,
-                children: [
-                  ChoiceChip(
-                    label: const Text('Escalera'),
-                    avatar: const Icon(Icons.stairs, size: 18),
-                    selected: !_esAscensor,
-                    onSelected: (_) => setState(() => _esAscensor = false),
-                  ),
-                  ChoiceChip(
-                    label: const Text('Ascensor'),
-                    avatar: const Icon(Icons.elevator, size: 18),
-                    selected: _esAscensor,
-                    onSelected: (_) => setState(() => _esAscensor = true),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Text('Desde este piso, $_elMedio:',
-                  style: const TextStyle(fontWeight: FontWeight.w600)),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 8,
-                children: [
-                  ChoiceChip(
-                    label: const Text('Sube'),
-                    avatar: const Icon(Icons.north, size: 18),
-                    selected: _sentido == _SentidoEscalera.sube,
-                    onSelected: (_) =>
-                        setState(() => _sentido = _SentidoEscalera.sube),
-                  ),
-                  ChoiceChip(
-                    label: const Text('Baja'),
-                    avatar: const Icon(Icons.south, size: 18),
-                    selected: _sentido == _SentidoEscalera.baja,
-                    onSelected: (_) =>
-                        setState(() => _sentido = _SentidoEscalera.baja),
-                  ),
-                  ChoiceChip(
-                    label: const Text('Sube y baja'),
-                    avatar: const Icon(Icons.swap_vert, size: 18),
-                    selected: _sentido == _SentidoEscalera.ambas,
-                    onSelected: (_) =>
-                        setState(() => _sentido = _SentidoEscalera.ambas),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              const Text('¿Hacia qué lado del plano da la entrada?',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
-              const SizedBox(height: 2),
-              Text(
-                _esAscensor
-                    ? 'El lado de la puerta, según el plano en pantalla.'
-                    : 'El lado por donde se entra a la escalera, según el '
-                        'plano en pantalla.',
-                style: const TextStyle(fontSize: 12),
-              ),
-              const SizedBox(height: 10),
-              Center(
-                child: Column(
-                  children: [
-                    _botonDireccion(0, Icons.arrow_upward, 'arriba'),
-                    const SizedBox(height: 6),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _botonDireccion(270, Icons.arrow_back, 'la izquierda'),
-                        const SizedBox(width: 6),
-                        SizedBox(
-                          width: 56,
-                          height: 56,
-                          child: Icon(
-                            _esAscensor ? Icons.elevator : Icons.stairs,
-                            size: 32,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        _botonDireccion(90, Icons.arrow_forward, 'la derecha'),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    _botonDireccion(180, Icons.arrow_downward, 'abajo'),
-                  ],
-                ),
-              ),
-            ],
-            if (_faltante != null) ...[
-              const SizedBox(height: 12),
-              Text(
-                _faltante!,
-                style: const TextStyle(color: TemaApp.advertencia, fontSize: 12),
-              ),
-            ],
           ],
+          seleccionada: _tipo,
+          alCambiar: (t) => setState(() => _tipo = t),
         ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancelar'),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        CampoTexto(
+          etiqueta: _esEscalera ? 'Nombre (opcional)' : 'Nombre',
+          ayuda: !_esEscalera
+              ? 'Por ejemplo, Baño o Terminal 5'
+              : _esAscensor
+              ? 'Por ejemplo, Ascensor norte'
+              : 'Por ejemplo, Escalera norte',
+          controlador: _nombreCtrl,
+          capitalizacion: TextCapitalization.sentences,
+          alCambiar: (_) => setState(() {}),
         ),
-        ElevatedButton(
-          onPressed: _faltante == null ? _guardar : null,
-          child: const Text('Guardar'),
+        if (!_esEscalera) ...[
+          const SizedBox(height: EspaciadoApp.entreSecciones),
+          // Rubro: trae cargadas las palabras con las que la gente pide ese
+          // tipo de lugar (ver rubros.dart).
+          _selectorRubro(e),
+          const SizedBox(height: EspaciadoApp.medio),
+          Align(
+            alignment: Alignment.centerRight,
+            child: BotonSecundario(
+              texto: 'Editar rubros',
+              icono: Icons.tune_rounded,
+              compacto: true,
+              alPresionar: _administrarRubros,
+            ),
+          ),
+          const SizedBox(height: EspaciadoApp.entreSecciones),
+          CampoTexto(
+            etiqueta: 'Otras palabras (opcional)',
+            ayuda: 'el mac, mc',
+            pie:
+                'Apodos o marcas de este lugar, separados por comas. Lo '
+                'general ya lo pone el rubro.',
+            controlador: _clavesCtrl,
+            lineas: 3,
+          ),
+        ],
+        if (_esEscalera) ...[
+          const SizedBox(height: EspaciadoApp.entreSecciones),
+          _pregunta(e, '¿Qué es?'),
+          const SizedBox(height: EspaciadoApp.chico),
+          Wrap(
+            spacing: EspaciadoApp.chico,
+            runSpacing: EspaciadoApp.chico,
+            children: [
+              ChipFiltro(
+                texto: 'Escalera',
+                exclusivo: true,
+                seleccionado: !_esAscensor,
+                alCambiar: (_) => setState(() => _esAscensor = false),
+              ),
+              ChipFiltro(
+                texto: 'Ascensor',
+                exclusivo: true,
+                seleccionado: _esAscensor,
+                alCambiar: (_) => setState(() => _esAscensor = true),
+              ),
+            ],
+          ),
+          const SizedBox(height: EspaciadoApp.margenLateral),
+          _pregunta(e, 'Desde este piso, $_elMedio:'),
+          const SizedBox(height: EspaciadoApp.chico),
+          Wrap(
+            spacing: EspaciadoApp.chico,
+            runSpacing: EspaciadoApp.chico,
+            children: [
+              for (final (sentido, texto) in const [
+                (_SentidoEscalera.sube, 'Sube'),
+                (_SentidoEscalera.baja, 'Baja'),
+                (_SentidoEscalera.ambas, 'Sube y baja'),
+              ])
+                ChipFiltro(
+                  texto: texto,
+                  exclusivo: true,
+                  seleccionado: _sentido == sentido,
+                  alCambiar: (_) => setState(() => _sentido = sentido),
+                ),
+            ],
+          ),
+          const SizedBox(height: EspaciadoApp.margenLateral),
+          _pregunta(e, '¿Hacia qué lado del plano da la entrada?'),
+          const SizedBox(height: EspaciadoApp.minimo),
+          Text(
+            _esAscensor
+                ? 'El lado de la puerta, según el plano en pantalla.'
+                : 'El lado por donde se entra a la escalera, según el plano '
+                      'en pantalla.',
+            style: TipografiaApp.subtitulo.copyWith(color: e.textoSecundario),
+          ),
+          const SizedBox(height: EspaciadoApp.chico),
+          _CruzDireccion(
+            direccion: _direccion,
+            esAscensor: _esAscensor,
+            alElegir: (grados) => setState(() => _direccion = grados),
+          ),
+        ],
+        if (faltante != null) ...[
+          const SizedBox(height: EspaciadoApp.entreSecciones),
+          _Falta(texto: faltante),
+        ],
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        FilaBotones(
+          children: [
+            BotonSecundario(
+              texto: 'Cancelar',
+              alPresionar: () => Navigator.of(context).pop(),
+            ),
+            BotonPrincipal(
+              texto: 'Guardar',
+              icono: Icons.check_rounded,
+              expandido: false,
+              alPresionar: faltante == null ? _guardar : null,
+            ),
+          ],
         ),
       ],
     );
   }
 }
 
-/// Opción del desplegable de rubros: ícono del rubro y su nombre.
-class _OpcionRubro extends StatelessWidget {
-  final IconData icono;
-  final String nombre;
-
-  /// Para "Sin rubro": ícono y texto en gris.
-  final bool apagada;
-
-  const _OpcionRubro({
-    required this.icono,
-    required this.nombre,
-    this.apagada = false,
+/// Hacia qué lado del plano da la entrada de una escalera o un ascensor:
+/// cuatro chips en cruz alrededor del ícono (se elige uno). Con letra
+/// grande, uno al lado del otro y, si no entran, en renglones.
+class _CruzDireccion extends StatelessWidget {
+  const _CruzDireccion({
+    required this.direccion,
+    required this.esAscensor,
+    required this.alElegir,
   });
+
+  /// En grados: 0 arriba, 90 derecha, 180 abajo, 270 izquierda.
+  final double? direccion;
+  final bool esAscensor;
+  final ValueChanged<double> alElegir;
+
+  Widget _opcion(double grados, String texto, String lado) => ChipFiltro(
+    texto: texto,
+    exclusivo: true,
+    seleccionado: direccion == grados,
+    etiquetaSemantica: 'Entrada hacia $lado del plano',
+    alCambiar: (_) => alElegir(grados),
+  );
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    final e = EstiloApp.de(context);
+    final arriba = _opcion(0, 'Arriba', 'arriba');
+    final izquierda = _opcion(270, 'Izquierda', 'la izquierda');
+    final derecha = _opcion(90, 'Derecha', 'la derecha');
+    final abajo = _opcion(180, 'Abajo', 'abajo');
+    if (TipografiaApp.esLetraGrande(context)) {
+      return Wrap(
+        spacing: EspaciadoApp.chico,
+        runSpacing: EspaciadoApp.chico,
+        children: [arriba, izquierda, derecha, abajo],
+      );
+    }
+    return Column(
       children: [
-        Icon(
-          icono,
-          size: 20,
-          color: apagada ? TemaApp.textoSecundario : TemaApp.acento,
+        arriba,
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            izquierda,
+            const SizedBox(width: EspaciadoApp.medio),
+            ExcludeSemantics(
+              child: Icon(
+                esAscensor ? Icons.elevator_rounded : Icons.stairs_rounded,
+                size: 32,
+                color: e.textoSecundario,
+              ),
+            ),
+            const SizedBox(width: EspaciadoApp.medio),
+            derecha,
+          ],
         ),
-        const SizedBox(width: 12),
+        abajo,
+      ],
+    );
+  }
+}
+
+/// La lista de rubros para elegir uno (en su hoja): "Sin rubro" y cada
+/// rubro con su ícono y algunas de sus palabras. El elegido, con el borde y
+/// la tilde en acento. Devuelve el id ("" para "Sin rubro").
+class _ListaRubros extends StatelessWidget {
+  const _ListaRubros({required this.actual});
+
+  /// El id del rubro elegido ahora (null: sin rubro).
+  final String? actual;
+
+  @override
+  Widget build(BuildContext context) {
+    void elegir(String id) => Navigator.of(context).pop(id);
+    final elegido = actual ?? '';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TarjetaDestino(
+          icono: Icons.label_off_rounded,
+          nombre: 'Sin rubro',
+          seleccionada: elegido.isEmpty,
+          alTocar: () => elegir(''),
+        ),
+        for (final r in Rubros.todos) ...[
+          const SizedBox(height: EspaciadoApp.entreTarjetas),
+          TarjetaDestino(
+            icono: iconoRubro(r.id),
+            nombre: r.nombre,
+            detalle:
+                '${r.palabras.take(3).join(', ')}'
+                '${r.palabras.length > 3 ? '…' : ''}',
+            seleccionada: elegido == r.id,
+            alTocar: () => elegir(r.id),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// Lo que falta para poder guardar, en ámbar (9,59 sobre la superficie) y
+/// con un ícono.
+class _Falta extends StatelessWidget {
+  const _Falta({required this.texto});
+
+  final String texto;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ExcludeSemantics(
+          child: Icon(
+            Icons.info_rounded,
+            size: FormasApp.iconoChico,
+            color: e.advertencia,
+          ),
+        ),
+        const SizedBox(width: EspaciadoApp.chico),
         Expanded(
           child: Text(
-            nombre,
-            overflow: TextOverflow.ellipsis,
-            style: apagada
-                ? const TextStyle(color: TemaApp.textoSecundario)
-                : null,
+            texto,
+            style: TipografiaApp.subtitulo.copyWith(color: e.advertencia),
           ),
         ),
       ],

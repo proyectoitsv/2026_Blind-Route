@@ -1515,6 +1515,67 @@ void main() {
   // ── Campo de texto ──────────────────────────────────────────────────────
 
   group('campo de texto', () {
+    testWidgets('con la unidad al final, varios renglones y una aclaración '
+        'debajo, que TalkBack dice con el campo; con un error, el error en su '
+        'lugar', (tester) async {
+      final semantica = tester.ensureSemantics();
+      String? error;
+      late StateSetter cambiar;
+      await armar(
+        tester,
+        StatefulBuilder(
+          builder: (context, setState) {
+            cambiar = setState;
+            return Column(
+              children: [
+                const CampoTexto(etiqueta: 'Largo', ayuda: '12,5', sufijo: 'm'),
+                CampoTexto(
+                  etiqueta: 'Otras palabras',
+                  lineas: 3,
+                  pie: 'Separadas por comas.',
+                  error: error,
+                ),
+              ],
+            );
+          },
+        ),
+      );
+      expect(find.text('m'), findsOneWidget);
+      final palabras = find.byType(TextField).last;
+      expect(tester.widget<TextField>(palabras).maxLines, 3);
+      expect(
+        tester.widget<TextField>(find.byType(TextField).first).maxLines,
+        1,
+      );
+      // La aclaración se ve y TalkBack la dice con el campo, no aparte.
+      expect(find.text('Separadas por comas.'), findsOneWidget);
+      expect(
+        tester.getSemantics(palabras),
+        isSemantics(
+          label: 'Otras palabras',
+          hint: 'Separadas por comas.',
+          isTextField: true,
+        ),
+      );
+      expect(find.bySemanticsLabel('Separadas por comas.'), findsNothing);
+      // Crece al escribir, hasta tres renglones.
+      final alto = tester.getSize(palabras).height;
+      await tester.enterText(palabras, 'uno\ndos');
+      await tester.pumpAndSettle();
+      final dos = tester.getSize(palabras).height;
+      expect(dos, greaterThan(alto));
+      await tester.enterText(palabras, 'uno\ndos\ntres\ncuatro\ncinco');
+      await tester.pumpAndSettle();
+      final tres = tester.getSize(palabras).height;
+      expect(tres, moreOrLessEquals(alto + 2 * (dos - alto), epsilon: 1));
+      // Con un error, va el error en lugar de la aclaración.
+      cambiar(() => error = 'Faltan palabras.');
+      await tester.pumpAndSettle();
+      expect(find.text('Faltan palabras.'), findsOneWidget);
+      expect(find.text('Separadas por comas.'), findsNothing);
+      semantica.dispose();
+    });
+
     testWidgets('hundido, con borde; enfocado, borde de acento', (
       tester,
     ) async {
@@ -2912,6 +2973,127 @@ void main() {
   });
 
   // ── Galería y pantallas de referencia ───────────────────────────────────
+
+  group('deslizador', () {
+    testWidgets('el nombre y el valor escritos, que TalkBack no repite: dice '
+        'el nombre y el valor con su unidad, y lo sube y lo baja; al soltarlo '
+        'avisa; 48 dp de alto', (tester) async {
+      final semantica = tester.ensureSemantics();
+      var valor = 0.8;
+      final soltados = <double>[];
+      await armar(
+        tester,
+        StatefulBuilder(
+          builder: (context, setState) => Deslizador(
+            etiqueta: 'Tamaño de celda',
+            valor: valor,
+            min: 0.5,
+            max: 1,
+            divisiones: 5,
+            formato: (v) => '${v.toStringAsFixed(1)} m',
+            formatoSemantico: (v) => '${v.toStringAsFixed(1)} metros',
+            ayuda: 'Menor, más precisión.',
+            alCambiar: (v) => setState(() => valor = v),
+            alTerminar: soltados.add,
+          ),
+        ),
+      );
+      expect(find.text('Tamaño de celda'), findsOneWidget);
+      expect(find.text('0.8 m'), findsOneWidget);
+      final nodo = find.bySemanticsLabel('Tamaño de celda');
+      expect(
+        tester.getSemantics(nodo),
+        isSemantics(
+          label: 'Tamaño de celda',
+          value: '0.8 metros',
+          increasedValue: '0.9 metros',
+          decreasedValue: '0.7 metros',
+          isSlider: true,
+          hasIncreaseAction: true,
+          hasDecreaseAction: true,
+        ),
+      );
+      // Lo escrito arriba no se lee aparte.
+      expect(find.bySemanticsLabel('0.8 m'), findsNothing);
+      tester.semantics.increase(find.semantics.byLabel('Tamaño de celda'));
+      await tester.pumpAndSettle();
+      expect(valor, closeTo(0.9, 1e-9));
+      expect(find.text('0.9 m'), findsOneWidget);
+      // Arrastrado hasta el final y soltado.
+      await tester.drag(find.byType(Slider), const Offset(400, 0));
+      await tester.pumpAndSettle();
+      expect(valor, 1);
+      expect(soltados.last, 1);
+      expect(tester.getSize(find.byType(Slider)).height, 48);
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      semantica.dispose();
+    });
+
+    testWidgets('sin el globo, las marcas ni el halo de Material; '
+        'deshabilitado, apagado', (tester) async {
+      final semantica = tester.ensureSemantics();
+      await armar(
+        tester,
+        Deslizador(
+          etiqueta: 'Potencia mínima',
+          valor: -70,
+          min: -100,
+          max: -40,
+          divisiones: 12,
+          formato: (v) => 'Desde ${v.round()} dBm',
+          alCambiar: null,
+        ),
+      );
+      final tema = tester
+          .widget<SliderTheme>(
+            find.ancestor(
+              of: find.byType(Slider),
+              matching: find.byType(SliderTheme),
+            ),
+          )
+          .data;
+      expect(tema.showValueIndicator, ShowValueIndicator.never);
+      expect(tema.tickMarkShape, SliderTickMarkShape.noTickMark);
+      expect(tema.overlayColor, Colors.transparent);
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Potencia mínima')),
+        isSemantics(
+          value: 'Desde -70 dBm',
+          isSlider: true,
+          isEnabled: false,
+          hasEnabledState: true,
+        ),
+      );
+      // El nombre y el valor, en gris.
+      expect(
+        tester.widget<Text>(find.text('Desde -70 dBm')).style!.color,
+        ColoresApp.textoSecundario,
+      );
+      semantica.dispose();
+    });
+
+    testWidgets('con la letra al 200 %: el valor baja debajo del nombre, '
+        'nada se desborda', (tester) async {
+      await armar(
+        tester,
+        Deslizador(
+          etiqueta: 'Ajuste fino',
+          valor: 90,
+          min: 0,
+          max: 359,
+          divisiones: 359,
+          formato: (v) => '${v.round()}°',
+          alCambiar: (_) {},
+        ),
+        escala: 2,
+      );
+      expect(tester.takeException(), isNull);
+      final nombre = tester.getRect(find.text('Ajuste fino'));
+      final valor = tester.getRect(find.text('90°'));
+      expect(valor.top, greaterThanOrEqualTo(nombre.bottom));
+      expect(valor.left, nombre.left);
+    });
+  });
 
   group('galería', () {
     /// Recorre la lista de la pantalla hasta el final.

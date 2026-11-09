@@ -8,15 +8,17 @@ import 'package:sqflite/sqflite.dart';
 //
 // La base del teléfono (DatabaseHelper, con sqflite) en memoria, para los
 // tests de las pantallas que la leen y la escriben (las listas de edificios y
-// de pisos del administrador).
+// de pisos del administrador, la configuración de un piso y los rubros).
 //
 // sqflite le habla a Android por un canal (com.tekartik.sqflite). Acá lo
 // atiende el test, con las tablas en memoria y lo justo de SQL para lo que
 // arma sqflite con los pedidos de DatabaseHelper que usan esas pantallas:
 // SELECT (con WHERE, ORDER BY y LIMIT), INSERT, UPDATE y DELETE, con
 // condiciones "col = ?", "col IS [NOT] NULL" y "col IN (SELECT …)" unidas
-// por AND. Un SQL que no entiende lo rechaza con un error que lo nombra: así
-// un pedido nuevo no pasa en silencio.
+// por AND, COUNT(*) y MAX(col) en un SELECT y los NULL que sqflite escribe
+// en lugar de un "?" para un valor nulo. Un SQL que no entiende lo
+// rechaza con un error que lo nombra: así un pedido nuevo no pasa en
+// silencio.
 //
 // La versión del esquema se contesta 17, la de DatabaseHelper: así sqflite
 // no crea las tablas (acá no hace falta) ni migra nada.
@@ -74,17 +76,19 @@ class BaseFalsa {
   List<Map<String, Object?>> filas(String tabla) => tablas[tabla] ?? const [];
 
   /// Agrega una fila a [tabla], con los valores por defecto y un id nuevo
-  /// (si no lo trae). Devuelve el id.
+  /// (si no lo trae). Devuelve el id. Un id de texto (el de un rubro) se
+  /// guarda tal cual; entonces lo que devuelve es sólo el número de fila.
   int agregar(String tabla, Map<String, Object?> fila) {
     final filas = tablas.putIfAbsent(tabla, () => []);
-    final id =
-        fila['id'] as int? ??
-        filas.fold<int>(0, (mayor, f) {
-              final otro = f['id'] as int? ?? 0;
-              return otro > mayor ? otro : mayor;
-            }) +
-            1;
-    filas.add({'id': id, ...?_porDefecto[tabla], ...fila});
+    final dado = fila['id'];
+    final id = dado is int
+        ? dado
+        : filas.fold<int>(0, (mayor, f) {
+                final otro = f['id'];
+                return otro is int && otro > mayor ? otro : mayor;
+              }) +
+              1;
+    filas.add({'id': dado ?? id, ...?_porDefecto[tabla], ...fila});
     return id;
   }
 
@@ -142,6 +146,19 @@ class BaseFalsa {
       elegidas = elegidas.take(int.parse(partes[5]!)).toList();
     }
     final columnas = partes[1]!;
+    // COUNT(*) y MAX(col): una sola fila con el resultado.
+    final cuenta = RegExp(r'^(COUNT|MAX)\((\*|\w+)\)$').firstMatch(columnas);
+    if (cuenta != null) {
+      final Object? valor = cuenta[1] == 'COUNT'
+          ? elegidas.length
+          : elegidas
+                .map((f) => f[cuenta[2]!])
+                .whereType<num>()
+                .fold<num?>(null, (m, v) => m == null || v > m ? v : m);
+      return _resultado([
+        {columnas: valor},
+      ]);
+    }
     if (columnas != '*') {
       final nombres = columnas.split(', ');
       elegidas = [
@@ -157,10 +174,22 @@ class BaseFalsa {
     ).firstMatch(sql);
     if (partes == null) _noEntiende(sql);
     final columnas = partes[2]!.split(', ');
+    // sqflite manda los valores nulos como NULL, no como "?".
+    final marcas = partes[3]!.split(', ');
+    if (marcas.length != columnas.length) _noEntiende(sql);
     return agregar(partes[1]!, {
-      for (final c in columnas) c: valores.siguiente(),
+      for (var i = 0; i < columnas.length; i++)
+        columnas[i]: _valor(marcas[i], valores, sql),
     });
   }
+
+  /// Lo que va en lugar de [marca] ("?" o NULL) en un INSERT o un UPDATE.
+  static Object? _valor(String marca, _Valores valores, String sql) =>
+      switch (marca) {
+        '?' => valores.siguiente(),
+        'NULL' => null,
+        _ => _noEntiende(sql),
+      };
 
   int _cambiar(String sql, _Valores valores) {
     final partes = RegExp(
@@ -170,9 +199,15 @@ class BaseFalsa {
     // Los "?" del SET van antes que los del WHERE.
     final cambios = <String, Object?>{};
     for (final asignacion in partes[2]!.split(', ')) {
-      final columna = RegExp(r'^(\w+) = \?$').firstMatch(asignacion)?[1];
-      if (columna == null) _noEntiende(sql);
-      cambios[columna] = valores.siguiente();
+      final partesAsignacion = RegExp(
+        r'^(\w+) = (\?|NULL)$',
+      ).firstMatch(asignacion);
+      if (partesAsignacion == null) _noEntiende(sql);
+      cambios[partesAsignacion[1]!] = _valor(
+        partesAsignacion[2]!,
+        valores,
+        sql,
+      );
     }
     final elegidas = _filtrar(partes[1]!, partes[3], valores);
     for (final fila in elegidas) {
@@ -270,9 +305,11 @@ class BaseFalsa {
     return a.toString().compareTo(b.toString());
   }
 
-  /// Como contesta sqflite una consulta: las columnas y los valores.
+  /// Como contesta sqflite una consulta: las columnas y los valores. Las
+  /// columnas son las de todas las filas, como en una tabla de verdad: una
+  /// fila cargada sin una columna la tiene en null.
   static Map<String, Object?> _resultado(List<Map<String, Object?>> filas) {
-    final columnas = filas.isEmpty ? <String>[] : filas.first.keys.toList();
+    final columnas = <String>{for (final fila in filas) ...fila.keys}.toList();
     return {
       'columns': columnas,
       'rows': [

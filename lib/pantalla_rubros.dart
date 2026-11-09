@@ -2,56 +2,53 @@ import 'package:flutter/material.dart';
 
 import 'buscador_lugares.dart';
 import 'database.dart';
+import 'design/design.dart';
 import 'rubros.dart';
-import 'tema.dart';
 
 /// Ícono de un rubro. Los de fábrica tienen el suyo; los creados por el admin
 /// llevan uno genérico.
 IconData iconoRubro(String? id) {
   switch (id) {
     case 'comida':
-      return Icons.restaurant;
+      return Icons.restaurant_rounded;
     case 'cafe':
-      return Icons.local_cafe;
+      return Icons.local_cafe_rounded;
     case Rubros.bano:
-      return Icons.wc;
+      return Icons.wc_rounded;
     case 'kiosco':
-      return Icons.storefront;
+      return Icons.storefront_rounded;
     case 'tienda':
-      return Icons.shopping_bag;
+      return Icons.shopping_bag_rounded;
     case 'salud':
-      return Icons.local_pharmacy;
+      return Icons.local_pharmacy_rounded;
     case 'cajero':
-      return Icons.atm;
+      return Icons.atm_rounded;
     case 'informacion':
-      return Icons.info_outline;
+      return Icons.info_outline_rounded;
     case 'oficina':
-      return Icons.work_outline;
+      return Icons.work_outline_rounded;
     case 'aula':
-      return Icons.school;
+      return Icons.school_rounded;
     case 'laboratorio':
-      return Icons.science;
+      return Icons.science_rounded;
     case 'biblioteca':
-      return Icons.local_library;
+      return Icons.local_library_rounded;
     case 'salida':
-      return Icons.door_front_door;
+      return Icons.door_front_door_rounded;
     case 'descanso':
-      return Icons.event_seat;
+      return Icons.event_seat_rounded;
     case 'deporte':
-      return Icons.sports_soccer;
+      return Icons.sports_soccer_rounded;
     case 'capilla':
-      return Icons.church;
+      return Icons.church_rounded;
     case 'estacionamiento':
-      return Icons.local_parking;
+      return Icons.local_parking_rounded;
     case 'transporte':
-      return Icons.directions_bus;
+      return Icons.directions_bus_rounded;
     default:
-      return Icons.sell_outlined;
+      return Icons.sell_rounded;
   }
 }
-
-/// Borde de chips y campos, el mismo que usa el tema para los inputs.
-const Color _borde = Color(0xFF30363D);
 
 /// Administración del catálogo de rubros de este teléfono: crear rubros
 /// propios, cambiar el nombre y las palabras de uno existente, y borrarlos.
@@ -59,6 +56,15 @@ const Color _borde = Color(0xFF30363D);
 /// Los cambios valen enseguida para los lugares de este teléfono, pero a los
 /// usuarios les llegan recién al REPUBLICAR el mapa: cada lugar publicado
 /// lleva una copia de las palabras de su rubro (ver rubros.dart).
+///
+/// ─── Sistema de diseño (fase 5.6 del rediseño) ───
+/// Va envuelta en AmbienteDiseno, como la configuración del piso desde la
+/// que se abre. Cada rubro es una TarjetaLista (el ícono en su cuadro, el
+/// nombre y algunas de sus palabras) y "Nuevo rubro", el botón principal
+/// abajo (antes, un botón flotante). El editor sigue a pantalla completa:
+/// "Guardar" va en la barra, las palabras son chips con su botón para
+/// quitarlas, la confirmación es una hoja (mostrarConfirmacion) y los avisos
+/// son los del sistema de diseño (mostrarAviso).
 class PantallaRubros extends StatefulWidget {
   const PantallaRubros({super.key});
 
@@ -67,166 +73,84 @@ class PantallaRubros extends StatefulWidget {
 }
 
 class _PantallaRubrosState extends State<PantallaRubros> {
+  /// Cuántas palabras se muestran antes del "y N más".
+  static const int _muestra = 5;
+
   /// Abre el editor ([rubro] null = rubro nuevo). Al volver, si hubo cambios,
   /// rearma la lista y avisa qué pasó.
   Future<void> _abrirEditor([Rubro? rubro]) async {
     final aviso = await Navigator.push<String>(
       context,
-      MaterialPageRoute(
-        fullscreenDialog: true,
-        builder: (_) => _EditorRubro(inicial: rubro),
-      ),
+      RutaApp<String>(builder: (_) => _EditorRubro(inicial: rubro)),
     );
     if (aviso == null || !mounted) return;
     setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(aviso)));
+    mostrarAviso(context, aviso);
+  }
+
+  /// Algunas palabras del rubro, para la tarjeta.
+  static String _palabras(Rubro r) {
+    final resto = r.palabras.length - _muestra;
+    final muestra = r.palabras.take(_muestra).join(', ');
+    return resto > 0 ? '$muestra y $resto más' : muestra;
   }
 
   @override
   Widget build(BuildContext context) {
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        appBar: AppBar(title: const Text('Rubros')),
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: () => _abrirEditor(),
-          icon: const Icon(Icons.add),
-          label: const Text('Nuevo rubro'),
-        ),
-        body: ListView(
-          // Margen abajo para que el botón flotante no tape la última tarjeta.
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-          children: [
-            const Text(
-              'Las palabras de cada rubro sirven para pedir sus lugares por '
-              'voz. Los cambios llegan al volver a publicar el mapa.',
-              style: TextStyle(
-                color: TemaApp.textoSecundario,
-                fontSize: 14,
-                height: 1.4,
+    return AmbienteDiseno(
+      child: Builder(
+        builder: (context) {
+          final e = EstiloApp.de(context);
+          final rubros = Rubros.todos;
+          return Scaffold(
+            backgroundColor: e.fondo,
+            appBar: const BarraSuperior(titulo: 'Rubros'),
+            body: SafeArea(
+              top: false,
+              bottom: false,
+              child: ListView(
+                padding: const EdgeInsets.all(EspaciadoApp.margenLateral),
+                children: [
+                  Text(
+                    'Las palabras de cada rubro sirven para pedir sus lugares '
+                    'por voz. Los cambios llegan al volver a publicar el mapa.',
+                    style: TipografiaApp.subtitulo.copyWith(
+                      color: e.textoSecundario,
+                    ),
+                  ),
+                  // Más aire que el alcance de la luz de las tarjetas.
+                  const SizedBox(height: EspaciadoApp.entreSecciones),
+                  for (final (i, r) in rubros.indexed) ...[
+                    if (i > 0)
+                      const SizedBox(height: EspaciadoApp.entreTarjetas),
+                    TarjetaLista(
+                      icono: iconoRubro(r.id),
+                      titulo: r.nombre,
+                      subtitulo: _palabras(r),
+                      alTocar: () => _abrirEditor(r),
+                    ),
+                  ],
+                ],
               ),
             ),
-            const SizedBox(height: 20),
-            for (final r in Rubros.todos)
-              _TarjetaRubro(rubro: r, onTap: () => _abrirEditor(r)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Un rubro en la lista: ícono, nombre y una muestra de sus palabras. Tocarla
-/// abre el editor (ahí también se borra).
-class _TarjetaRubro extends StatelessWidget {
-  final Rubro rubro;
-  final VoidCallback onTap;
-
-  const _TarjetaRubro({required this.rubro, required this.onTap});
-
-  /// Cuántas palabras se muestran antes del "+N".
-  static const int _muestra = 5;
-
-  @override
-  Widget build(BuildContext context) {
-    final resto = rubro.palabras.length - _muestra;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Material(
-        color: TemaApp.fondoCard,
-        borderRadius: BorderRadius.circular(TemaApp.radiusCard),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(TemaApp.radiusCard),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 8, 14),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _IconoRubro(rubro.id),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        rubro.nombre,
-                        style: const TextStyle(
-                          color: TemaApp.textoBlanco,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: [
-                          for (final p in rubro.palabras.take(_muestra))
-                            _ChipPalabra(p),
-                          if (resto > 0) _ChipPalabra('+$resto', apagado: true),
-                        ],
-                      ),
-                    ],
-                  ),
+            bottomNavigationBar: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  EspaciadoApp.margenLateral,
+                  EspaciadoApp.medio,
+                  EspaciadoApp.margenLateral,
+                  EspaciadoApp.margenLateral,
                 ),
-                const Padding(
-                  padding: EdgeInsets.only(left: 4, top: 8),
-                  child: Icon(Icons.edit_outlined,
-                      size: 20, color: TemaApp.textoSecundario),
+                child: BotonPrincipal(
+                  texto: 'Nuevo rubro',
+                  icono: Icons.add_rounded,
+                  alPresionar: () => _abrirEditor(),
                 ),
-              ],
+              ),
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Ícono del rubro dentro de un cuadrado redondeado con el acento.
-class _IconoRubro extends StatelessWidget {
-  final String? id;
-
-  const _IconoRubro(this.id);
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 44,
-      height: 44,
-      decoration: BoxDecoration(
-        color: TemaApp.acentoSuave,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Icon(iconoRubro(id), color: TemaApp.acento, size: 24),
-    );
-  }
-}
-
-/// Una palabra de un rubro, como chip de solo lectura.
-class _ChipPalabra extends StatelessWidget {
-  final String texto;
-  final bool apagado;
-
-  const _ChipPalabra(this.texto, {this.apagado = false});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: apagado ? Colors.transparent : TemaApp.fondoSurface,
-        borderRadius: BorderRadius.circular(TemaApp.radiusChip),
-        border: Border.all(color: _borde),
-      ),
-      child: Text(
-        texto,
-        style: TextStyle(
-          color: apagado ? TemaApp.textoSecundario : TemaApp.textoBlanco,
-          fontSize: 13,
-        ),
+          );
+        },
       ),
     );
   }
@@ -236,7 +160,7 @@ class _ChipPalabra extends StatelessWidget {
 
 /// Alta y edición de un rubro, a pantalla completa: nombre y palabras. Las
 /// palabras se agregan de a una (o varias pegadas con comas) y se quitan con
-/// la cruz de su chip. Si se edita uno que se puede borrar, abajo está el
+/// el botón de su chip. Si se edita uno que se puede borrar, abajo está el
 /// botón para borrarlo.
 ///
 /// Guarda o borra por su cuenta y, si hubo cambios, cierra devolviendo el
@@ -316,9 +240,11 @@ class _EditorRubroState extends State<_EditorRubro> {
     final nombre = _nombreCtrl.text.trim();
     if (nombre.isEmpty) return 'Escribí un nombre para el rubro.';
     final norm = BuscadorLugares.normalizar(nombre);
-    final repetido = Rubros.todos.any((r) =>
-        r.id != widget.inicial?.id &&
-        BuscadorLugares.normalizar(r.nombre) == norm);
+    final repetido = Rubros.todos.any(
+      (r) =>
+          r.id != widget.inicial?.id &&
+          BuscadorLugares.normalizar(r.nombre) == norm,
+    );
     if (repetido) return 'Ya hay un rubro que se llama así.';
     // Sin palabras el rubro no sirve para buscar, que es para lo que existe.
     if (_palabras.isEmpty && _palabraCtrl.text.trim().isEmpty) {
@@ -333,15 +259,16 @@ class _EditorRubroState extends State<_EditorRubro> {
   /// borra un rubro y se crea otro con el mismo nombre, un lugar que haya
   /// quedado en memoria con el id viejo no pasa a apuntar al nuevo.
   String _nuevoId(String nombre) {
-    final slug =
-        BuscadorLugares.normalizar(nombre).split(RegExp(r'\s+')).join('_');
+    final slug = BuscadorLugares.normalizar(
+      nombre,
+    ).split(RegExp(r'\s+')).join('_');
     final sufijo = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
     return '${Rubros.prefijoPropio}${slug}_$sufijo';
   }
 
   void _avisar(String texto) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(texto)));
+    mostrarAviso(context, texto, error: true);
   }
 
   Future<void> _guardar() async {
@@ -354,8 +281,9 @@ class _EditorRubroState extends State<_EditorRubro> {
     final id = widget.inicial?.id ?? _nuevoId(nombre);
     setState(() => _ocupado = true);
     try {
-      await DatabaseHelper.instance
-          .guardarRubro(Rubro(id, nombre, List.of(_palabras)));
+      await DatabaseHelper.instance.guardarRubro(
+        Rubro(id, nombre, List.of(_palabras)),
+      );
       if (mounted) {
         Navigator.pop(context, _editando ? 'Rubro guardado' : 'Rubro creado');
       }
@@ -379,29 +307,16 @@ class _EditorRubroState extends State<_EditorRubro> {
     final aviso = usados == 0
         ? 'Ningún lugar lo usa.'
         : '${usados == 1 ? 'Un lugar lo usa y va a quedar' : '$usados lugares lo usan y van a quedar'} '
-            'sin rubro. Republicá sus mapas para que llegue a los usuarios.';
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: TemaApp.fondoCard,
-        title: Text('¿Borrar "${rubro.nombre}"?'),
-        content: Text(aviso,
-            style: const TextStyle(color: TemaApp.textoSecundario)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: TextButton.styleFrom(
-                foregroundColor: TemaApp.zonaRestringidaBorde),
-            child: const Text('Borrar'),
-          ),
-        ],
-      ),
+              'sin rubro. Republicá sus mapas para que llegue a los usuarios.';
+    final confirmar = await mostrarConfirmacion(
+      context,
+      titulo: '¿Borrar "${rubro.nombre}"?',
+      mensaje: aviso,
+      confirmar: 'Borrar',
+      destructiva: true,
+      iconoConfirmar: Icons.delete_rounded,
     );
-    if (confirmar != true) return;
+    if (!confirmar || !mounted) return;
     setState(() => _ocupado = true);
     try {
       await DatabaseHelper.instance.eliminarRubro(rubro.id);
@@ -416,183 +331,224 @@ class _EditorRubroState extends State<_EditorRubro> {
   Widget build(BuildContext context) {
     final faltante = _faltante;
     final inicial = widget.inicial;
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        appBar: AppBar(
-          title: Text(_editando ? 'Editar rubro' : 'Nuevo rubro'),
-          actions: [
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: TextButton(
-                onPressed: faltante == null && !_ocupado ? _guardar : null,
-                child: const Text('Guardar'),
-              ),
-            ),
-          ],
-        ),
-        body: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 20, 16, 32),
-          children: [
-            Row(
-              children: [
-                _IconoRubro(inicial?.id),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: TextField(
-                    controller: _nombreCtrl,
-                    autofocus: !_editando,
-                    textCapitalization: TextCapitalization.sentences,
-                    textInputAction: TextInputAction.next,
-                    onChanged: (_) => setState(() {}),
-                    onSubmitted: (_) => _palabraFoco.requestFocus(),
-                    style: const TextStyle(fontSize: 17),
-                    decoration: const InputDecoration(
-                      labelText: 'Nombre',
-                      hintText: 'Ej: Ferretería',
-                    ),
-                  ),
+    return AmbienteDiseno(
+      child: Builder(
+        builder: (context) {
+          final e = EstiloApp.de(context);
+          final letraGrande = TipografiaApp.esLetraGrande(context);
+          return Scaffold(
+            backgroundColor: e.fondo,
+            appBar: BarraSuperior(
+              titulo: _editando ? 'Editar rubro' : 'Nuevo rubro',
+              acciones: [
+                // En la barra y no abajo: con el teclado abierto, un botón
+                // de abajo quedaría tapado.
+                AccionBarra(
+                  icono: Icons.check_rounded,
+                  etiqueta: 'Guardar',
+                  alPresionar: faltante == null && !_ocupado ? _guardar : null,
                 ),
               ],
             ),
-            const SizedBox(height: 28),
-            Text(
-              _palabras.isEmpty
-                  ? 'Palabras'
-                  : _palabras.length == 1
-                      ? '1 palabra'
-                      : '${_palabras.length} palabras',
-              style: const TextStyle(
-                color: TemaApp.textoBlanco,
-                fontSize: 17,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Cómo se pide un lugar de este rubro: nombre, verbos '
-              '("comer"), necesidades ("hambre"), productos. En singular; '
-              'tildes y mayúsculas dan igual.',
-              style: TextStyle(
-                color: TemaApp.textoSecundario,
-                fontSize: 13,
-                height: 1.4,
-              ),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: _palabraCtrl,
-              focusNode: _palabraFoco,
-              textCapitalization: TextCapitalization.none,
-              textInputAction: TextInputAction.done,
-              onChanged: (t) {
-                _alEscribir(t);
-                setState(() {});
-              },
-              onSubmitted: _agregar,
-              decoration: InputDecoration(
-                hintText: 'Agregar palabra o frase',
-                prefixIcon: const Icon(Icons.record_voice_over_outlined,
-                    color: TemaApp.textoSecundario),
-                suffixIcon: IconButton(
-                  tooltip: 'Agregar',
-                  icon: const Icon(Icons.add_circle),
-                  color: TemaApp.acento,
-                  disabledColor: _borde,
-                  onPressed: _palabraCtrl.text.trim().isEmpty
-                      ? null
-                      : () => _agregar(_palabraCtrl.text),
+            body: SafeArea(
+              top: false,
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(
+                  EspaciadoApp.margenLateral,
+                  EspaciadoApp.margenLateral,
+                  EspaciadoApp.margenLateral,
+                  EspaciadoApp.entreSecciones,
                 ),
-              ),
-            ),
-            const SizedBox(height: 14),
-            if (_palabras.isNotEmpty)
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
                 children: [
-                  for (final p in _palabras)
-                    InputChip(
-                      label: Text(p),
-                      labelStyle: const TextStyle(
-                        color: TemaApp.textoBlanco,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w400,
-                      ),
-                      backgroundColor: TemaApp.fondoSurface,
-                      side: const BorderSide(color: _borde),
-                      shape: RoundedRectangleBorder(
-                        borderRadius:
-                            BorderRadius.circular(TemaApp.radiusChip),
-                      ),
-                      deleteIcon: const Icon(Icons.close, size: 16),
-                      deleteIconColor: TemaApp.textoSecundario,
-                      deleteButtonTooltipMessage: 'Quitar "$p"',
-                      onDeleted: () => setState(() => _palabras.remove(p)),
-                    ),
-                ],
-              ),
-            // Con el nombre vacío no se avisa nada: el botón Guardar apagado
-            // alcanza, y un rubro nuevo no arranca con un cartel de error.
-            if (faltante != null && _nombreCtrl.text.trim().isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  const Icon(Icons.info_outline,
-                      size: 18, color: TemaApp.advertencia),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      faltante,
-                      style: const TextStyle(
-                          color: TemaApp.advertencia, fontSize: 13),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            if (inicial != null) ...[
-              const SizedBox(height: 36),
-              const Divider(),
-              const SizedBox(height: 12),
-              if (Rubros.sePuedeBorrar(inicial.id))
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                    onPressed: _ocupado ? null : _borrar,
-                    style: TextButton.styleFrom(
-                      foregroundColor: TemaApp.zonaRestringidaBorde,
-                    ),
-                    icon: const Icon(Icons.delete_outline),
-                    label: const Text('Borrar rubro'),
-                  ),
-                )
-              else
-                const Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(Icons.lock_outline,
-                        size: 18, color: TemaApp.textoSecundario),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'No se puede borrar: se usa para preguntar si el baño '
-                        'es de hombres o de mujeres. Sus palabras sí se '
-                        'pueden cambiar.',
-                        style: TextStyle(
-                          color: TemaApp.textoSecundario,
-                          fontSize: 13,
-                          height: 1.4,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      // Con letra grande, sin el cuadro (decorativo).
+                      if (!letraGrande) ...[
+                        // A la altura del campo (52), centrado.
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: CuadroIcono(icono: iconoRubro(inicial?.id)),
+                        ),
+                        const SizedBox(width: EspaciadoApp.medio),
+                      ],
+                      Expanded(
+                        child: CampoTexto(
+                          etiqueta: 'Nombre',
+                          ayuda: 'Por ejemplo, Ferretería',
+                          controlador: _nombreCtrl,
+                          autofocus: !_editando,
+                          capitalizacion: TextCapitalization.sentences,
+                          accionTeclado: TextInputAction.next,
+                          alCambiar: (_) => setState(() {}),
+                          alEnviar: (_) => _palabraFoco.requestFocus(),
                         ),
                       ),
+                    ],
+                  ),
+                  const SizedBox(height: EspaciadoApp.entreSecciones),
+                  EncabezadoSeccion(
+                    titulo: _palabras.isEmpty
+                        ? 'Palabras'
+                        : _palabras.length == 1
+                        ? '1 palabra'
+                        : '${_palabras.length} palabras',
+                  ),
+                  const SizedBox(height: EspaciadoApp.chico),
+                  Text(
+                    'Cómo se pide un lugar de este rubro: nombre, verbos '
+                    '("comer"), necesidades ("hambre"), productos. En '
+                    'singular; tildes y mayúsculas dan igual.',
+                    style: TipografiaApp.subtitulo.copyWith(
+                      color: e.textoSecundario,
+                    ),
+                  ),
+                  const SizedBox(height: EspaciadoApp.margenLateral),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Expanded(
+                        child: CampoTexto(
+                          etiqueta: 'Palabra o frase',
+                          ayuda: 'Agregar palabra o frase',
+                          icono: Icons.record_voice_over_rounded,
+                          controlador: _palabraCtrl,
+                          focusNode: _palabraFoco,
+                          accionTeclado: TextInputAction.done,
+                          alCambiar: (t) {
+                            _alEscribir(t);
+                            setState(() {});
+                          },
+                          alEnviar: _agregar,
+                        ),
+                      ),
+                      const SizedBox(width: EspaciadoApp.chico),
+                      // El botón redondo (48), a la altura del campo (52).
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 2),
+                        child: BotonRedondo(
+                          icono: Icons.add_rounded,
+                          etiqueta: 'Agregar',
+                          alPresionar: _palabraCtrl.text.trim().isEmpty
+                              ? null
+                              : () => _agregar(_palabraCtrl.text),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (_palabras.isNotEmpty) ...[
+                    const SizedBox(height: EspaciadoApp.margenLateral),
+                    Wrap(
+                      spacing: EspaciadoApp.chico,
+                      runSpacing: EspaciadoApp.chico,
+                      children: [
+                        for (final p in _palabras)
+                          _ChipPalabra(
+                            texto: p,
+                            alQuitar: () => setState(() => _palabras.remove(p)),
+                          ),
+                      ],
                     ),
                   ],
-                ),
-            ],
-          ],
-        ),
+                  // Con el nombre vacío no se avisa nada: el botón Guardar
+                  // apagado alcanza, y un rubro nuevo no arranca con un
+                  // cartel de error.
+                  if (faltante != null &&
+                      _nombreCtrl.text.trim().isNotEmpty) ...[
+                    const SizedBox(height: EspaciadoApp.margenLateral),
+                    _Aclaracion(
+                      icono: Icons.info_rounded,
+                      texto: faltante,
+                      color: e.advertencia,
+                    ),
+                  ],
+                  if (inicial != null) ...[
+                    const SizedBox(height: EspaciadoApp.entreSecciones),
+                    if (Rubros.sePuedeBorrar(inicial.id))
+                      BotonSecundario(
+                        texto: 'Borrar rubro',
+                        icono: Icons.delete_rounded,
+                        destructivo: true,
+                        expandido: true,
+                        alPresionar: _ocupado ? null : _borrar,
+                      )
+                    else
+                      PanelRelieve(
+                        hundido: true,
+                        child: _Aclaracion(
+                          icono: Icons.lock_rounded,
+                          texto:
+                              'No se puede borrar: se usa para preguntar si el '
+                              'baño es de hombres o de mujeres. Sus palabras sí '
+                              'se pueden cambiar.',
+                          color: e.textoSecundario,
+                        ),
+                      ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
       ),
+    );
+  }
+}
+
+/// Una palabra del rubro: la palabra en un chip hundido (es un dato) y, al
+/// lado, el botón redondo para quitarla ("Quitar «comer»"), que TalkBack lee
+/// aparte.
+class _ChipPalabra extends StatelessWidget {
+  const _ChipPalabra({required this.texto, required this.alQuitar});
+
+  final String texto;
+  final VoidCallback alQuitar;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Flexible(child: ChipApp(texto: texto)),
+        BotonRedondo(
+          icono: Icons.close_rounded,
+          etiqueta: 'Quitar «$texto»',
+          alPresionar: alQuitar,
+        ),
+      ],
+    );
+  }
+}
+
+/// Una aclaración con su ícono: lo que falta (en ámbar) o por qué no se
+/// puede borrar (en gris).
+class _Aclaracion extends StatelessWidget {
+  const _Aclaracion({
+    required this.icono,
+    required this.texto,
+    required this.color,
+  });
+
+  final IconData icono;
+  final String texto;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ExcludeSemantics(
+          child: Icon(icono, size: FormasApp.iconoChico, color: color),
+        ),
+        const SizedBox(width: EspaciadoApp.chico),
+        Expanded(
+          child: Text(
+            texto,
+            style: TipografiaApp.subtitulo.copyWith(color: color),
+          ),
+        ),
+      ],
     );
   }
 }

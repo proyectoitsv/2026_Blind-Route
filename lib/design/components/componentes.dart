@@ -22,14 +22,18 @@
 //                            BotonSecundario, BotonRedondo, FilaBotones
 //                            (lado a lado o apilados)
 //   campo_texto.dart         CampoTexto (oculto para una contraseña, con
-//                            pistas para autocompletar, deshabilitado y
-//                            con el error debajo) y CampoTexto.busqueda
-//                            (con "Borrar búsqueda")
+//                            pistas para autocompletar, deshabilitado,
+//                            con el error o una aclaración debajo, una
+//                            unidad al final y varios renglones) y
+//                            CampoTexto.busqueda (con "Borrar búsqueda")
 //   chips.dart               ChipApp (hundido), ChipFiltro
 //   confirmacion.dart        mostrarConfirmacion (una hoja con "Cancelar"
 //                            y la acción, en lugar del AlertDialog)
 //   control_segmentado.dart  ControlSegmentado, OpcionSegmento
 //   cuadro_icono.dart        CuadroIcono (ícono en un cuadro hundido)
+//   deslizador.dart          Deslizador (un valor de un rango: pista
+//                            hundida y perilla levantada, con el valor
+//                            escrito y dicho con su unidad)
 //   estado_pantalla.dart     EstadoPantalla (vacía, con un error o
 //                            esperando)
 //   grupo_filas.dart         EncabezadoSeccion, GrupoFilas, FilaGrupo
@@ -61,6 +65,7 @@ export 'chips.dart';
 export 'confirmacion.dart';
 export 'control_segmentado.dart';
 export 'cuadro_icono.dart';
+export 'deslizador.dart';
 export 'estado_pantalla.dart';
 export 'grupo_filas.dart';
 export 'hoja_inferior.dart';
