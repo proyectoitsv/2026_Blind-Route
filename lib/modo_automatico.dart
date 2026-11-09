@@ -7,19 +7,20 @@ import 'bluetooth_helper.dart';
 import 'pantalla_naveg.dart';
 import 'supabase_service.dart';
 import 'voz_service.dart';
-import 'tema.dart';
+import 'design/design.dart';
 import 'piso_util.dart';
- 
+
 class ModoAutomatico extends StatefulWidget {
   const ModoAutomatico({super.key});
- 
+
   @override
   State<ModoAutomatico> createState() => _ModoAutomaticoState();
 }
- 
+
 class _ModoAutomaticoState extends State<ModoAutomatico> {
   bool _navegando = false;
-  bool _resolviendo = false; // en medio de resolver una llegada (chequeo/descarga)
+  bool _resolviendo =
+      false; // en medio de resolver una llegada (chequeo/descarga)
   String _estado = 'Iniciando...';
   int _beaconsDetectados = 0;
 
@@ -120,8 +121,9 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
   /// [_vigenciaLectura].
   bool get _hayBeaconsConMapa {
     final ahora = DateTime.now();
-    return _lecturas.values
-        .any((l) => ahora.difference(l.visto) <= _vigenciaLectura);
+    return _lecturas.values.any(
+      (l) => ahora.difference(l.visto) <= _vigenciaLectura,
+    );
   }
 
   /// Tiempo mínimo de escucha antes de elegir piso. La diferencia de señal
@@ -150,17 +152,17 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
   /// Último texto de estado escrito, para no llamar a setState (y redibujar)
   /// en cada barrido cuando el texto no cambió.
   String _ultimoEstadoEscrito = '';
- 
+
   // Procesador compartido que se pasara a PantallaNavegacion
   final ProcesadorSenal _procesador = ProcesadorSenal();
   final VozService _voz = VozService();
- 
+
   @override
   void initState() {
     super.initState();
     _iniciarBusqueda();
   }
- 
+
   @override
   void dispose() {
     _timeoutTimer?.cancel();
@@ -172,7 +174,7 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     }
     super.dispose();
   }
- 
+
   /// Carga (o recarga) el índice de beacons locales. También le declara al
   /// procesador cuáles son las MACs de beacons conocidos: sin esa lista
   /// acumula historial de RSSI de todos los dispositivos del ambiente.
@@ -192,8 +194,10 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       // que ahora pertenecen a otro piso: no valen más.
       _lecturas.removeWhere((mac, l) => pisoDeMac[mac] != l.pisoId);
       _procesador.definirBeaconsRelevantes(pisoDeMac.keys);
-      debugPrint('[Índice] ${pisoDeMac.length} beacons en '
-          '${infoPiso.length} piso(s) local(es).');
+      debugPrint(
+        '[Índice] ${pisoDeMac.length} beacons en '
+        '${infoPiso.length} piso(s) local(es).',
+      );
     } catch (e) {
       debugPrint('[Índice] No se pudo cargar: $e');
     }
@@ -219,7 +223,7 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       }
       return;
     }
- 
+
     if (mounted) {
       setState(() => _estado = 'Buscando beacons de BlindRoute...');
     }
@@ -235,12 +239,12 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       },
       removeIfGone: const Duration(seconds: 3),
     );
- 
+
     if (!scanOk && mounted) {
       setState(() => _estado = 'No se pudo iniciar el escaneo');
       return;
     }
- 
+
     _timeoutTimer = Timer(const Duration(seconds: 15), () {
       if (mounted && !_navegando && _beaconsDetectados == 0) {
         setState(() => _estado = 'No se encontraron mapas.');
@@ -248,10 +252,10 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       }
     });
   }
- 
+
   Future<void> _procesarResultados(List<ScanResult> resultados) async {
     if (_navegando || _resolviendo) return;
- 
+
     // Procesar señales para ir llenando la ventana de mediana de cada beacon,
     // así al pasar a PantallaNavegacion (mismo ProcesadorSenal compartido) el
     // filtro ya tiene historial y la ubicación se estabiliza más rápido.
@@ -283,15 +287,17 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       _lecturas[mac] = _Lectura(pisoId, rssi, res.timeStamp);
     }
     _lecturas.removeWhere(
-        (_, l) => ahora.difference(l.visto) > _vigenciaLectura);
+      (_, l) => ahora.difference(l.visto) > _vigenciaLectura,
+    );
 
     final evidencia = <int, _EvidenciaPiso>{};
     _lecturas.forEach((mac, l) {
       final info = _infoPiso[l.pisoId];
       if (info == null) return;
       evidencia
-          .putIfAbsent(l.pisoId, () => _EvidenciaPiso(info))
-          .rssiPorMac[mac] = l.rssi;
+              .putIfAbsent(l.pisoId, () => _EvidenciaPiso(info))
+              .rssiPorMac[mac] =
+          l.rssi;
     });
 
     // 1) Elegir el piso con más señal, tras unos segundos de escucha.
@@ -299,21 +305,26 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       _sinMapaLocalDesde = null;
       if (!_logPrimerBeacon) {
         _logPrimerBeacon = true;
-        debugPrint('[Modo automático] Primer beacon con mapa local a los '
-            '${_segundosDesdeInicio()} s.');
+        debugPrint(
+          '[Modo automático] Primer beacon con mapa local a los '
+          '${_segundosDesdeInicio()} s.',
+        );
       }
       _inicioVentanaPiso ??= ahora;
       final escuchado = ahora.difference(_inicioVentanaPiso!);
 
       final ranking = evidencia.values.toList()
-        ..sort((a, b) => b.puntaje(_beaconsPorPiso)
-            .compareTo(a.puntaje(_beaconsPorPiso)));
+        ..sort(
+          (a, b) =>
+              b.puntaje(_beaconsPorPiso).compareTo(a.puntaje(_beaconsPorPiso)),
+        );
       final mejor = ranking.first;
       final ventaja = ranking.length == 1
           ? double.infinity
           : mejor.puntaje(_beaconsPorPiso) -
-              ranking[1].puntaje(_beaconsPorPiso);
-      final decidido = escuchado >= _ventanaEleccionPiso &&
+                ranking[1].puntaje(_beaconsPorPiso);
+      final decidido =
+          escuchado >= _ventanaEleccionPiso &&
           (ventaja >= _margenPisoDb || escuchado >= _ventanaMaxEleccionPiso);
 
       if (!decidido) {
@@ -321,19 +332,25 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
         _mostrarEstado(
           'Detectando piso: ${mejor.nombrePiso} '
           '(${mejor.puntaje(_beaconsPorPiso).toStringAsFixed(0)} dBm)...',
-          beacons: evidencia.values
-              .fold<int>(0, (n, e) => n + e.rssiPorMac.length),
+          beacons: evidencia.values.fold<int>(
+            0,
+            (n, e) => n + e.rssiPorMac.length,
+          ),
         );
         return;
       }
 
       final detalle = ranking
-          .map((e) =>
-              '${e.nombrePiso} ${e.puntaje(_beaconsPorPiso).toStringAsFixed(1)} dBm '
-              '(${e.rssiPorMac.length})')
+          .map(
+            (e) =>
+                '${e.nombrePiso} ${e.puntaje(_beaconsPorPiso).toStringAsFixed(1)} dBm '
+                '(${e.rssiPorMac.length})',
+          )
           .join(' | ');
-      debugPrint('[Piso] Elegido ${mejor.nombrePiso} a los '
-          '${_segundosDesdeInicio()} s. Candidatos: $detalle');
+      debugPrint(
+        '[Piso] Elegido ${mejor.nombrePiso} a los '
+        '${_segundosDesdeInicio()} s. Candidatos: $detalle',
+      );
 
       _resolviendo = true;
       await _resolverLlegadaLocal(mejor.info);
@@ -355,18 +372,21 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     // Y recién después de [_esperaAntesDeNube] sin beacons con mapa local, y
     // sin frenar el procesamiento (ver "LA NUBE NO FRENA AL MAPA LOCAL"). Si
     // el teléfono no tiene ningún mapa no hay nada que esperar.
-    final candidatas = macsDesconocidas.entries
-        .where((e) => !_macsSinMapa.contains(e.key))
-        .toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
+    final candidatas =
+        macsDesconocidas.entries
+            .where((e) => !_macsSinMapa.contains(e.key))
+            .toList()
+          ..sort((a, b) => b.value.compareTo(a.value));
     final macs = candidatas
         .take(_maxMacsConsultaNube)
         .map((e) => e.key)
         .toList();
 
-    final esperandoMapaLocal = _pisoDeMac.isNotEmpty &&
+    final esperandoMapaLocal =
+        _pisoDeMac.isNotEmpty &&
         ahora.difference(_sinMapaLocalDesde!) < _esperaAntesDeNube;
-    final pasoThrottle = _ultimaConsultaNube == null ||
+    final pasoThrottle =
+        _ultimaConsultaNube == null ||
         ahora.difference(_ultimaConsultaNube!) > const Duration(seconds: 10);
     if (macs.isNotEmpty &&
         !esperandoMapaLocal &&
@@ -378,7 +398,10 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     }
 
     // 3) Feedback de dispositivos detectados sin mapa (comportamiento de siempre)
-    if (mounted && !_navegando && !_resolviendo && macsDesconocidas.isNotEmpty) {
+    if (mounted &&
+        !_navegando &&
+        !_resolviendo &&
+        macsDesconocidas.isNotEmpty) {
       _mostrarEstado(
         'Detectados ${macsDesconocidas.length} dispositivo(s)...',
         beacons: macsDesconocidas.length,
@@ -407,8 +430,10 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
   Future<void> _consultarNube(List<String> macs) async {
     _consultandoNube = true;
     _ultimaConsultaNube = DateTime.now();
-    debugPrint('[Modo automático] Consultando la nube por ${macs.length} '
-        'dispositivo(s) a los ${_segundosDesdeInicio()} s.');
+    debugPrint(
+      '[Modo automático] Consultando la nube por ${macs.length} '
+      'dispositivo(s) a los ${_segundosDesdeInicio()} s.',
+    );
     try {
       final remoteId = await SupabaseService.instance
           .buscarMapaPorMacs(macs)
@@ -478,7 +503,8 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
         avisoDescarga = await _descargarPendientes(
           resultado.pendientes,
           remoteId: remoteId,
-          reemplazo: remoteId != null && resultado.eliminados.contains(remoteId),
+          reemplazo:
+              remoteId != null && resultado.eliminados.contains(remoteId),
         );
       } catch (e) {
         // Sin datos / timeout / error: se sigue con lo que haya en el teléfono.
@@ -538,13 +564,17 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     final estePendiente = remoteId != null && pendientes.contains(remoteId);
     final esEsteLugar = estePendiente || reemplazo;
     if (mounted) {
-      setState(() => _estado = esEsteLugar
-          ? 'Actualizando mapa...'
-          : 'Descargando los otros pisos del edificio...');
+      setState(
+        () => _estado = esEsteLugar
+            ? 'Actualizando mapa...'
+            : 'Descargando los otros pisos del edificio...',
+      );
     }
-    _voz.hablar(esEsteLugar
-        ? 'Actualizando el mapa de este lugar.'
-        : 'Descargando los otros pisos.');
+    _voz.hablar(
+      esEsteLugar
+          ? 'Actualizando el mapa de este lugar.'
+          : 'Descargando los otros pisos.',
+    );
 
     try {
       if (remoteId != null && estePendiente) {
@@ -578,7 +608,7 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     if (mounted) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(
+        RutaApp<void>(
           builder: (context) => PantallaNavegacion(
             pisoId: info['id'],
             rutaImagen: info['ruta_imagen'],
@@ -593,46 +623,40 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       );
     }
   }
- 
+
   @override
   Widget build(BuildContext context) {
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              SizedBox(
-                width: 48, height: 48,
-                child: CircularProgressIndicator(
-                  strokeWidth: 3,
-                  color: TemaApp.acento,
-                ),
-              ),
-              const SizedBox(height: 28),
-              Text(
-                _estado,
-                style: const TextStyle(fontSize: 22, color: TemaApp.textoBlanco, fontWeight: FontWeight.w600),
-                textAlign: TextAlign.center,
-              ),
-              if (_beaconsDetectados > 0)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Text(
-                    '$_beaconsDetectados dispositivo(s) en rango',
-                    style: const TextStyle(fontSize: 15, color: TemaApp.textoSecundario),
+    final dispositivos = _beaconsDetectados > 0
+        ? '$_beaconsDetectados dispositivo(s) en rango'
+        : null;
+    return AmbienteDiseno(
+      child: Builder(
+        builder: (context) => Scaffold(
+          backgroundColor: EstiloApp.de(context).fondo,
+          body: SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                // Sin nada que gire: el texto dice qué se espera. Lo que pasa
+                // ya lo dice la voz: TalkBack lo lee al llegar con el foco,
+                // sin anunciar cada cambio encima de ella.
+                child: Semantics(
+                  container: true,
+                  label: [_estado, ?dispositivos].join('. '),
+                  excludeSemantics: true,
+                  child: EstadoPantalla(
+                    icono: Icons.hourglass_empty_rounded,
+                    titulo: _estado,
+                    detalle: dispositivos,
                   ),
                 ),
-            ],
+              ),
+            ),
           ),
         ),
       ),
     );
   }
 }
-
 
 /// Última lectura nueva de un beacon con mapa local (ver "LECTURAS DE
 /// BEACONS CON MAPA").

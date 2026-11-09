@@ -23,10 +23,8 @@
 //   tema_blindroute.dart TemaBlindRoute.oscuro: el ThemeData
 //   components/          los componentes (componentes.dart los lista)
 //
-// TemaApp (tema_legado.dart), la API de antes, no se exporta acá: lo siguen
-// usando por lib/tema.dart las pantallas que todavía no se migraron. La
-// galería de componentes (galeria_componentes.dart) tampoco: es sólo para
-// debug y la abre lib/main_galeria.dart.
+// La galería de componentes (galeria_componentes.dart) no se exporta: es sólo
+// para debug y la abre lib/main_galeria.dart.
 //
 // Los componentes importan los archivos de tokens uno por uno, no este
 // archivo, para que no haya imports en círculo.

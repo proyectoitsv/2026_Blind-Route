@@ -34,8 +34,8 @@ import 'nube_falsa.dart';
 // de la nube, y «Cerrar sesión» sale de verdad.
 //
 // ─── Lo que no se arma ───
-// La configuración y la navegación de un piso (todavía sin migrar) y los
-// mapas publicados (fase 5.5, con su test): de esas se mira qué ruta se abre
+// La configuración y la navegación de un piso y los mapas publicados (cada
+// una con su test): de esas se mira qué ruta se abre
 // y se saca antes de que se arme. La galería del teléfono se simula sobre el
 // canal de image_picker: se cancela.
 

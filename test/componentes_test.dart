@@ -330,8 +330,10 @@ void main() {
       );
     });
 
-    testWidgets('el principal grande: llena el lugar, acento levantado con '
-        'radio 20, y TalkBack lee el texto sin la aclaración', (tester) async {
+    testWidgets('la ficha: llena el lugar, levantada con borde y radio 20, la '
+        'franja de acento abajo, y TalkBack lee sólo el título', (
+      tester,
+    ) async {
       final semantica = tester.ensureSemantics();
       var veces = 0;
       await armar(
@@ -341,7 +343,8 @@ void main() {
           child: BotonPrincipalGrande(
             icono: Icons.explore_rounded,
             texto: 'Comenzar a navegar',
-            detalle: 'Tocá para comenzar',
+            detalle: 'Primero te ubico.',
+            accion: 'Empezar',
             alPresionar: () => veces++,
           ),
         ),
@@ -349,31 +352,52 @@ void main() {
       final boton = find.byType(BotonPrincipalGrande);
       expect(tester.getSize(boton).height, 400);
       final d = relieveDe(tester, boton);
-      expect(d.color, ColoresApp.acento);
+      expect(d.color, ColoresApp.superficie);
       expect(d.elevacion, 1);
       expect(d.radio, FormasApp.bordeTarjeta);
-      expect(d.borde, BorderSide.none);
-      // El ícono y los textos, del color del texto del botón (11,47 sobre el
-      // acento).
-      final icono = find.byIcon(Icons.explore_rounded);
-      expect(tester.widget<Icon>(icono).size, FormasApp.iconoGrande);
-      expect(
-        IconTheme.of(tester.element(icono)).color,
-        ColoresApp.textoSobreAcento,
-      );
-      final titulo = tester
-          .renderObject<RenderParagraph>(find.text('Comenzar a navegar'))
+      expect(d.borde.color, ColoresApp.borde);
+      expect(d.borde.width, FormasApp.grosorLinea);
+      // El ícono en acento, en el cuadro hundido de 64.
+      final cuadro = tester.widget<CuadroIcono>(find.byType(CuadroIcono));
+      expect(cuadro.lado, FormasApp.cuadroFicha);
+      expect(cuadro.color, ColoresApp.acento);
+      Color colorDe(String texto) => tester
+          .renderObject<RenderParagraph>(find.text(texto))
           .text
-          .style!;
-      expect(titulo.color, ColoresApp.textoSobreAcento);
-      expect(titulo.fontSize, TipografiaApp.titulo.fontSize);
+          .style!
+          .color!;
+      expect(colorDe('Comenzar a navegar'), ColoresApp.textoPrincipal);
+      expect(colorDe('Primero te ubico.'), ColoresApp.textoSecundario);
+      expect(colorDe('Empezar'), ColoresApp.textoSobreAcento);
       expect(
         tester
-            .renderObject<RenderParagraph>(find.text('Tocá para comenzar'))
+            .renderObject<RenderParagraph>(find.text('Comenzar a navegar'))
             .text
             .style!
-            .color,
-        ColoresApp.textoSobreAcento,
+            .fontSize,
+        TipografiaApp.titulo.fontSize,
+      );
+      // La franja, de acento y contra el borde de abajo, a todo el ancho; el
+      // cuerpo, centrado en lo que queda arriba.
+      final franja = find.ancestor(
+        of: find.text('Empezar'),
+        matching: find.byWidgetPredicate(
+          (w) =>
+              w is DecoratedBox &&
+              w.decoration is BoxDecoration &&
+              (w.decoration as BoxDecoration).color == ColoresApp.acento,
+        ),
+      );
+      expect(franja, findsOneWidget);
+      final caja = tester.getRect(boton);
+      final rectFranja = tester.getRect(franja);
+      expect(rectFranja.bottom, moreOrLessEquals(caja.bottom));
+      expect(rectFranja.width, moreOrLessEquals(caja.width));
+      final rectCuerpo = tester.getRect(find.byType(CuadroIcono));
+      final rectDetalle = tester.getRect(find.text('Primero te ubico.'));
+      expect(
+        rectCuerpo.top - caja.top,
+        moreOrLessEquals(rectFranja.top - rectDetalle.bottom, epsilon: 1),
       );
       expect(
         tester.getSemantics(find.byType(FilledButton)),
@@ -384,14 +408,15 @@ void main() {
           hasTapAction: true,
         ),
       );
-      expect(find.bySemanticsLabel(RegExp('Tocá')), findsNothing);
+      expect(find.bySemanticsLabel(RegExp('Primero')), findsNothing);
+      expect(find.bySemanticsLabel(RegExp('Empezar')), findsNothing);
       await tester.tap(boton);
       expect(veces, 1);
       semantica.dispose();
     });
 
     for (final reducido in [false, true]) {
-      testWidgets('el principal grande presionado se hunde sin la luz'
+      testWidgets('la ficha presionada se hunde'
           '${reducido ? '; con movimiento reducido, sin achicarse' : ' y se '
                     'achica a 0,97'}', (tester) async {
         await armar(
@@ -399,6 +424,7 @@ void main() {
           BotonPrincipalGrande(
             icono: Icons.explore_rounded,
             texto: 'Comenzar a navegar',
+            accion: 'Empezar',
             alPresionar: () {},
           ),
           sinAnimaciones: reducido,
@@ -414,7 +440,7 @@ void main() {
         await tester.pump(MovimientoApp.presion);
         final hundido = relieveDe(tester, boton);
         expect(hundido.elevacion, -1);
-        expect(hundido.sombraClara, isNull);
+        expect(hundido.color, ColoresApp.hundido);
         expect(escala(), reducido ? 1 : MovimientoApp.escalaPresion);
         await dedo.up();
         await tester.pumpAndSettle();
@@ -423,49 +449,55 @@ void main() {
       });
     }
 
-    testWidgets('el principal grande con la letra al 200 %: mide lo que pide '
-        'su contenido, sin desbordes', (tester) async {
+    testWidgets('la ficha con la letra al 200 %: mide lo que pide su '
+        'contenido, sin desbordes', (tester) async {
       await armar(
         tester,
         BotonPrincipalGrande(
           icono: Icons.explore_rounded,
           texto: 'Comenzar a navegar',
-          detalle: 'Tocá para comenzar',
+          detalle: 'Primero te ubico.',
+          accion: 'Empezar',
           alPresionar: () {},
         ),
         escala: 2,
       );
       expect(tester.takeException(), isNull);
-      // En una lista no le dan alto: mide el ícono y los textos, con su aire.
+      // En una lista no le dan alto: mide el cuadro, los textos y la franja.
       expect(
         tester.getSize(find.byType(BotonPrincipalGrande)).height,
         greaterThan(
-          FormasApp.iconoGrande +
+          FormasApp.cuadroFicha +
               tester.getSize(find.text('Comenzar a navegar')).height +
-              tester.getSize(find.text('Tocá para comenzar')).height,
+              tester.getSize(find.text('Primero te ubico.')).height +
+              tester.getSize(find.text('Empezar')).height,
         ),
       );
     });
 
-    testWidgets('el principal grande deshabilitado queda plano y se sigue '
+    testWidgets('la ficha deshabilitada queda plana, sin acento, y se sigue '
         'leyendo', (tester) async {
       await armar(
         tester,
         const BotonPrincipalGrande(
           icono: Icons.explore_rounded,
           texto: 'Comenzar a navegar',
+          accion: 'Empezar',
           alPresionar: null,
         ),
       );
       final d = relieveDe(tester, find.byType(BotonPrincipalGrande));
       expect(d.elevacion, 0);
       expect(d.color, ColoresApp.superficie);
+      Color colorDe(String texto) => tester
+          .renderObject<RenderParagraph>(find.text(texto))
+          .text
+          .style!
+          .color!;
+      expect(colorDe('Comenzar a navegar'), ColoresApp.textoSecundario);
+      expect(colorDe('Empezar'), ColoresApp.textoSecundario);
       expect(
-        tester
-            .renderObject<RenderParagraph>(find.text('Comenzar a navegar'))
-            .text
-            .style!
-            .color,
+        tester.widget<CuadroIcono>(find.byType(CuadroIcono)).color,
         ColoresApp.textoSecundario,
       );
     });
@@ -593,6 +625,60 @@ void main() {
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
       semantica.dispose();
+    });
+
+    testWidgets('el redondo resaltado: de acento, con el ícono oscuro y sin el '
+        'borde; presionado sigue de acento', (tester) async {
+      await armar(
+        tester,
+        Center(
+          child: BotonRedondo(
+            icono: Icons.my_location_rounded,
+            etiqueta: 'Centrar',
+            resaltado: true,
+            alPresionar: () {},
+          ),
+        ),
+      );
+      final boton = find.byType(BotonRedondo);
+      final d = relieveDe(tester, boton);
+      expect(d.color, ColoresApp.acento);
+      expect(d.borde, BorderSide.none);
+      expect(
+        IconTheme.of(
+          tester.element(find.byIcon(Icons.my_location_rounded)),
+        ).color,
+        ColoresApp.textoSobreAcento,
+      );
+      final dedo = await tester.startGesture(tester.getCenter(boton));
+      await tester.pump(const Duration(milliseconds: 150));
+      await tester.pump(MovimientoApp.presion);
+      final hundido = relieveDe(tester, boton);
+      expect(hundido.color, ColoresApp.acento);
+      expect(hundido.sombraClara, isNull);
+      await dedo.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('el cuadro con ícono se puede agrandar', (tester) async {
+      await armar(
+        tester,
+        const Center(
+          child: CuadroIcono(
+            icono: Icons.turn_left_rounded,
+            lado: FormasApp.cuadroIndicacion,
+            tamanoIcono: FormasApp.iconoIndicacion,
+          ),
+        ),
+      );
+      expect(
+        tester.getSize(find.byType(CuadroIcono)),
+        const Size.square(FormasApp.cuadroIndicacion),
+      );
+      expect(
+        tester.widget<Icon>(find.byIcon(Icons.turn_left_rounded)).size,
+        FormasApp.iconoIndicacion,
+      );
     });
 
     testWidgets('los secundarios miden 48 o más para tocar', (tester) async {
@@ -1017,6 +1103,30 @@ void main() {
   // ── Chips ───────────────────────────────────────────────────────────────
 
   group('chips', () {
+    testWidgets('el de filtro lleva su ícono, elegido o no, después de la '
+        'tilde', (tester) async {
+      await armar(
+        tester,
+        Wrap(
+          children: [
+            ChipFiltro(
+              texto: 'PB',
+              icono: Icons.my_location_rounded,
+              seleccionado: true,
+              alCambiar: (_) {},
+            ),
+          ],
+        ),
+      );
+      final tilde = tester.getCenter(find.byIcon(Icons.check_rounded));
+      final icono = tester.getCenter(find.byIcon(Icons.my_location_rounded));
+      expect(tilde.dx, lessThan(icono.dx));
+      expect(
+        tester.widget<Icon>(find.byIcon(Icons.my_location_rounded)).color,
+        ColoresApp.textoSobreAcento,
+      );
+    });
+
     testWidgets('el de filtro se prende, mide 48 y se lee elegido', (
       tester,
     ) async {
@@ -2050,7 +2160,7 @@ void main() {
         'en rojo; da true sólo al confirmar', (tester) async {
       final semantica = tester.ensureSemantics();
       final resultados = <bool>[];
-      // Con el tema viejo, como desde una pantalla sin migrar.
+      // Con otro tema, como el del MaterialApp de las apps.
       await armar(tester, abridor(resultados), tema: ThemeData.light());
       await tester.tap(find.text('Abrir'));
       await tester.pumpAndSettle();
@@ -2442,6 +2552,48 @@ void main() {
           ..path(color: ColoresApp.acento),
       );
       semantica.dispose();
+    });
+
+    testWidgets('sobre el plano: sin el cabezal, y con zoom los trazos miden '
+        'lo mismo en pantalla', (tester) async {
+      await armar(
+        tester,
+        const SizedBox(
+          height: 240,
+          child: LineaRuta(
+            tramos: tramosEjemplo,
+            tramoActual: 1,
+            avance: 0.5,
+            mostrarCabezal: false,
+            escalaVista: 2,
+          ),
+        ),
+      );
+      final capas = find.descendant(
+        of: find.byType(LineaRuta),
+        matching: find.byType(CustomPaint),
+      );
+      // Sólo la de la ruta: el cabezal era la segunda.
+      expect(capas, findsOneWidget);
+      expect(
+        tester.renderObject(capas),
+        paints
+          ..path(
+            color: ColoresApp.rutaRanura,
+            strokeWidth: (FormasApp.grosorRuta + 2 * FormasApp.bordeRanura) / 2,
+          )
+          ..path(color: ColoresApp.rutaRanura)
+          ..path(color: ColoresApp.rutaRanura)
+          ..path(color: ColoresApp.hecho, strokeWidth: FormasApp.grosorRuta / 2)
+          ..path(
+            color: ColoresApp.siguiente,
+            strokeWidth: FormasApp.grosorRuta / 2,
+          )
+          ..path(
+            color: ColoresApp.acento,
+            strokeWidth: FormasApp.grosorRutaActual / 2,
+          ),
+      );
     });
   });
 
@@ -3248,7 +3400,15 @@ void main() {
       Future<void> revisar() async {
         final lista = find.byType(Scrollable).first;
         for (var i = 0; i < 50; i++) {
-          await expectLater(tester, meetsGuideline(textContrastGuideline));
+          // Un control cortado debajo de la barra deja ver sólo su borde, y la
+          // guía lo toma por el color del texto (3,94). Si falla, se corre un
+          // poco y se vuelve a mirar: un contraste malo de verdad sigue
+          // fallando.
+          if (!(await textContrastGuideline.evaluate(tester)).passed) {
+            await tester.drag(lista, const Offset(0, -40));
+            await tester.pumpAndSettle();
+            await expectLater(tester, meetsGuideline(textContrastGuideline));
+          }
           final antes = tester.state<ScrollableState>(lista).position.pixels;
           await tester.drag(lista, const Offset(0, -500));
           await tester.pumpAndSettle();

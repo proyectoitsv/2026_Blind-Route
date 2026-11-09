@@ -37,9 +37,7 @@ import 'nube_falsa.dart';
 // queda apagado, como en un teléfono sin Bluetooth.
 //
 // ─── El plano ───
-// Un PNG de 1 × 1 en un archivo temporal: MapaWidget lo lee de verdad. Lo que
-// se dibuja adentro (los marcadores, la grilla) es el MapaWidget de siempre,
-// que se migra en la 5.7: acá no se revisa su contraste.
+// Un PNG de 1 × 1 en un archivo temporal: MapaWidget lo lee de verdad.
 
 /// Un PNG de 1 × 1, transparente.
 const String _png1x1 =
@@ -340,8 +338,8 @@ void main() {
         'filtro; lo que dice TalkBack, en orden; un solo botón principal; '
         'nada gira; 48 dp, etiquetas y contraste', (tester) async {
       final semantica = tester.ensureSemantics();
-      // Sin lugares: sus nombres sobre el plano son del MapaWidget de
-      // siempre (5.7), que no pasa el contraste.
+      // Sin lugares, para el orden de TalkBack: sus nombres sobre el plano
+      // se prueban con el plano (navegacion_test.dart).
       _cargarPiso(conLugares: false);
       await _armar(tester);
       expect(find.byType(AmbienteDiseno), findsOneWidget);

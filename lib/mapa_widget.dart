@@ -8,8 +8,42 @@ import 'zona_model.dart';
 import 'poi_model.dart';
 import 'grilla_nav.dart';
 import 'asistente_trazo.dart';
-import 'design/movimiento.dart';
-import 'tema.dart';
+import 'design/design.dart';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// El plano y lo que se dibuja encima
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Lo comparten la navegación y la configuración del piso. El plano es una
+// imagen que carga el admin y suele ser clara, y los colores claros de la
+// paleta (cian, ámbar) se pierden sobre el blanco: por eso todo lo que va
+// encima lleva un contorno oscuro (ColoresApp.mapaContorno) o un fondo oscuro.
+//
+//   · Cian: beacons, lugares, medición y puntos calibrados.
+//   · Ámbar (advertencia): lo que se está dibujando (la zona en curso, la
+//     celda elegida para calibrar).
+//   · Rojo: las zonas no transitables.
+//   · Magenta: las guías del asistente de trazo.
+//   · Verde y violeta, sólo en la ruta (LineaRuta).
+//
+// Cada cosa se distingue además por su forma: mira, alfiler, cuadrado, línea.
+// Sólo cambia el dibujo: las posiciones, las áreas para agarrar y el tamaño
+// de cada marcador sobre el plano son los de siempre.
+
+/// Contorno de un ícono sobre el plano: cuatro sombras sin desenfoque, un
+/// píxel alrededor. Hace legible el acento sobre un plano blanco.
+const List<Shadow> _contornoIcono = [
+  Shadow(color: ColoresApp.mapaContorno, offset: Offset(1.5, 0)),
+  Shadow(color: ColoresApp.mapaContorno, offset: Offset(-1.5, 0)),
+  Shadow(color: ColoresApp.mapaContorno, offset: Offset(0, 1.5)),
+  Shadow(color: ColoresApp.mapaContorno, offset: Offset(0, -1.5)),
+];
+
+/// Hasta cuánto crecen con la letra del teléfono los nombres sobre el plano.
+/// Sin tope, al 200 % tapaban a los marcadores de al lado; los nombres se
+/// siguen pudiendo leer en la lista de destinos y con TalkBack.
+const double _escalaMaximaEtiqueta = 1.3;
+
 /// Helpers de coordenadas/celdas compartidos por los painters.
 Offset _desnormalizar(Offset n, Size tam) =>
     Offset(n.dx * tam.width, n.dy * tam.height);
@@ -28,8 +62,13 @@ Rect _rectCelda(Offset centroNorm, GrillaNav grilla, Size tam) {
 }
 
 /// Dibuja una línea punteada entre [a] y [b].
-void _lineaPunteada(Canvas canvas, Offset a, Offset b, Paint paint,
-    {double paso = 8.0}) {
+void _lineaPunteada(
+  Canvas canvas,
+  Offset a,
+  Offset b,
+  Paint paint, {
+  double paso = 8.0,
+}) {
   final d = b - a;
   final dist = d.distance;
   if (dist <= 0) return;
@@ -54,8 +93,9 @@ void _lineaPunteada(Canvas canvas, Offset a, Offset b, Paint paint,
 /// Dibuja una "mira" (retícula translúcida con cruz central) para marcar un
 /// punto con PRECISIÓN. El centro exacto queda libre —los brazos de la cruz no
 /// llegan a tocarse— para que el punto objetivo no quede tapado ni por el
-/// dibujo ni por el dedo. Doble trazo (halo blanco debajo + color encima) para
-/// que se lea sobre cualquier fondo del plano; pensado también para baja visión.
+/// dibujo ni por el dedo. Doble trazo (contorno oscuro debajo + color encima)
+/// para que se lea sobre cualquier fondo del plano; pensado también para baja
+/// visión.
 void _dibujarMira(
   Canvas canvas,
   Offset centro, {
@@ -73,7 +113,9 @@ void _dibujarMira(
     centro,
     radio,
     Paint()
-      ..color = color.withValues(alpha: activo ? alphaRelleno + 0.12 : alphaRelleno)
+      ..color = color.withValues(
+        alpha: activo ? alphaRelleno + 0.12 : alphaRelleno,
+      )
       ..style = PaintingStyle.fill,
   );
 
@@ -91,17 +133,17 @@ void _dibujarMira(
     canvas.drawLine(centro + Offset(0, gap), centro + Offset(0, brazo), p);
   }
 
-  trazo(Colors.white, (activo ? 4.0 : 3.0) * escala); // halo de contraste
+  trazo(ColoresApp.mapaContorno, (activo ? 4.0 : 3.0) * escala); // contorno
   trazo(color, (activo ? 2.4 : 1.8) * escala);
 
-  // Punto central exacto (con borde blanco).
+  // Punto central exacto (con borde oscuro).
   final rp = (activo ? 2.6 : 2.0) * escala;
   canvas.drawCircle(centro, rp, Paint()..color = color);
   canvas.drawCircle(
     centro,
     rp,
     Paint()
-      ..color = Colors.white
+      ..color = ColoresApp.mapaContorno
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.0 * escala,
   );
@@ -140,16 +182,15 @@ class _MiraBeaconPainter extends CustomPainter {
       old.color != color || old.activo != activo || old.edicion != edicion;
 }
 
-/// Painter "estático" del mapa: grilla de 1 m × 1 m, zonas no transitables,
-/// celdas del camino y polígono en construcción. NO incluye la posición del
-/// usuario (esa se pinta en una capa aparte) para que el movimiento del usuario
-/// no obligue a repintar todo el mapa en cada actualización de posición.
+/// Painter "estático" del mapa: grilla de 1 m × 1 m, zonas no transitables y
+/// polígono en construcción. NO incluye la ruta ni la posición del usuario
+/// (van en capas aparte) para que el movimiento del usuario no obligue a
+/// repintar todo el mapa en cada actualización de posición.
 class _MapaPainter extends CustomPainter {
   final List<ZonaNoTransitable> zonas;
   final List<Offset> verticesEnCurso;
   final Size tamanoImagen;
   final GrillaNav grilla;
-  final List<Offset>? ruta;        // centros normalizados de las celdas del camino
   final bool mostrarGrilla;
 
   /// Puntos de la medición de escala (violeta). 1 a 3 puntos.
@@ -184,7 +225,6 @@ class _MapaPainter extends CustomPainter {
     required this.verticesEnCurso,
     required this.tamanoImagen,
     required this.grilla,
-    this.ruta,
     this.mostrarGrilla = false,
     this.puntosMedicion = const [],
     this.celdaResaltada,
@@ -194,6 +234,20 @@ class _MapaPainter extends CustomPainter {
     this.guiaPunto,
     this.escalaVista = 1.0,
   });
+
+  /// Pinta [camino] con el contorno oscuro debajo y [pintura] encima.
+  void _conContorno(Canvas canvas, Path camino, Paint pintura) {
+    canvas.drawPath(
+      camino,
+      Paint()
+        ..color = ColoresApp.mapaContorno
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = pintura.strokeWidth + 2 * _k
+        ..strokeCap = pintura.strokeCap
+        ..strokeJoin = pintura.strokeJoin,
+    );
+    canvas.drawPath(camino, pintura);
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -206,7 +260,7 @@ class _MapaPainter extends CustomPainter {
       final w = tamanoImagen.width;
       final h = tamanoImagen.height;
       final paintGrilla = Paint()
-        ..color = Colors.black.withValues(alpha: 0.30)
+        ..color = ColoresApp.mapaGrilla
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.0 * _k;
       for (int i = 0; i <= grilla.celdasX; i++) {
@@ -219,23 +273,33 @@ class _MapaPainter extends CustomPainter {
       }
     }
 
-    // --- Celda seleccionada en modo calibración (amarillo 60%) ---
+    // --- Celda seleccionada en modo calibración (ámbar 60%, contorno oscuro) ---
     if (celdaResaltada != null) {
-      final paintCal = Paint()
-        ..color = Colors.amber.withValues(alpha: 0.60)
-        ..style = PaintingStyle.fill;
-      canvas.drawRect(_rectCelda(celdaResaltada!, grilla, tamanoImagen), paintCal);
+      final rect = _rectCelda(celdaResaltada!, grilla, tamanoImagen);
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..color = ColoresApp.advertencia.withValues(alpha: 0.60)
+          ..style = PaintingStyle.fill,
+      );
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..color = ColoresApp.mapaContorno
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.0 * _k,
+      );
     }
 
     // --- Zonas no transitables ---
-    // Item 6: rojo saturado (TemaApp.zonaRestringidaRelleno) con alpha 0.45
+    // Item 6: rojo saturado (ColoresApp.mapaZonaRelleno) con alpha 0.45
     // y borde sólido 2.5 px para alta visibilidad en baja visión.
     // Antes: Colors.red.withValues(alpha: 0.30) — poco contraste sobre plano.
     final paintRelleno = Paint()
-      ..color = TemaApp.zonaRestringidaRelleno.withValues(alpha: 0.45)
+      ..color = ColoresApp.mapaZonaRelleno.withValues(alpha: 0.45)
       ..style = PaintingStyle.fill;
     final paintBorde = Paint()
-      ..color = TemaApp.zonaRestringidaBorde
+      ..color = ColoresApp.mapaZonaBorde
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.5 * _k;
 
@@ -253,29 +317,8 @@ class _MapaPainter extends CustomPainter {
       canvas.drawPath(path, paintBorde);
     }
 
-    // --- Celdas del camino hacia el destino ---
-    // ruta[0] = celda del usuario, ruta.last = destino. El color se intensifica
-    // hacia el destino para que la dirección del camino se vea claramente.
-    // Item 6: azul eléctrico (#1565C0 → #0D47A1) con alpha 0.75, reemplaza el
-    // gradiente verde que se confundía con el fondo y era invisible para baja visión.
-    if (ruta != null && ruta!.isNotEmpty) {
-      final n = ruta!.length;
-      for (int i = 0; i < n; i++) {
-        final t = n <= 1 ? 1.0 : i / (n - 1); // 0 = usuario, 1 = destino
-        final color = Color.lerp(
-          TemaApp.rutaActivaInicio, // azul eléctrico: cerca del usuario
-          TemaApp.rutaActivaFin,    // azul marino: en el destino
-          t,
-        )!.withValues(alpha: TemaApp.rutaActivaAlpha);
-        final paintRuta = Paint()
-          ..color = color
-          ..style = PaintingStyle.fill;
-        canvas.drawRect(_rectCelda(ruta![i], grilla, tamanoImagen), paintRuta);
-      }
-    }
-
     // --- Polígono en construcción (modo edición de zonas) ---
-    // Muestra el área delimitada con relleno naranja semitransparente, contorno,
+    // Muestra el área delimitada con relleno ámbar semitransparente, contorno,
     // línea de cierre punteada al primer vértice, y círculos numerados en cada punto.
     if (verticesEnCurso.isNotEmpty) {
       final path = Path();
@@ -290,7 +333,7 @@ class _MapaPainter extends CustomPainter {
       if (verticesEnCurso.length >= 3) {
         path.close();
         final paintRelleno = Paint()
-          ..color = Colors.orange.withValues(alpha: 0.25)
+          ..color = ColoresApp.advertencia.withValues(alpha: 0.25)
           ..style = PaintingStyle.fill;
         canvas.drawPath(path, paintRelleno);
       }
@@ -303,21 +346,32 @@ class _MapaPainter extends CustomPainter {
         pathContorno.lineTo(p.dx, p.dy);
       }
       final paintContorno = Paint()
-        ..color = Colors.orange.withValues(alpha: 0.90)
+        ..color = ColoresApp.advertencia
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.0 * _k
         ..strokeJoin = StrokeJoin.round;
-      canvas.drawPath(pathContorno, paintContorno);
+      _conContorno(canvas, pathContorno, paintContorno);
 
       // Línea de cierre punteada al primer vértice (visual hint de zona cerrable).
       if (verticesEnCurso.length >= 2) {
         final ultimo = _desnormalizar(verticesEnCurso.last, tamanoImagen);
         final paintCierre = Paint()
-          ..color = Colors.orange.withValues(alpha: 0.55)
+          ..color = ColoresApp.advertencia
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.5 * _k
           ..strokeCap = StrokeCap.round;
-        // Guiones entre el último punto y el primero.
+        // Guiones entre el último punto y el primero, con el contorno debajo.
+        _lineaPunteada(
+          canvas,
+          ultimo,
+          primero,
+          Paint()
+            ..color = ColoresApp.mapaContorno
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = paintCierre.strokeWidth + 2 * _k
+            ..strokeCap = StrokeCap.round,
+          paso: 8.0 * _k,
+        );
         _lineaPunteada(canvas, ultimo, primero, paintCierre, paso: 8.0 * _k);
       }
 
@@ -332,55 +386,85 @@ class _MapaPainter extends CustomPainter {
         final activo = verticeArrastrado == i;
         final radio = (activo ? 15.0 : 11.0) * _k;
         if (activo) {
-          canvas.drawCircle(c, radio + 9 * _k,
-              Paint()..color = Colors.orange.withValues(alpha: 0.22));
+          canvas.drawCircle(
+            c,
+            radio + 9 * _k,
+            Paint()..color = ColoresApp.advertencia.withValues(alpha: 0.22),
+          );
         }
-        _dibujarMira(canvas, c,
-            radio: radio,
-            color: activo ? Colors.deepOrange : Colors.orange,
-            activo: activo,
-            escala: _k);
+        _dibujarMira(
+          canvas,
+          c,
+          radio: radio,
+          color: ColoresApp.advertencia,
+          activo: activo,
+          escala: _k,
+        );
         // Número del vértice, corrido arriba-derecha para no tapar el centro.
+        // En una pastilla oscura, como los nombres: blanco con sombra no se
+        // lee sobre un plano blanco.
         tp.text = TextSpan(
           text: '${i + 1}',
           style: TextStyle(
-            color: Colors.white,
+            fontFamily: TipografiaApp.familia,
+            color: ColoresApp.textoPrincipal,
             fontSize: (activo ? 12 : 10) * _k,
             fontWeight: FontWeight.bold,
-            shadows: [Shadow(color: Colors.black, blurRadius: 2 * _k)],
           ),
         );
         tp.layout();
-        tp.paint(canvas, c + Offset(radio * 0.6, -radio - tp.height * 0.6));
+        final lugar = c + Offset(radio * 0.6, -radio - tp.height * 0.6);
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(
+              lugar.dx - 4 * _k,
+              lugar.dy,
+              tp.width + 8 * _k,
+              tp.height,
+            ),
+            Radius.circular(tp.height / 2),
+          ),
+          Paint()..color = ColoresApp.mapaContorno,
+        );
+        tp.paint(canvas, lugar);
       }
     }
 
-    // --- Medición de escala (violeta): puntos + líneas entre ellos ---
+    // --- Medición de escala (cian): puntos + líneas entre ellos ---
     if (puntosMedicion.isNotEmpty) {
       final paintLinea = Paint()
-        ..color = Colors.purple
+        ..color = ColoresApp.acento
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3.0 * _k
         ..strokeCap = StrokeCap.round;
       // Líneas entre puntos consecutivos (largo y ancho).
       for (int i = 1; i < puntosMedicion.length; i++) {
-        canvas.drawLine(
-          _desnormalizar(puntosMedicion[i - 1], tamanoImagen),
-          _desnormalizar(puntosMedicion[i], tamanoImagen),
+        final a = _desnormalizar(puntosMedicion[i - 1], tamanoImagen);
+        final b = _desnormalizar(puntosMedicion[i], tamanoImagen);
+        _conContorno(
+          canvas,
+          Path()
+            ..moveTo(a.dx, a.dy)
+            ..lineTo(b.dx, b.dy),
           paintLinea,
         );
       }
-      // Puntos: mira violeta para fijar cada extremo con precisión.
+      // Puntos: mira para fijar cada extremo con precisión.
       for (final p in puntosMedicion) {
         final c = _desnormalizar(p, tamanoImagen);
-        _dibujarMira(canvas, c,
-            radio: 11.0 * _k, color: Colors.purple, escala: _k);
+        _dibujarMira(
+          canvas,
+          c,
+          radio: 11.0 * _k,
+          color: ColoresApp.acento,
+          escala: _k,
+        );
       }
     }
 
-    // --- Pines de celdas ya calibradas (✓ verde) ---
+    // --- Pines de celdas ya calibradas (✓ sobre un círculo oscuro) ---
     if (celdasCalibradas.isNotEmpty) {
-      final icono = Icons.check_circle;
+      final icono = Icons.check_circle_rounded;
       final tp = TextPainter(textDirection: TextDirection.ltr);
       for (final centro in celdasCalibradas) {
         tp.text = TextSpan(
@@ -389,11 +473,12 @@ class _MapaPainter extends CustomPainter {
             fontSize: 18 * _k,
             fontFamily: icono.fontFamily,
             package: icono.fontPackage,
-            color: Colors.green[700],
+            color: ColoresApp.acento,
           ),
         );
         tp.layout();
         final c = _desnormalizar(centro, tamanoImagen);
+        canvas.drawCircle(c, 10 * _k, Paint()..color = ColoresApp.mapaContorno);
         tp.paint(canvas, Offset(c.dx - tp.width / 2, c.dy - tp.height / 2));
       }
     }
@@ -409,7 +494,7 @@ class _MapaPainter extends CustomPainter {
     if (guias.isEmpty) return;
 
     final paintGuia = Paint()
-      ..color = TemaApp.guiaAlineacion.withValues(alpha: 0.90)
+      ..color = ColoresApp.mapaGuia.withValues(alpha: 0.90)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.6 * _k
       ..strokeCap = StrokeCap.round;
@@ -444,7 +529,8 @@ class _MapaPainter extends CustomPainter {
       text: TextSpan(
         text: guias.first.etiqueta,
         style: TextStyle(
-          color: Colors.white,
+          fontFamily: TipografiaApp.familia,
+          color: ColoresApp.textoPrincipal,
           fontSize: 11 * _k,
           fontWeight: FontWeight.bold,
         ),
@@ -460,9 +546,16 @@ class _MapaPainter extends CustomPainter {
     if (arriba < 0) arriba = c.dy + 14 * k;
     final rect = RRect.fromRectAndRadius(
       Rect.fromLTWH(izq, arriba, ancho, alto),
-      Radius.circular(4 * k),
+      Radius.circular(alto / 2),
     );
-    canvas.drawRRect(rect, Paint()..color = TemaApp.guiaEtiqueta);
+    canvas.drawRRect(rect, Paint()..color = ColoresApp.superficie);
+    canvas.drawRRect(
+      rect,
+      Paint()
+        ..color = ColoresApp.mapaGuia
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1 * k,
+    );
     tp.paint(canvas, Offset(rect.left + 6 * k, rect.top + 3 * k));
   }
 
@@ -472,7 +565,6 @@ class _MapaPainter extends CustomPainter {
       old.verticesEnCurso != verticesEnCurso ||
       old.tamanoImagen != tamanoImagen ||
       old.grilla != grilla ||
-      old.ruta != ruta ||
       old.mostrarGrilla != mostrarGrilla ||
       old.puntosMedicion != puntosMedicion ||
       old.celdaResaltada != celdaResaltada ||
@@ -483,17 +575,17 @@ class _MapaPainter extends CustomPainter {
       old.escalaVista != escalaVista;
 }
 
-/// Capa de la celda del usuario. Cuando la posición pasa a otra celda, el
-/// cuadrado se desliza hasta la nueva en vez de saltar.
+/// Capa de la posición del usuario. Cuando la posición pasa a otra celda, el
+/// marcador se desliza hasta la nueva en vez de saltar.
 ///
 /// Es SÓLO dibujo: la posición que usan la ruta, la voz y la cámara sigue
 /// siendo [MapaWidget.posicionUsuario], que llega ya resuelta. Esta capa no
-/// la cambia ni la demora; sólo decide por dónde pasa el cuadrado mientras
-/// cambia de celda. Al terminar queda exactamente donde quedaba antes.
+/// la cambia ni la demora; sólo decide por dónde pasa el marcador mientras
+/// cambia de celda. Al terminar queda exactamente en el centro de la celda.
 ///
 /// Se mueve con el mismo "resorte" que la cámara de la navegación (ver
 /// `_tauCamaraSeg` en pantalla_naveg.dart): una posición nueva sólo cambia
-/// el objetivo y el cuadrado sigue sin cortes, aunque llegue a mitad de
+/// el objetivo y el marcador sigue sin cortes, aunque llegue a mitad de
 /// camino. Con una animación de duración fija, cada posición nueva la
 /// reiniciaba y el movimiento salía a los tirones.
 ///
@@ -524,13 +616,13 @@ class _CapaUsuarioState extends State<_CapaUsuario>
     with SingleTickerProviderStateMixin {
   /// Constante de tiempo del deslizamiento (s): a los 0,1 s recorrió el 70 %
   /// del camino y a los ~0,25 s llegó. Mucho más corta que la de la cámara
-  /// (0,22 s) para que el cuadrado no se atrase respecto de la posición.
+  /// (0,22 s) para que el marcador no se atrase respecto de la posición.
   static const double _tauSeg = 0.08;
 
   late final Ticker _ticker;
   Duration? _ultimoTick;
 
-  /// Centro (normalizado) del cuadrado tal como se dibuja ahora. Lo escucha
+  /// Centro (normalizado) del marcador tal como se dibuja ahora. Lo escucha
   /// el painter: cada frame del deslizamiento repinta sin reconstruir nada.
   late final ValueNotifier<Offset> _mostrada;
 
@@ -549,7 +641,7 @@ class _CapaUsuarioState extends State<_CapaUsuario>
     super.didUpdateWidget(old);
     if (_mostrada.value == _objetivo) return;
     // Con movimiento reducido («Quitar animaciones» del teléfono o «Reducir
-    // movimiento» de Ajustes), el cuadrado va directo a la celda nueva.
+    // movimiento» de Ajustes), el marcador va directo a la celda nueva.
     if (MovimientoApp.reducido(context)) {
       _ticker.stop();
       _mostrada.value = _objetivo;
@@ -569,8 +661,8 @@ class _CapaUsuarioState extends State<_CapaUsuario>
     final dt = previo == null
         ? 1 / 60
         : ((transcurrido - previo).inMicroseconds / 1e6)
-            .clamp(0.0, 0.1)
-            .toDouble();
+              .clamp(0.0, 0.1)
+              .toDouble();
     final k = 1 - exp(-dt / _tauSeg);
     final objetivo = _objetivo;
     final nueva = Offset.lerp(_mostrada.value, objetivo, k)!;
@@ -592,29 +684,32 @@ class _CapaUsuarioState extends State<_CapaUsuario>
 
   @override
   Widget build(BuildContext context) => CustomPaint(
-        painter: _UsuarioPainter(
-          posicion: _mostrada,
-          tamanoImagen: widget.tamanoImagen,
-          grilla: widget.grilla,
-          heading: widget.heading,
-          escalaVista: widget.escalaVista,
-        ),
-      );
+    painter: _UsuarioPainter(
+      posicion: _mostrada,
+      tamanoImagen: widget.tamanoImagen,
+      grilla: widget.grilla,
+      heading: widget.heading,
+      escalaVista: widget.escalaVista,
+    ),
+  );
 }
 
-/// Painter liviano de la posición del usuario: pinta solo la celda actual y la
-/// flecha de orientación. Está en su propia capa para repintarse en cada tick
-/// de posición sin redibujar la grilla, zonas ni el camino.
+/// Painter liviano de la posición del usuario: un círculo levantado con el
+/// anillo de acento (el cabezal del rediseño) en el centro de su celda y, con
+/// brújula, la flecha de orientación adentro. Está en su propia capa para
+/// repintarse en cada tick de posición sin redibujar la grilla, zonas ni el
+/// camino. Sobre un plano blanco se lee por el contorno oscuro.
 class _UsuarioPainter extends CustomPainter {
-  /// Centro normalizado del cuadrado a dibujar (ver [_CapaUsuario]). Durante
+  /// Centro normalizado del marcador a dibujar (ver [_CapaUsuario]). Durante
   /// el deslizamiento cae entre dos celdas.
   final ValueNotifier<Offset> posicion;
   final Size tamanoImagen;
   final GrillaNav grilla;
-  final double? heading;         // grados; 0 = Norte (arriba)
+  final double? heading; // grados; 0 = Norte (arriba)
 
-  /// Zoom del contenedor (ver [MapaWidget.escalaVista]): el borde y la flecha
-  /// miden lo mismo en pantalla con cualquier zoom. La celda sigue a escala.
+  /// Zoom del contenedor (ver [MapaWidget.escalaVista]): el marcador mide lo
+  /// mismo en pantalla con cualquier zoom, también de lejos, con todo el
+  /// plano a la vista.
   final double escalaVista;
 
   _UsuarioPainter({
@@ -627,38 +722,49 @@ class _UsuarioPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final k = 1 / max(1.0, escalaVista);
-    final rect = _rectCelda(posicion.value, grilla, tamanoImagen);
-    final paintUsuario = Paint()
-      ..color = TemaApp.posicionUsuario.withValues(alpha: 0.85)
-      ..style = PaintingStyle.fill;
-    canvas.drawRect(rect, paintUsuario);
-    final paintBordeUsuario = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0 * k;
-    canvas.drawRect(rect, paintBordeUsuario);
-    if (heading != null) _dibujarFlecha(canvas, rect.center, heading!, k);
-  }
-
-  /// Flecha blanca centrada en la celda del usuario que indica su orientación.
-  /// heading 0° = Norte = arriba. [k]: escala por el zoom del contenedor.
-  void _dibujarFlecha(
-      Canvas canvas, Offset centro, double headingGrados, double k) {
-    final paint = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.fill;
+    final centro = _rectCelda(posicion.value, grilla, tamanoImagen).center;
+    const radio = FormasApp.posicionUsuario / 2;
     canvas.save();
     canvas.translate(centro.dx, centro.dy);
+    canvas.scale(1 / escalaVista);
+    canvas.drawCircle(
+      Offset.zero,
+      radio + 1,
+      Paint()..color = ColoresApp.mapaContorno,
+    );
+    pintarRelieve(
+      canvas,
+      Path()..addOval(Rect.fromCircle(center: Offset.zero, radius: radio)),
+      elevacion: 1,
+      tamano: TamanoRelieve.chico,
+      relleno: ColoresApp.superficie,
+      borde: const BorderSide(
+        color: ColoresApp.acento,
+        width: FormasApp.anilloCabezalRuta,
+      ),
+      sombraOscura: ColoresApp.sombraOscura,
+      sombraClara: ColoresApp.sombraClara,
+    );
+    if (heading != null) {
+      _dibujarFlecha(canvas, heading!);
+    } else {
+      canvas.drawCircle(Offset.zero, 4, Paint()..color = ColoresApp.acento);
+    }
+    canvas.restore();
+  }
+
+  /// Flecha centrada en el marcador que indica la orientación del usuario.
+  /// heading 0° = Norte = arriba.
+  void _dibujarFlecha(Canvas canvas, double headingGrados) {
+    canvas.save();
     canvas.rotate(headingGrados * pi / 180);
-    canvas.scale(k);
     final path = Path()
-      ..moveTo(0, -9)
-      ..lineTo(6, 6)
-      ..lineTo(0, 2)
-      ..lineTo(-6, 6)
+      ..moveTo(0, -7.5)
+      ..lineTo(5.5, 5.5)
+      ..lineTo(0, 2.5)
+      ..lineTo(-5.5, 5.5)
       ..close();
-    canvas.drawPath(path, paint);
+    canvas.drawPath(path, Paint()..color = ColoresApp.textoPrincipal);
     canvas.restore();
   }
 
@@ -679,6 +785,7 @@ class MapaWidget extends StatelessWidget {
   final List<LugarInteres> lugares; // NUEVO
   final Offset? posicionUsuario;
   final bool modoEdicion;
+
   /// Toque sobre el plano (modo edición). Se entrega al LEVANTAR el dedo y
   /// sólo si el gesto fue un toque: un arrastre no lo dispara.
   final void Function(Offset normalizado)? onTapMapa;
@@ -698,9 +805,10 @@ class MapaWidget extends StatelessWidget {
   final void Function(LugarInteres lugar)? onAgarreLugar;
   final List<Offset> verticesEnCurso;
 
-  /// Camino calculado como lista de centros de celda (normalizados). Cada celda
-  /// se pinta sobre la grilla.
-  final List<Offset>? ruta;
+  /// La ruta hacia el destino, por tramos (ver SeguimientoRecorrido). Se
+  /// dibuja como una línea sobre el plano ([LineaRuta]), por debajo de los
+  /// marcadores.
+  final Recorrido? recorrido;
 
   /// Si es true, dibuja la grilla de 1 m × 1 m sobre el plano.
   final bool mostrarGrilla;
@@ -743,8 +851,8 @@ class MapaWidget extends StatelessWidget {
   final Offset? guiaPunto;
 
   /// Zoom con que el contenedor está mostrando el mapa (el InteractiveViewer
-  /// de la pantalla de configuración). Con él, las manijas, los trazos y los
-  /// marcadores se dibujan del mismo tamaño en pantalla con cualquier zoom.
+  /// de la pantalla). Con él, las manijas, los trazos y los marcadores se
+  /// dibujan del mismo tamaño en pantalla con cualquier zoom.
   /// Sin esto, a zoom 20 una manija de vértice medía cientos de píxeles y
   /// tapaba justo lo que se quería dibujar (una pared fina). En 1 (por
   /// defecto) todo se dibuja como siempre.
@@ -785,7 +893,7 @@ class MapaWidget extends StatelessWidget {
     this.onAgarreBeacon,
     this.onAgarreLugar,
     this.verticesEnCurso = const [],
-    this.ruta,
+    this.recorrido,
     this.mostrarGrilla = false,
     this.headingUsuario,
     this.puntosMedicion = const [],
@@ -808,10 +916,16 @@ class MapaWidget extends StatelessWidget {
   /// métrica escalaX : escalaY) se usa esa en lugar de la de la imagen, de modo
   /// que las celdas de 1 m se vean cuadradas; la imagen se estira para llenar
   /// la caja resultante.
-  static Size calcularTamanoContenido(Size contenedor, Size imagen,
-      {double? aspectoForzado}) {
+  static Size calcularTamanoContenido(
+    Size contenedor,
+    Size imagen, {
+    double? aspectoForzado,
+  }) {
     final ratioContenedor = contenedor.width / contenedor.height;
-    final ratioImagen = (aspectoForzado != null && aspectoForzado > 0 && aspectoForzado.isFinite)
+    final ratioImagen =
+        (aspectoForzado != null &&
+            aspectoForzado > 0 &&
+            aspectoForzado.isFinite)
         ? aspectoForzado
         : imagen.width / imagen.height;
     if (ratioImagen > ratioContenedor) {
@@ -842,8 +956,10 @@ class MapaWidget extends StatelessWidget {
                 ? grilla.metrosX / grilla.metrosY
                 : null;
             final tamanoRenderizado = calcularTamanoContenido(
-                contenedor, tamanoImagen,
-                aspectoForzado: aspectoMetrico);
+              contenedor,
+              tamanoImagen,
+              aspectoForzado: aspectoMetrico,
+            );
 
             final offsetX = (contenedor.width - tamanoRenderizado.width) / 2;
             final offsetY = (contenedor.height - tamanoRenderizado.height) / 2;
@@ -867,13 +983,19 @@ class MapaWidget extends StatelessWidget {
                     child: Image.file(
                       File(rutaImagen),
                       fit: BoxFit.fill,
-                      errorBuilder: (context, error, stackTrace) =>
-                          const Center(child: Text("Plano no disponible")),
+                      errorBuilder: (context, error, stackTrace) => Center(
+                        child: Text(
+                          'Plano no disponible',
+                          style: TipografiaApp.nota.copyWith(
+                            color: ColoresApp.textoSecundario,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
 
-                // Grilla + zonas + camino (con GestureDetector para borrar en modo edición)
+                // Grilla + zonas (con GestureDetector para borrar en modo edición)
                 Positioned(
                   left: offsetX,
                   top: offsetY,
@@ -890,7 +1012,10 @@ class MapaWidget extends StatelessWidget {
                             // Buscar si el toque cayó dentro de alguna zona existente
                             for (final zona in zonas) {
                               if (zona.vertices.length >= 3 &&
-                                  MapaWidget.puntoEnPoligono(puntoTocado, zona.vertices)) {
+                                  MapaWidget.puntoEnPoligono(
+                                    puntoTocado,
+                                    zona.vertices,
+                                  )) {
                                 onTapZona!(zona);
                                 return;
                               }
@@ -904,7 +1029,6 @@ class MapaWidget extends StatelessWidget {
                           verticesEnCurso: verticesEnCurso,
                           tamanoImagen: tamanoRenderizado,
                           grilla: grilla,
-                          ruta: ruta,
                           mostrarGrilla: mostrarGrilla,
                           puntosMedicion: puntosMedicion,
                           celdaResaltada: celdaResaltada,
@@ -919,6 +1043,29 @@ class MapaWidget extends StatelessWidget {
                   ),
                 ),
 
+                // La ruta, en su capa. TalkBack no la lee: lo que dice ya lo
+                // dicen la voz y la tarjeta de la indicación. La posición la
+                // dibuja la capa del usuario: la real, no la de la ruta.
+                if (recorrido != null)
+                  Positioned(
+                    key: const ValueKey('capaRuta'),
+                    left: offsetX,
+                    top: offsetY,
+                    width: tamanoRenderizado.width,
+                    height: tamanoRenderizado.height,
+                    child: IgnorePointer(
+                      child: ExcludeSemantics(
+                        child: LineaRuta(
+                          tramos: recorrido!.tramos,
+                          tramoActual: recorrido!.tramoActual,
+                          avance: recorrido!.avance,
+                          mostrarCabezal: false,
+                          escalaVista: escalaVista,
+                        ),
+                      ),
+                    ),
+                  ),
+
                 // Beacons
                 ...beacons.values.map((b) {
                   final activo = beaconArrastrado == b.mac;
@@ -927,12 +1074,18 @@ class MapaWidget extends StatelessWidget {
                   // Listener de un dedo que envuelve al mapa).
                   final caja = modoEdicion ? 48.0 : 22.0;
                   final px =
-                      offsetX + b.posicion.dx * tamanoRenderizado.width - caja / 2;
+                      offsetX +
+                      b.posicion.dx * tamanoRenderizado.width -
+                      caja / 2;
                   final py =
-                      offsetY + b.posicion.dy * tamanoRenderizado.height - caja / 2;
-                  final color = !modoEdicion
-                      ? Colors.black54
-                      : (activo ? Colors.deepOrange : Colors.red);
+                      offsetY +
+                      b.posicion.dy * tamanoRenderizado.height -
+                      caja / 2;
+                  // Navegando, discreto: el dato es la ruta. Al editar, en
+                  // acento; el que se arrastra se dibuja más grande.
+                  final color = modoEdicion
+                      ? ColoresApp.acento
+                      : ColoresApp.borde;
                   return Positioned(
                     left: px,
                     top: py,
@@ -978,14 +1131,20 @@ class MapaWidget extends StatelessWidget {
                   // píxeles con la escala del piso en cada eje: con celdas de
                   // 1 m ocupa exactamente una celda de la grilla.
                   if (lugar.esEscalera) {
-                    final ancho = (tamanoRenderizado.width / grilla.metrosX *
-                            MapaWidget.anchoEscaleraMetros)
-                        .clamp(4.0, double.infinity);
-                    final alto = (tamanoRenderizado.height / grilla.metrosY *
-                            MapaWidget.anchoEscaleraMetros)
-                        .clamp(4.0, double.infinity);
-                    final cx = offsetX + lugar.posicion.dx * tamanoRenderizado.width;
-                    final cy = offsetY + lugar.posicion.dy * tamanoRenderizado.height;
+                    final ancho =
+                        (tamanoRenderizado.width /
+                                grilla.metrosX *
+                                MapaWidget.anchoEscaleraMetros)
+                            .clamp(4.0, double.infinity);
+                    final alto =
+                        (tamanoRenderizado.height /
+                                grilla.metrosY *
+                                MapaWidget.anchoEscaleraMetros)
+                            .clamp(4.0, double.infinity);
+                    final cx =
+                        offsetX + lugar.posicion.dx * tamanoRenderizado.width;
+                    final cy =
+                        offsetY + lugar.posicion.dy * tamanoRenderizado.height;
                     return Positioned(
                       left: cx - ancho / 2,
                       top: cy - alto / 2,
@@ -997,8 +1156,9 @@ class MapaWidget extends StatelessWidget {
                             ? (_) => onAgarreLugar!(lugar)
                             : null,
                         child: GestureDetector(
-                          onTap:
-                              onTapLugar != null ? () => onTapLugar!(lugar) : null,
+                          onTap: onTapLugar != null
+                              ? () => onTapLugar!(lugar)
+                              : null,
                           child: Transform.scale(
                             scale: arrastrado ? 1.35 : 1.0,
                             child: _MarcadorEscalera(
@@ -1026,9 +1186,12 @@ class MapaWidget extends StatelessWidget {
                   // el lugar "estaba" bastante más a la izquierda.
                   // Ahora la columna se ancla en x y se corre media columna
                   // hacia la izquierda, sea cual sea su ancho.
-                  final px = offsetX + lugar.posicion.dx * tamanoRenderizado.width;
+                  final px =
+                      offsetX + lugar.posicion.dx * tamanoRenderizado.width;
                   final py =
-                      offsetY + lugar.posicion.dy * tamanoRenderizado.height - 28 * k;
+                      offsetY +
+                      lugar.posicion.dy * tamanoRenderizado.height -
+                      28 * k;
                   return Positioned(
                     left: px,
                     top: py,
@@ -1043,8 +1206,9 @@ class MapaWidget extends StatelessWidget {
                               ? (_) => onAgarreLugar!(lugar)
                               : null,
                           child: GestureDetector(
-                            onTap:
-                                onTapLugar != null ? () => onTapLugar!(lugar) : null,
+                            onTap: onTapLugar != null
+                                ? () => onTapLugar!(lugar)
+                                : null,
                             // Agrandado mientras se arrastra. La escala se ancla
                             // cerca de la punta del ícono (la posición exacta);
                             // la etiqueta cuelga por debajo de ese punto.
@@ -1054,31 +1218,13 @@ class MapaWidget extends StatelessWidget {
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(
-                                    Icons.place,
-                                    color: modoEdicion
-                                        ? Colors.purple
-                                        : Colors.purple[700],
+                                  const Icon(
+                                    Icons.place_rounded,
+                                    color: ColoresApp.acento,
                                     size: 28,
+                                    shadows: _contornoIcono,
                                   ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 4, vertical: 1),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withValues(alpha: 0.85),
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    child: Text(
-                                      lugar.nombre,
-                                      style: TextStyle(
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                        color: modoEdicion
-                                            ? Colors.purple[800]
-                                            : Colors.purple[900],
-                                      ),
-                                    ),
-                                  ),
+                                  _EtiquetaPlano(texto: lugar.nombre),
                                 ],
                               ),
                             ),
@@ -1089,12 +1235,12 @@ class MapaWidget extends StatelessWidget {
                   );
                 }),
 
-                // Celda del usuario (capa liviana propia: se repinta en cada
+                // Posición del usuario (capa liviana propia: se repinta en cada
                 // tick de posición sin redibujar grilla/zonas/camino).
                 if (posicionUsuario != null)
                   Positioned(
                     // Con clave: la capa recuerda dónde está dibujado el
-                    // cuadrado, y si cambia la cantidad de beacons o lugares
+                    // marcador, y si cambia la cantidad de beacons o lugares
                     // de arriba no se tiene que confundir con otro hijo del
                     // Stack y arrancar de cero.
                     key: const ValueKey('capaUsuario'),
@@ -1120,8 +1266,12 @@ class MapaWidget extends StatelessWidget {
             // Convierte una posición local del gesto a coordenada normalizada
             // recortada a [0, 1].
             Offset aNormalizado(Offset local) {
-              final dx = ((local.dx - offsetX) / tamanoRenderizado.width).clamp(0.0, 1.0);
-              final dy = ((local.dy - offsetY) / tamanoRenderizado.height).clamp(0.0, 1.0);
+              final dx = ((local.dx - offsetX) / tamanoRenderizado.width).clamp(
+                0.0,
+                1.0,
+              );
+              final dy = ((local.dy - offsetY) / tamanoRenderizado.height)
+                  .clamp(0.0, 1.0);
               return Offset(dx, dy);
             }
 
@@ -1183,7 +1333,10 @@ class MapaWidget extends StatelessWidget {
     late final ImageStreamListener listener;
     listener = ImageStreamListener(
       (info, _) {
-        final size = Size(info.image.width.toDouble(), info.image.height.toDouble());
+        final size = Size(
+          info.image.width.toDouble(),
+          info.image.height.toDouble(),
+        );
         _cacheTamano[ruta] = size;
         if (!completer.isCompleted) completer.complete(size);
         stream.removeListener(listener); // liberar el listener: sin fuga
@@ -1207,7 +1360,8 @@ class MapaWidget extends StatelessWidget {
       final vi = vertices[i];
       final vj = vertices[j];
       if (((vi.dy > punto.dy) != (vj.dy > punto.dy)) &&
-          (punto.dx < (vj.dx - vi.dx) * (punto.dy - vi.dy) / (vj.dy - vi.dy) + vi.dx)) {
+          (punto.dx <
+              (vj.dx - vi.dx) * (punto.dy - vi.dy) / (vj.dy - vi.dy) + vi.dx)) {
         dentro = !dentro;
       }
       j = i;
@@ -1287,6 +1441,45 @@ class _ArrastreUnDedoState extends State<_ArrastreUnDedo> {
   }
 }
 
+/// El nombre de un lugar sobre el plano: una etiqueta oscura que se lee sobre
+/// cualquier plano (texto 13,85 sobre la superficie; la superficie da 14,75
+/// contra un plano blanco y el borde, 3,94 contra ella en uno oscuro). No
+/// crece con la letra más allá de [_escalaMaximaEtiqueta].
+class _EtiquetaPlano extends StatelessWidget {
+  final String texto;
+  const _EtiquetaPlano({required this.texto});
+
+  @override
+  Widget build(BuildContext context) {
+    return MediaQuery.withClampedTextScaling(
+      maxScaleFactor: _escalaMaximaEtiqueta,
+      child: DecoratedBox(
+        decoration: const ShapeDecoration(
+          color: ColoresApp.superficie,
+          shape: StadiumBorder(
+            side: BorderSide(
+              color: ColoresApp.borde,
+              width: FormasApp.grosorLinea,
+            ),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: EspaciadoApp.chico,
+            vertical: 2,
+          ),
+          child: Text(
+            texto,
+            style: TipografiaApp.leyenda.copyWith(
+              color: ColoresApp.textoPrincipal,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 /// Marcador de escalera a escala real ([ancho] × [alto] píxeles, que son
 /// [MapaWidget.anchoEscaleraMetros] en el plano). Dibuja los escalones y un
@@ -1308,10 +1501,10 @@ class _MarcadorEscalera extends StatelessWidget {
     final sentido = lugar.sube && lugar.baja
         ? '↕'
         : lugar.sube
-            ? '↑'
-            : lugar.baja
-                ? '↓'
-                : '';
+        ? '↑'
+        : lugar.baja
+        ? '↓'
+        : '';
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -1330,21 +1523,7 @@ class _MarcadorEscalera extends StatelessWidget {
           left: -60,
           right: -60,
           child: Center(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.85),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                '${lugar.nombre} $sentido'.trim(),
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.orange[900],
-                ),
-              ),
-            ),
+            child: _EtiquetaPlano(texto: '${lugar.nombre} $sentido'.trim()),
           ),
         ),
       ],
@@ -1374,15 +1553,16 @@ class _EscaleraPainter extends CustomPainter {
     final lado = min(size.width, size.height);
     final radio = Radius.circular(lado * 0.12);
 
-    // Fondo y borde.
+    // Fondo oscuro (14,75 contra un plano blanco) y borde, que lo separa de
+    // un plano oscuro.
     canvas.drawRRect(
       RRect.fromRectAndRadius(rect, radio),
-      Paint()..color = const Color(0xFFE65100).withValues(alpha: 0.85),
+      Paint()..color = ColoresApp.superficie,
     );
     canvas.drawRRect(
       RRect.fromRectAndRadius(rect.deflate(0.5), radio),
       Paint()
-        ..color = Colors.white
+        ..color = ColoresApp.borde
         ..style = PaintingStyle.stroke
         ..strokeWidth = max(1.0, lado * 0.05),
     );
@@ -1408,7 +1588,7 @@ class _EscaleraPainter extends CustomPainter {
         ..lineTo(cx - a, cy + sep)
         ..lineTo(cx + a, cy + sep)
         ..close();
-      canvas.drawPath(flechas, Paint()..color = Colors.white);
+      canvas.drawPath(flechas, Paint()..color = ColoresApp.textoPrincipal);
     }
 
     // Marco local centrado y rotado: la entrada queda hacia -y.
@@ -1419,7 +1599,7 @@ class _EscaleraPainter extends CustomPainter {
     // Escalones.
     if (!esAscensor) {
       final escalon = Paint()
-        ..color = Colors.white
+        ..color = ColoresApp.textoPrincipal
         ..strokeWidth = max(0.8, lado * 0.05)
         ..strokeCap = StrokeCap.round;
       const n = 4;
@@ -1442,11 +1622,11 @@ class _EscaleraPainter extends CustomPainter {
         ..lineTo(-t, base + t * 0.2)
         ..lineTo(t, base + t * 0.2)
         ..close();
-      canvas.drawPath(tri, Paint()..color = Colors.orange);
+      canvas.drawPath(tri, Paint()..color = ColoresApp.acento);
       canvas.drawPath(
         tri,
         Paint()
-          ..color = Colors.white
+          ..color = ColoresApp.mapaContorno
           ..style = PaintingStyle.stroke
           ..strokeWidth = max(0.8, lado * 0.03),
       );

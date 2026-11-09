@@ -13,9 +13,10 @@ import 'ajustes_movimiento.dart';
 //
 // La tabla de movimiento (sección 5.4 de la v5) pide una suave al cambiar de
 // tramo (cambioDeTramo) y una media al llegar (llegada). La navegación en
-// vivo (pantalla_naveg.dart) todavía vibra con las fuerzas de antes: media al
-// decir «Girá…» y al empezar a orientarse al llegar; fuerte en «Llegaste», en
-// la escalera y al cambiar de piso. Se revisan al migrarla (fase 5.7).
+// vivo (pantalla_naveg.dart) sigue con las fuerzas de antes: media al decir
+// «Girá…» y al empezar a orientarse al llegar; fuerte en «Llegaste», en la
+// escalera y al cambiar de piso. Decidido en la fase 5.7: una vibración suave
+// se puede perder caminando; se cambian recién si, probándolas, conviene.
 //
 // En Android son las vibraciones cortas del sistema (las de
 // View.performHapticFeedback): si la vibración al tocar está apagada en el

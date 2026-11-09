@@ -90,6 +90,15 @@ abstract final class FormasApp {
   /// ícono de una tarjeta de dato, de una fila y de una tarjeta de destino.
   static const double cuadroIcono = 40;
 
+  /// El cuadro y el ícono de la indicación de la navegación (el giro): se
+  /// ven de lejos. Como los demás, no crecen con la letra.
+  static const double cuadroIndicacion = 56;
+  static const double iconoIndicacion = 36;
+
+  /// El cuadro hundido de la ficha de "Comenzar a navegar", con el ícono de
+  /// la indicación adentro.
+  static const double cuadroFicha = 64;
+
   /// Miniatura de un plano en una tarjeta (el catálogo de mapas): un cuadro
   /// hundido de radio 12, con el plano o, si no está en el teléfono, un
   /// ícono. Como los íconos, no crece con la letra.
@@ -142,6 +151,11 @@ abstract final class FormasApp {
 
   /// Cuadro del destino (y de las escaleras y ascensores) sobre el plano.
   static const double cuadroMarcaRuta = 32;
+
+  /// La posición del usuario sobre el plano de verdad: un círculo levantado
+  /// con el anillo del cabezal y la flecha adentro. Lo que mide una celda de
+  /// 1 m a la escala de la navegación.
+  static const double posicionUsuario = 28;
 
   // ── Línea de tiempo ─────────────────────────────────────────────────────
 

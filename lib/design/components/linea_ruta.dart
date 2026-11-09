@@ -163,6 +163,8 @@ class LineaRuta extends StatefulWidget {
     required this.tramos,
     required this.tramoActual,
     this.avance = 0,
+    this.mostrarCabezal = true,
+    this.escalaVista = 1,
   });
 
   /// Los tramos. Otra lista (otra ruta) hace saltar el cabezal y los
@@ -174,6 +176,16 @@ class LineaRuta extends StatefulWidget {
 
   /// Cuánto del tramo actual ya se recorrió, de 0 a 1: ahí va el cabezal.
   final double avance;
+
+  /// Si dibuja el cabezal. En la navegación de verdad va apagado: la
+  /// posición la dibuja el plano (la real, con su flecha), y un cabezal
+  /// pegado a la ruta mentiría cuando el usuario se sale de ella.
+  final bool mostrarCabezal;
+
+  /// El zoom con que se ve la línea, si va adentro de algo que la agranda
+  /// (el InteractiveViewer del plano): los trazos, los guiones y las marcas
+  /// miden lo mismo en pantalla con cualquier zoom.
+  final double escalaVista;
 
   Recorrido get _recorrido =>
       Recorrido(tramos: tramos, tramoActual: tramoActual, avance: avance);
@@ -296,18 +308,20 @@ class _LineaRutaState extends State<LineaRuta>
                     hasta: _hasta,
                     cambio: _curva,
                     estilo: e,
+                    escala: 1 / widget.escalaVista,
                   ),
                 ),
               ),
-              RepaintBoundary(
-                child: _CapaCabezal(
-                  tramos: widget.tramos,
-                  actual: r.actual,
-                  avance: r.avanceAcotado,
-                  tamano: restricciones.biggest,
-                  estilo: e,
+              if (widget.mostrarCabezal)
+                RepaintBoundary(
+                  child: _CapaCabezal(
+                    tramos: widget.tramos,
+                    actual: r.actual,
+                    avance: r.avanceAcotado,
+                    tamano: restricciones.biggest,
+                    estilo: e,
+                  ),
                 ),
-              ),
             ],
           ),
         ),
@@ -486,6 +500,7 @@ class _PintorRuta extends CustomPainter {
     required this.hasta,
     required this.cambio,
     required this.estilo,
+    required this.escala,
   }) : super(repaint: cambio);
 
   final List<TramoRuta> tramos;
@@ -496,9 +511,13 @@ class _PintorRuta extends CustomPainter {
   final Animation<double> cambio;
   final EstiloApp estilo;
 
+  /// Por cuánto se multiplican las medidas para que, con el zoom de quien
+  /// la contiene, midan lo mismo en pantalla (ver [LineaRuta.escalaVista]).
+  final double escala;
+
   Paint _trazo(double grosor, Color color) => Paint()
     ..style = PaintingStyle.stroke
-    ..strokeWidth = grosor
+    ..strokeWidth = grosor * escala
     ..strokeCap = StrokeCap.round
     ..strokeJoin = StrokeJoin.round
     ..color = color;
@@ -542,7 +561,11 @@ class _PintorRuta extends CustomPainter {
       canvas.drawPath(
         m.hueco < 0.5
             ? caminos[i]
-            : _punteado(caminos[i], FormasApp.guionRuta, m.hueco),
+            : _punteado(
+                caminos[i],
+                FormasApp.guionRuta * escala,
+                m.hueco * escala,
+              ),
         pintura,
       );
     }
@@ -562,10 +585,10 @@ class _PintorRuta extends CustomPainter {
     final cuadro = RRect.fromRectAndRadius(
       Rect.fromCenter(
         center: centro,
-        width: FormasApp.cuadroMarcaRuta,
-        height: FormasApp.cuadroMarcaRuta,
+        width: FormasApp.cuadroMarcaRuta * escala,
+        height: FormasApp.cuadroMarcaRuta * escala,
       ),
-      const Radius.circular(FormasApp.radioCampo),
+      Radius.circular(FormasApp.radioCampo * escala),
     );
     pintarRelieve(
       canvas,
@@ -574,7 +597,8 @@ class _PintorRuta extends CustomPainter {
       relleno: estilo.planoHabitacion,
       borde: BorderSide(
         color: destino ? estilo.hecho : estilo.borde,
-        width: destino ? FormasApp.grosorFoco : FormasApp.grosorLinea,
+        width:
+            (destino ? FormasApp.grosorFoco : FormasApp.grosorLinea) * escala,
       ),
     );
     final icono = marca.icono;
@@ -584,7 +608,7 @@ class _PintorRuta extends CustomPainter {
         style: TextStyle(
           fontFamily: icono.fontFamily,
           package: icono.fontPackage,
-          fontSize: FormasApp.iconoChico,
+          fontSize: FormasApp.iconoChico * escala,
           height: 1,
           color: destino ? estilo.hecho : estilo.textoPrincipal,
         ),
@@ -598,6 +622,7 @@ class _PintorRuta extends CustomPainter {
   @override
   bool shouldRepaint(_PintorRuta anterior) =>
       anterior.estilo != estilo ||
+      anterior.escala != escala ||
       !identical(anterior.desde, desde) ||
       !identical(anterior.hasta, hasta) ||
       anterior.cambio != cambio ||

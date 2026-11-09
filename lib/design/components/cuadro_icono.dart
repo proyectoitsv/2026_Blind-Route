@@ -19,7 +19,13 @@ import '../relieve.dart';
 
 /// Cuadro hundido con un ícono adentro.
 class CuadroIcono extends StatelessWidget {
-  const CuadroIcono({super.key, required this.icono, this.color});
+  const CuadroIcono({
+    super.key,
+    required this.icono,
+    this.color,
+    this.lado = FormasApp.cuadroIcono,
+    this.tamanoIcono = FormasApp.iconoChico,
+  });
 
   /// Icons.*_rounded.
   final IconData icono;
@@ -27,12 +33,17 @@ class CuadroIcono extends StatelessWidget {
   /// Color del ícono. Por defecto, el acento; en lo destructivo, el error.
   final Color? color;
 
+  /// El lado del cuadro y el tamaño del ícono: los comunes, salvo donde el
+  /// ícono se tiene que ver de lejos (la indicación de la navegación).
+  final double lado;
+  final double tamanoIcono;
+
   @override
   Widget build(BuildContext context) {
     final e = EstiloApp.de(context);
     return ExcludeSemantics(
       child: SizedBox.square(
-        dimension: FormasApp.cuadroIcono,
+        dimension: lado,
         child: DecoratedBox(
           decoration: DecoracionRelieve(
             color: e.hundido,
@@ -43,11 +54,7 @@ class CuadroIcono extends StatelessWidget {
             sombraClara: e.sombraClara,
           ),
           child: Center(
-            child: Icon(
-              icono,
-              size: FormasApp.iconoChico,
-              color: color ?? e.acento,
-            ),
+            child: Icon(icono, size: tamanoIcono, color: color ?? e.acento),
           ),
         ),
       ),

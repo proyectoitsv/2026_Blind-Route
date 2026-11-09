@@ -150,22 +150,19 @@ abstract final class ColoresApp {
   /// hoja.
   static const Color velo = Color(0x8A000000);
 
-  // ── Mapa de las pantallas sin migrar ────────────────────────────────────
-  // Se dibujan sobre la imagen del plano, que suele ser clara, así que se
-  // anotan contra el fondo y contra un plano blanco. Los usa mapa_widget.dart
-  // hasta la fase 5; ahí cambian color y estilo del dibujo, nunca la
-  // geometría.
+  // ── Sobre la imagen del plano ───────────────────────────────────────────
+  // El plano de verdad es una imagen que carga el admin y suele ser clara,
+  // así que estos se anotan también contra un plano blanco. Los colores
+  // claros de la paleta se pierden sobre el blanco (el acento da 1,68): lo
+  // que se dibuja encima lleva un contorno oscuro, o un fondo oscuro.
 
-  /// Trazo de la ruta en el plano (inicio del degradado de la ruta). Fondo
-  /// 6,72 · blanco 2,45 (al 80 % de opacidad, 2,03). Sobre un plano blanco no
-  /// llega a 3:1: en la fase 5, la ruta lleva la ranura oscura debajo.
-  static const Color mapaRutaInicio = Color(0xFF5AA9FF);
+  /// Contorno oscuro de lo que se dibuja sobre el plano: las miras, las
+  /// líneas de medición y de zona y los íconos. Blanco 18,77 · acento 11,14 ·
+  /// advertencia 12,20.
+  static const Color mapaContorno = rutaRanura;
 
-  /// Fin del degradado de la ruta activa (el acento). Blanco 1,68.
-  static const Color mapaRutaFin = acento;
-
-  /// Opacidad de la ruta sobre el plano.
-  static const double mapaRutaOpacidad = 0.80;
+  /// Grilla sobre el plano: negro al 30 %. Decorativa, sin contraste mínimo.
+  static const Color mapaGrilla = Color(0x4D000000);
 
   /// Relleno de zona no transitable. Sólo relleno, con borde o patrón: sobre
   /// el fondo da 2,51, así que nunca va como texto ni ícono (para eso está
@@ -179,16 +176,4 @@ abstract final class ColoresApp {
   /// de las herramientas de diseño y contrasta sobre planos claros y sobre el
   /// naranja de los vértices en curso. Fondo 4,76 · blanco 3,46.
   static const Color mapaGuia = Color(0xFFFF2D95);
-
-  /// Marcador de beacon (el acento). Sobre un plano blanco da 1,68: el
-  /// marcador necesita un contorno oscuro para llegar a 3:1 (fase 5).
-  static const Color mapaBeacon = acento;
-
-  /// Marcador de lugar de interés. Fondo 6,06 · blanco 2,72: sobre un plano
-  /// blanco necesita contorno.
-  static const Color mapaLugar = Color(0xFFA78BFA);
-
-  /// Celda y flecha del usuario. Fondo 4,14 · blanco 3,98. Más oscura que la
-  /// ruta, así la celda del usuario se distingue del primer tramo.
-  static const Color mapaUsuario = Color(0xFF2979FF);
 }

@@ -101,6 +101,7 @@ class ChipFiltro extends StatelessWidget {
     required this.alCambiar,
     this.exclusivo = false,
     this.etiquetaSemantica,
+    this.icono,
   });
 
   final String texto;
@@ -109,6 +110,11 @@ class ChipFiltro extends StatelessWidget {
   /// null: deshabilitado.
   final ValueChanged<bool>? alCambiar;
   final bool exclusivo;
+
+  /// Ícono antes del texto, decorativo (Icons.*_rounded): una marca que no
+  /// depende de si está elegido, como "tu piso". Elegido, va después de la
+  /// tilde.
+  final IconData? icono;
 
   /// Lo que dice TalkBack en lugar de [texto].
   final String? etiquetaSemantica;
@@ -196,6 +202,14 @@ class ChipFiltro extends StatelessWidget {
                               if (seleccionado) ...[
                                 Icon(
                                   Icons.check_rounded,
+                                  size: FormasApp.iconoChico,
+                                  color: color,
+                                ),
+                                const SizedBox(width: EspaciadoApp.minimo),
+                              ],
+                              if (icono != null) ...[
+                                Icon(
+                                  icono,
                                   size: FormasApp.iconoChico,
                                   color: color,
                                 ),

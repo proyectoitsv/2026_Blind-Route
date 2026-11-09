@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'ajustes_navegacion.dart' show ParametroAjuste;
 import 'ajustes_voz.dart';
-import 'tema.dart';
+import 'design/design.dart';
 import 'voz_service.dart';
 
 /// Ajustes de la voz en la app del usuario (ver [AjustesVoz]): velocidad,
@@ -72,99 +72,50 @@ class _PantallaAjustesVozState extends State<PantallaAjustesVoz> {
 
   @override
   Widget build(BuildContext context) {
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        appBar: AppBar(title: const Text('Ajustes de voz')),
-        body: !_cargado
-            ? const Center(child: CircularProgressIndicator())
-            : ListView(
-                padding: const EdgeInsets.all(20),
-                children: [
-                  for (final p in _ajustes.todos) _control(p),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    height: 64,
-                    child: ElevatedButton.icon(
-                      onPressed: _probar,
-                      icon: const Icon(Icons.record_voice_over_rounded),
-                      label: const Text(
-                        'Probar la voz',
-                        style: TextStyle(
-                            fontSize: 20, fontWeight: FontWeight.w700),
-                      ),
-                    ),
+    return AmbienteDiseno(
+      child: Builder(
+        builder: (context) => Scaffold(
+          backgroundColor: EstiloApp.de(context).fondo,
+          appBar: const BarraSuperior(titulo: 'Ajustes de voz'),
+          // Hasta leer lo guardado, nada: un instante, sin nada que gire.
+          body: !_cargado
+              ? const SizedBox.shrink()
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(
+                    EspaciadoApp.margenLateral,
+                    EspaciadoApp.margenLateral,
+                    EspaciadoApp.margenLateral,
+                    EspaciadoApp.entreSecciones,
                   ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    height: 56,
-                    child: OutlinedButton(
-                      onPressed: _deFabrica,
-                      child: const Text(
-                        'Volver a los valores de fábrica',
-                        style: TextStyle(fontSize: 17),
+                  children: [
+                    for (final p in _ajustes.todos) ...[
+                      Deslizador(
+                        etiqueta: p.nombre,
+                        valor: p.valor,
+                        min: p.minimo,
+                        max: p.maximo,
+                        divisiones: p.divisiones,
+                        formato: p.formatear,
+                        formatoSemantico: p.hablado,
+                        ayuda: p.ayuda,
+                        alCambiar: (v) => _cambiar(p, v),
                       ),
+                      const SizedBox(height: EspaciadoApp.entreSecciones),
+                    ],
+                    BotonPrincipal(
+                      texto: 'Probar la voz',
+                      icono: Icons.record_voice_over_rounded,
+                      alPresionar: _probar,
                     ),
-                  ),
-                ],
-              ),
-      ),
-    );
-  }
-
-  Widget _control(ParametroAjuste p) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // El nombre y el valor los lee el lector de pantalla desde el
-          // control: este texto queda sólo para la vista.
-          ExcludeSemantics(
-            child: Text(
-              '${p.nombre}: ${p.formatear(p.valor)}',
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-                color: TemaApp.textoBlanco,
-              ),
-            ),
-          ),
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              activeTrackColor: TemaApp.acento,
-              thumbColor: TemaApp.acento,
-              inactiveTrackColor: TemaApp.fondoSurface,
-              overlayColor: TemaApp.acento.withValues(alpha: 0.15),
-              valueIndicatorColor: TemaApp.acento,
-              valueIndicatorTextStyle: const TextStyle(
-                color: TemaApp.fondo,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            child: Semantics(
-              label: p.nombre,
-              hint: p.ayuda,
-              child: Slider(
-                value: p.valor,
-                min: p.minimo,
-                max: p.maximo,
-                divisions: p.divisiones,
-                label: p.formatear(p.valor),
-                semanticFormatterCallback: p.hablado,
-                onChanged: (v) => _cambiar(p, v),
-              ),
-            ),
-          ),
-          ExcludeSemantics(
-            child: Text(
-              p.ayuda,
-              style: const TextStyle(
-                  fontSize: 15, color: TemaApp.textoSecundario),
-            ),
-          ),
-        ],
+                    const SizedBox(height: EspaciadoApp.medio),
+                    BotonSecundario(
+                      texto: 'Volver a los valores de fábrica',
+                      expandido: true,
+                      alPresionar: _deFabrica,
+                    ),
+                  ],
+                ),
+        ),
       ),
     );
   }

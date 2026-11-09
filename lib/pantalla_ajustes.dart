@@ -7,8 +7,7 @@ import 'pantalla_ajustes_voz.dart';
 ///
 /// Es la primera pantalla de las apps con el sistema de diseño (fase 3 del
 /// rediseño): va envuelta en AmbienteDiseno. Los ajustes de la voz siguen en
-/// su pantalla (pantalla_ajustes_voz.dart, todavía sin migrar), que se abre
-/// desde acá.
+/// su pantalla (pantalla_ajustes_voz.dart), que se abre desde acá.
 ///
 /// «Reducir movimiento» y «Vibración» son de cada persona y se guardan sólo
 /// en el teléfono (AjustesMovimiento). Al prender la vibración, el teléfono

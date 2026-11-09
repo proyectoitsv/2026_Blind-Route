@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/material.dart';
 import 'dart:math';
@@ -30,8 +29,9 @@ import 'panel_ajustes_navegacion.dart';
 import 'supabase_service.dart';
 import 'restriccion_zonas.dart';
 import 'histeresis_celda.dart';
-import 'tema.dart';
-import 'design/haptica.dart';
+import 'design/design.dart';
+import 'seguimiento_recorrido.dart';
+import 'vista_navegacion.dart';
 import 'piso_util.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -80,11 +80,11 @@ class PantallaNavegacion extends StatefulWidget {
     this.anuncioInicial,
     this.llegoSubiendo,
   });
- 
+
   @override
   State<PantallaNavegacion> createState() => _PantallaNavegacionState();
 }
- 
+
 class _PantallaNavegacionState extends State<PantallaNavegacion>
     with SingleTickerProviderStateMixin {
   late final ProcesadorSenal _procesador;
@@ -92,9 +92,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   final OrientacionService _orientacion = OrientacionService();
   final VozService _voz = VozService();
   late final GrillaNav _grilla;
- 
+
   Map<String, BeaconMarcado> _beaconsEnElMapa = {};
   List<ZonaNoTransitable> _zonas = [];
+
   /// Lugares del piso ACTUAL (los que se dibujan y donde están las escaleras
   /// que se pueden usar desde acá).
   List<LugarInteres> _lugares = [];
@@ -180,7 +181,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Ahora se dice una vez por visita: se repite recién después de alejarse
   /// [_fpAlejarseMetros] y con [_fpRepetirAnuncio] de por medio.
   final Map<String, ({Offset centro, DateTime cuando, bool seAlejo})>
-      _fpAnunciados = {};
+  _fpAnunciados = {};
   static const double _fpAlejarseMetros = 3.0;
   static const Duration _fpRepetirAnuncio = Duration(seconds: 15);
 
@@ -189,7 +190,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   ({String etiqueta, Offset centro})? _fpAnuncioPendiente;
 
   DateTime? _ultimoLogFingerprint;
- 
+
   // ── Posición ──────────────────────────────────────────────────────────────
   //
   // FILTRO ONE EURO + ACELERÓMETRO (reemplaza al EMA de α fijo).
@@ -358,10 +359,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// beacons visibles. Sirven para NO redibujar cuando no cambió nada.
   Offset? _posicionMostradaUI;
   int _beaconsMostradosUI = -1;
- 
+
   bool _escaneando = false;
   String _estadoScan = 'Iniciando...';
- 
+
   // ── NAVEGACIÓN ENTRE PISOS ─────────────────────────────────────────────────
   //
   // _destinoSeleccionado es SIEMPRE el destino final, aunque esté en otro
@@ -484,6 +485,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   final TransformationController _transformMapa = TransformationController();
 
+  /// El zoom del mapa: con él, lo que se dibuja encima (la ruta, los
+  /// marcadores) mide lo mismo en pantalla. Cambia sólo si el zoom se movió
+  /// más de un 4 %, así mover la cámara no redibuja nada.
+  final ValueNotifier<double> _zoomVista = ValueNotifier(1);
+
+  /// Los tramos de la ruta, sólo para mostrar (ver SeguimientoRecorrido).
+  final SeguimientoRecorrido _seguimientoRecorrido = SeguimientoRecorrido();
+
   // ── CÁMARA DEL MAPA ──
   //
   // La vista se mueve con un "resorte" amortiguado en vez de una animación
@@ -549,6 +558,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   // Navegacion
   LugarInteres? _destinoSeleccionado;
+
   /// Lo que FALTA recorrer de la ruta: arranca en la celda del usuario y se
   /// va acortando a medida que avanza (ver _seguirRuta).
   List<Offset>? _rutaActual;
@@ -582,7 +592,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Desvío (m) a partir del cual no se espera [_tiempoFueraDeRuta]: a esa
   /// distancia ya no es ruido de una celda.
   static const double _desvioReplanInmediatoMetros = 3.0;
- 
+
   // Orientacion
   StreamSubscription<CompassEvent>? _compassSubscription;
   bool _compassDisponible = false;
@@ -599,7 +609,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // datos reales de la DB. Previene que _calcularRuta() corra con una grilla
   // vacía si BLE empieza antes de que termine _inicializar().
   bool _resolvedorListo = false;
- 
+
   // Trilateracion
   static const int _minBeaconsActivos = 2;
   static const int _maxBeaconsParaCalcular = 6; // máx. beacons por espacio
@@ -612,9 +622,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // se consideran "igual de cercanos": ahí desempata la varianza (más estable
   // primero). Ver ordenamiento en _calcularPosicionRobusta().
   static const double _umbralRssiSimilar = 2.0;
- 
+
   Timer? _timeoutTimer;
-  Timer? _scanReinicioTimer;  // watchdog del scan BLE (ver _iniciarEscaneo)
+  Timer? _scanReinicioTimer; // watchdog del scan BLE (ver _iniciarEscaneo)
 
   /// Momento en que esta pantalla empezo a esperar resultados BLE. Es la
   /// referencia del watchdog mientras todavia no llego ningun lote.
@@ -631,7 +641,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Reinicios forzados consecutivos sin exito. Solo para informar al usuario;
   /// la cuota de arranques la administra BluetoothHelper.
   int _reiniciosSinDatos = 0;
-  Timer? _compassUITimer;     // refresca el chip de brújula a 4 Hz, desacoplado del BLE
+  Timer?
+  _compassUITimer; // refresca el chip de brújula a 4 Hz, desacoplado del BLE
 
   // Último heading que efectivamente disparó un rebuild de UI. Se usa para
   // que _compassUITimer no haga setState() (rebuild de TODA la pantalla,
@@ -679,7 +690,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // reintentar en lugar de disparar un compute() por cada callback BLE.
   DateTime? _ultimoIntentoRuta;
   static const Duration _cooldownRuta = Duration(milliseconds: 1500);
- 
+
   // Voz — STT
   bool _escuchando = false;
 
@@ -823,7 +834,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   /// Maniobras ya anunciadas: 1 = aviso previo, 2 = giro.
   final List<({Offset esquina, SentidoGiro? giro, int nivel, DateTime cuando})>
-      _maniobrasAnunciadas = [];
+  _maniobrasAnunciadas = [];
 
   /// Esquina cuyo giro ya se le dijo al usuario, y cuándo.
   ({Offset esquina, DateTime desde})? _giroComprometido;
@@ -839,7 +850,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// destino seguido de "Calculando ruta.", como antes, y la indicación sale
   /// sola en cuanto haya ruta.
   static const Duration _esperaMaxPrimeraRuta = Duration(milliseconds: 1200);
- 
+
   @override
   void initState() {
     super.initState();
@@ -848,8 +859,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     _tickerCamara = createTicker(_onTickCamara);
     // Toda vista nueva (dedo, inercia o cámara) pasa por los límites del plano.
     _transformMapa.addListener(_corregirVista);
+    _transformMapa.addListener(_actualizarZoomVista);
     _procesador = widget.procesadorCompartido ?? ProcesadorSenal();
-    _grilla = GrillaNav(metrosX: widget.escalaX, metrosY: widget.escalaY, tamCeldaMetros: widget.tamCeldaMetros);
+    _grilla = GrillaNav(
+      metrosX: widget.escalaX,
+      metrosY: widget.escalaY,
+      tamCeldaMetros: widget.tamCeldaMetros,
+    );
     // La escala del piso entra al filtro para que la velocidad se calcule en
     // m/s reales y los parámetros no dependan del tamaño del plano.
     _filtroPosicion = FiltroUnEuroPosicion(
@@ -858,7 +874,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     );
     _inicializar();
   }
- 
+
   @override
   void dispose() {
     _timeoutTimer?.cancel();
@@ -888,9 +904,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
     _tickerCamara.dispose();
     _transformMapa.dispose();
+    _zoomVista.dispose();
     super.dispose();
   }
- 
+
   Future<void> _inicializar() async {
     try {
       _voz.registrarDueno(this);
@@ -899,15 +916,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // anterior (otro piso, otra navegación) no tiene que contar acá.
       _voz.reiniciarFiltroInstrucciones();
 
-      final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(widget.pisoId);
-      final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(widget.pisoId);
-      final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(widget.pisoId);
+      final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(
+        widget.pisoId,
+      );
+      final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(
+        widget.pisoId,
+      );
+      final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(
+        widget.pisoId,
+      );
       // Destinos de todo el edificio + pisos disponibles para los saltos.
-      final lugaresEdificio =
-          await DatabaseHelper.instance.obtenerLugaresDelMismoEdificio(widget.pisoId);
-      final pisosEdificio =
-          await DatabaseHelper.instance.obtenerPisosDelMismoEdificio(widget.pisoId);
-      final calibraciones = await DatabaseHelper.instance.obtenerCalibracionesPorPiso(widget.pisoId);
+      final lugaresEdificio = await DatabaseHelper.instance
+          .obtenerLugaresDelMismoEdificio(widget.pisoId);
+      final pisosEdificio = await DatabaseHelper.instance
+          .obtenerPisosDelMismoEdificio(widget.pisoId);
+      final calibraciones = await DatabaseHelper.instance
+          .obtenerCalibracionesPorPiso(widget.pisoId);
 
       // Lookup del nombre del piso para el AppBar (item 7).
       // DatabaseHelper no expone un método por id, así que consultamos
@@ -922,7 +946,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       );
       final pisosPorId = {for (final p in pisosEdificio) p.id: p};
       // Con número de piso se muestra el nombre derivado ("Piso 2").
-      final nombrePiso = pisosPorId[widget.pisoId]?.nombreVisible ??
+      final nombrePiso =
+          pisosPorId[widget.pisoId]?.nombreVisible ??
           (filas.isNotEmpty ? filas.first['nombre_piso'] as String? : null);
 
       // Salto de piso: retomar el destino final que venía de la pantalla
@@ -937,7 +962,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // rotacion_mapa puede no existir todavía en instalaciones antiguas (v7→v8);
       // usar el valor pasado por widget como fallback.
       final rotacionDb = filas.isNotEmpty
-          ? ((filas.first['rotacion_mapa'] as num?)?.toDouble() ?? widget.rotacionMapa)
+          ? ((filas.first['rotacion_mapa'] as num?)?.toDouble() ??
+                widget.rotacionMapa)
           : widget.rotacionMapa;
 
       if (!mounted) return;
@@ -959,7 +985,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         _nombrePiso = nombrePiso;
         _rotacionMapaEfectiva = rotacionDb;
       });
- 
+
       // Solo los beacons configurados de este piso son relevantes para el
       // filtro: el scan BLE ve todos los dispositivos del ambiente y, sin esto,
       // sus MAC se acumulaban para siempre en el ProcesadorSenal (fuga de
@@ -980,10 +1006,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         grilla: _grilla,
       );
       final ajustados = _modelosRango.values.where((m) => m.ajustado).length;
-      debugPrint('[Rango] Modelos ajustados por regresion: $ajustados/'
-          '${_modelosRango.length}. Los no ajustados usan n por defecto '
-          '(hacen falta ${ProcesadorSenal.minPuntosAjuste}+ calibraciones a '
-          'distancias distintas por beacon).');
+      debugPrint(
+        '[Rango] Modelos ajustados por regresion: $ajustados/'
+        '${_modelosRango.length}. Los no ajustados usan n por defecto '
+        '(hacen falta ${ProcesadorSenal.minPuntosAjuste}+ calibraciones a '
+        'distancias distintas por beacon).',
+      );
 
       // Las escaleras del piso son obstáculos: la ruta las rodea y llega por
       // la entrada. Se deja libre la celda frente a cada entrada, que es a
@@ -1008,8 +1036,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // Primero lo guardado en el teléfono (en el edificio puede no haber
       // señal); la nube se consulta aparte y, si trae algo distinto, rige
       // desde el ciclo siguiente.
-      final pisoConEdificio =
-          await DatabaseHelper.instance.obtenerPisoConEdificio(widget.pisoId);
+      final pisoConEdificio = await DatabaseHelper.instance
+          .obtenerPisoConEdificio(widget.pisoId);
       final edificio = pisoConEdificio?['edificio_nombre'] as String?;
       await _ajustes.usarEdificio(edificio);
       unawaited(
@@ -1017,9 +1045,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
             .sincronizarAjustesNavegacion(edificio)
             .timeout(const Duration(seconds: 8))
             .catchError((Object e) {
-          debugPrint('[Ajustes] Sin ajustes de la nube, se usan los del '
-              'teléfono: $e');
-        }),
+              debugPrint(
+                '[Ajustes] Sin ajustes de la nube, se usan los del '
+                'teléfono: $e',
+              );
+            }),
       );
       _aplicarAjustesPosicion();
       // Acelerómetro: si el dispositivo no lo expone, el detector devuelve un
@@ -1027,11 +1057,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // comportamiento parecido al EMA anterior).
       final hayAcelerometro = await _movimiento.iniciar();
       if (!hayAcelerometro) {
-        debugPrint('[Posicionamiento] Sin acelerómetro: el filtro One Euro '
-            'trabaja con factor de movimiento fijo.');
+        debugPrint(
+          '[Posicionamiento] Sin acelerómetro: el filtro One Euro '
+          'trabaja con factor de movimiento fijo.',
+        );
       }
       await _iniciarBrujula();
- 
+
       // Anuncio de bienvenida. NO se espera a que termine: `hablar()` bloquea
       // hasta que el motor TTS confirma la locucion (o hasta su timeout, ~3.4 s
       // para este texto). Al entrar y salir rapido de la pantalla, el TTS
@@ -1039,8 +1071,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // varios segundos justo cuando mas importa. El anuncio es informativo:
       // no tiene por que estar en el camino critico del posicionamiento.
       _voz.hablarSinEsperar(widget.anuncioInicial ?? 'Buscando ubicación.');
- 
-      if (widget.procesadorCompartido != null && FlutterBluePlus.isScanningNow) {
+
+      if (widget.procesadorCompartido != null &&
+          FlutterBluePlus.isScanningNow) {
         if (mounted) {
           setState(() {
             _escaneando = true;
@@ -1055,7 +1088,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         await _iniciarEscaneo(reutilizandoScan: true);
         return;
       }
- 
+
       if (!mounted) return;
       final ok = await BluetoothHelper.verificarPrecondiciones(context);
       if (!ok) {
@@ -1065,15 +1098,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         await _voz.hablar('Bluetooth no disponible.');
         return;
       }
- 
+
       await _iniciarEscaneo();
     } catch (e) {
       if (mounted) {
-        setState(() => _estadoScan = 'Error de inicializacion: $e');
+        setState(() => _estadoScan = 'Error de inicialización: $e');
       }
     }
   }
- 
+
   Future<void> _iniciarBrujula() async {
     try {
       _compassDisponible = FlutterCompass.events != null;
@@ -1098,7 +1131,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         (CompassEvent event) {
           if (event.heading == null) {
             // El hardware no está calibrado o aún no tiene fix: loguear y seguir.
-            debugPrint('[Brujula] Evento con heading null — sensor sin calibrar o sin datos.');
+            debugPrint(
+              '[Brujula] Evento con heading null — sensor sin calibrar o sin datos.',
+            );
             return;
           }
           if (!recibioPrimerHeadingValido) {
@@ -1171,7 +1206,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       _compassDisponible = false;
     }
   }
- 
+
   /// Arranca (o reengancha) el escaneo BLE e instala el watchdog.
   ///
   /// [reutilizandoScan] indica que venimos de otra pantalla que dejo el scan
@@ -1202,9 +1237,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // asi que esto es informativo, no terminal.
       final espera = BluetoothHelper.esperaParaArrancar();
       if (mounted) {
-        setState(() => _estadoScan = espera > Duration.zero
-            ? 'Reintentando escaneo en ${espera.inSeconds} s...'
-            : 'No se pudo iniciar el escaneo');
+        setState(
+          () => _estadoScan = espera > Duration.zero
+              ? 'Reintentando escaneo en ${espera.inSeconds} s...'
+              : 'No se pudo iniciar el escaneo',
+        );
       }
     } else if (mounted) {
       setState(() => _estadoScan = 'Buscando beacons...');
@@ -1213,7 +1250,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     _timeoutTimer?.cancel();
     _timeoutTimer = Timer(const Duration(seconds: 12), () {
       if (mounted && _posicionFinal == null) {
-        setState(() => _estadoScan = 'No se detectan beacons suficientes.\nAcercate a un beacon configurado.');
+        setState(
+          () => _estadoScan =
+              'No se detectan beacons suficientes.\nAcercate a un beacon configurado.',
+        );
       }
     });
 
@@ -1243,8 +1283,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // que el control de silencio de abajo no lo detecta. Ver
       // BluetoothHelper.renovarScanCada.
       if (BluetoothHelper.esDueno(this) && BluetoothHelper.scanParaRenovar) {
-        debugPrint('[BLE] Renovando el scan (lleva '
-            '${BluetoothHelper.antiguedadScan?.inMinutes} min corriendo).');
+        debugPrint(
+          '[BLE] Renovando el scan (lleva '
+          '${BluetoothHelper.antiguedadScan?.inMinutes} min corriendo).',
+        );
         await BluetoothHelper.reiniciarScanForzado();
         return;
       }
@@ -1269,8 +1311,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         return;
       }
 
-      debugPrint('[BLE] Sin resultados hace ${silencio.inSeconds}s '
-          '(isScanningNow=${FlutterBluePlus.isScanningNow}). Forzando reinicio.');
+      debugPrint(
+        '[BLE] Sin resultados hace ${silencio.inSeconds}s '
+        '(isScanningNow=${FlutterBluePlus.isScanningNow}). Forzando reinicio.',
+      );
 
       final ok = await BluetoothHelper.reiniciarScanForzado();
       if (!mounted) return;
@@ -1284,7 +1328,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         setState(() {
           _estadoScan = espera > Duration.zero
               ? 'Bluetooth saturado, reintentando en ${espera.inSeconds} s...'
-              : 'Sin senal de beacons, reintentando...';
+              : 'Sin señal de beacons, reintentando...';
         });
         // Aviso por voz una sola vez, cuando el problema deja de ser un bache
         // momentaneo. Es informacion que un usuario ciego necesita: sin esto,
@@ -1297,11 +1341,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       }
     });
   }
- 
+
   void _actualizarSenales(List<ScanResult> resultados) {
     if (!mounted) return;
     _contadorLecturas++;
- 
+
     // ── SÓLO LECTURAS NUEVAS ───────────────────────────────────────────────
     // flutter_blue_plus entrega en cada callback la lista ACUMULADA de
     // dispositivos (todo lo oído en los últimos removeIfGone = 4 s), y cada
@@ -1364,8 +1408,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         final ultima = _ultimaLecturaBeacon[beacon.mac];
         if (ultima == null ||
             ahoraSenales.difference(ultima).inMicroseconds > graciaUs) {
-          beacon.rssiFiltrado =
-              (beacon.rssiFiltrado - caida).clamp(-100.0, 0.0);
+          beacon.rssiFiltrado = (beacon.rssiFiltrado - caida).clamp(
+            -100.0,
+            0.0,
+          );
         }
       }
     }
@@ -1377,7 +1423,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     // de 250 ms. Además el _estadoScan está dentro de un Semantics liveRegion:
     // el titileo de texto se traducía en anuncios repetidos de TalkBack.
     if (_contadorLecturas % 10 == 0 && mounted && _posicionFinal == null) {
-      final activos = _beaconsEnElMapa.values.where((b) => b.rssiFiltrado > _umbralRSSI).length;
+      final activos = _beaconsEnElMapa.values
+          .where((b) => b.rssiFiltrado > _umbralRSSI)
+          .length;
       final texto = 'Beacons detectados: $activos / ${_beaconsEnElMapa.length}';
       if (texto != _estadoScan) {
         setState(() => _estadoScan = texto);
@@ -1395,7 +1443,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
     _calcularPosicionRobusta();
   }
- 
+
   /// Publica cada [_periodoDiagnostico] cuántas lecturas nuevas por segundo
   /// llegan de los beacons del piso, y cuánto lleva corriendo el scan.
   void _publicarDiagnosticoSenal(DateTime ahora) {
@@ -1412,8 +1460,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       tasas.isEmpty
           ? 'Sin lecturas de los beacons del piso'
           : '${tasas.length} beacons · ${promedio.toStringAsFixed(1)} '
-              'lecturas/s por beacon (de ${tasas.first.toStringAsFixed(1)} '
-              'a ${tasas.last.toStringAsFixed(1)})',
+                'lecturas/s por beacon (de ${tasas.first.toStringAsFixed(1)} '
+                'a ${tasas.last.toStringAsFixed(1)})',
       if (edadScan != null) 'escaneo de hace ${edadScan.inMinutes} min',
     ].join(' · ');
 
@@ -1450,11 +1498,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       var candidatos = _beaconsEnElMapa.values
           .where((b) => b.rssiFiltrado > _umbralRSSI)
           .toList();
- 
+
       if (candidatos.length < _minBeaconsActivos) {
         // Sólo si el texto cambió: antes se redibujaba la pantalla entera en
         // cada ciclo (~5 veces por segundo) con el mismo mensaje.
-        final texto = 'Beacons cercanos: ${candidatos.length} (necesitamos $_minBeaconsActivos)';
+        final texto =
+            'Beacons cercanos: ${candidatos.length} (necesitamos $_minBeaconsActivos)';
         if (mounted && texto != _estadoScan) {
           setState(() => _estadoScan = texto);
         }
@@ -1484,7 +1533,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           }
         }
       }
- 
+
       // Orden: primero por RSSI (más cercano) DESC, y entre beacons de fuerza
       // similar, por varianza (más estable) ASC. Cuantizamos el RSSI a bandas
       // de _umbralRssiSimilar dBm para que el desempate por varianza se active
@@ -1499,7 +1548,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
             .compareTo(_procesador.varianzaBeacon(b.mac)); // varianza ASC
       });
       final activos = candidatos.take(_maxBeaconsParaCalcular).toList();
- 
+
       // MULTILATERACIÓN por mínimos cuadrados (reemplaza al centroide ponderado
       // 1/d²). El centroide era un promedio de las POSICIONES de los beacons:
       // andaba bien pegado a un beacon (ese beacon dominaba el peso) pero
@@ -1550,8 +1599,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // real y es el que se muestra y el que ajusta la ventana de RSSI.
       if (_posicionFiltrada == null || dt > _silencioParaReadquirirSeg) {
         _adquisicionDesde = ahoraMuestra;
-        debugPrint('[Posicionamiento] Adquisición iniciada '
-            '(${_posicionFiltrada == null ? "primer fix" : "posición recuperada tras ${dt.toStringAsFixed(1)} s"}).');
+        debugPrint(
+          '[Posicionamiento] Adquisición iniciada '
+          '(${_posicionFiltrada == null ? "primer fix" : "posición recuperada tras ${dt.toStringAsFixed(1)} s"}).',
+        );
       }
       final fAdq = _factorAdquisicion(ahoraMuestra);
       final adquiriendo = fAdq > 0.0;
@@ -1665,9 +1716,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // Si uno gana con confianza y sin ambiguedad durante varios ciclos
       // seguidos, la posicion se corre hacia su celda con un peso que se va
       // acumulando (ver _fpPeso). Los parámetros salen del panel del admin.
-      final logFp = _ultimoLogFingerprint == null ||
-          ahoraMuestra.difference(_ultimoLogFingerprint!).inMilliseconds >
-              2000;
+      final logFp =
+          _ultimoLogFingerprint == null ||
+          ahoraMuestra.difference(_ultimoLogFingerprint!).inMilliseconds > 2000;
       final diagnosticoFp = logFp ? <String>[] : null;
       final fuerzaFp = _ajustes.fpFuerza.valor;
       final coincidenciaDbFp = _ajustes.fpCoincidenciaDb.valor;
@@ -1750,7 +1801,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           // por salir (ver "ESTÁS EN…").
           final etiqueta = coincidencia.etiqueta;
           final anterior = etiqueta == null ? null : _fpAnunciados[etiqueta];
-          final toca = anterior == null ||
+          final toca =
+              anterior == null ||
               (anterior.seAlejo &&
                   ahoraMuestra.difference(anterior.cuando) >=
                       _fpRepetirAnuncio);
@@ -1766,10 +1818,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // ¿Se alejó de los puntos clave ya anunciados? Desde ahí, el próximo
       // paso por ese punto se vuelve a anunciar.
       final aca = _posicionFiltrada ?? nuevaPosicionRaw;
-      _fpAnunciados.updateAll((_, a) => !a.seAlejo &&
-              _distanciaMetros(aca, a.centro) > _fpAlejarseMetros
-          ? (centro: a.centro, cuando: a.cuando, seAlejo: true)
-          : a);
+      _fpAnunciados.updateAll(
+        (_, a) =>
+            !a.seAlejo && _distanciaMetros(aca, a.centro) > _fpAlejarseMetros
+            ? (centro: a.centro, cuando: a.cuando, seAlejo: true)
+            : a,
+      );
 
       final objetivoAplicado = _fpObjetivo;
       if (_fpPeso > 0.01 && objetivoAplicado != null) {
@@ -1790,11 +1844,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         final estado = coincidencia == null
             ? 'sin coincidencia'
             : objetivoFp == null
-                ? 'fuera de radio (${distanciaFp!.toStringAsFixed(1)} m)'
-                : 'coincide $_fpCiclosConsistentes ciclos'
-                    ' (${distanciaFp!.toStringAsFixed(1)} m)';
-        debugPrint('[Fingerprint] $estado · peso '
-            '${_fpPeso.toStringAsFixed(2)} · ${diagnosticoFp.join(' · ')}');
+            ? 'fuera de radio (${distanciaFp!.toStringAsFixed(1)} m)'
+            : 'coincide $_fpCiclosConsistentes ciclos'
+                  ' (${distanciaFp!.toStringAsFixed(1)} m)';
+        debugPrint(
+          '[Fingerprint] $estado · peso '
+          '${_fpPeso.toStringAsFixed(2)} · ${diagnosticoFp.join(' · ')}',
+        );
       }
 
       // ── DIAGNOSTICO DEL RUMBO (cada ~2 s) ────────────────────────────────
@@ -1807,19 +1863,21 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       if (_ultimoLogRumbo == null ||
           ahoraLog.difference(_ultimoLogRumbo!).inMilliseconds > 2000) {
         _ultimoLogRumbo = ahoraLog;
-        debugPrint('[Rumbo] activo=${rumboPlano != null} '
-            'calidad=${calidadRumbo.toStringAsFixed(2)} '
-            '(R=${_orientacion.resultante.toStringAsFixed(3)}) '
-            'compass=$_compassDisponible acel=${_movimiento.disponible} '
-            'mov=${_factorMovimiento.toStringAsFixed(2)} '
-            'adq=${fAdq.toStringAsFixed(2)} '
-            'velAng=${_orientacion.velocidadAngularGrados.toStringAsFixed(0)}°/s '
-            // Del ciclo anterior: ritmo de acercamiento a la esquina y si la
-            // posición tuvo que sacarse de una zona prohibida.
-            'acerc=${_velocidadAcercamientoMs.toStringAsFixed(2)} m/s '
-            'enZona=${_posicionPermitida != _posicionFiltrada} '
-            'puerta(apertura=${_puertaRumbo.apertura.toStringAsFixed(2)}, '
-            'evid=${_puertaRumbo.evidenciaLateralMs.toStringAsFixed(2)} m/s)');
+        debugPrint(
+          '[Rumbo] activo=${rumboPlano != null} '
+          'calidad=${calidadRumbo.toStringAsFixed(2)} '
+          '(R=${_orientacion.resultante.toStringAsFixed(3)}) '
+          'compass=$_compassDisponible acel=${_movimiento.disponible} '
+          'mov=${_factorMovimiento.toStringAsFixed(2)} '
+          'adq=${fAdq.toStringAsFixed(2)} '
+          'velAng=${_orientacion.velocidadAngularGrados.toStringAsFixed(0)}°/s '
+          // Del ciclo anterior: ritmo de acercamiento a la esquina y si la
+          // posición tuvo que sacarse de una zona prohibida.
+          'acerc=${_velocidadAcercamientoMs.toStringAsFixed(2)} m/s '
+          'enZona=${_posicionPermitida != _posicionFiltrada} '
+          'puerta(apertura=${_puertaRumbo.apertura.toStringAsFixed(2)}, '
+          'evid=${_puertaRumbo.evidenciaLateralMs.toStringAsFixed(2)} m/s)',
+        );
       }
 
       // ── FILTRO ONE EURO GOBERNADO POR EL ACELERÓMETRO ────────────────────
@@ -1845,12 +1903,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // anisotropía que el rumbo había logrado más arriba: un pico lateral
         // que el solver había frenado seguía teniendo permiso de moverse tanto
         // de costado como hacia adelante.
-        final dtPaso =
-            (dt.isFinite && dt > 0) ? dt.clamp(0.05, 1.0) : 0.18;
-        final velMaxMoviendo =
-            max(_velMaxQuietoMs, _ajustes.velocidadMaxima.valor);
-        final velMax = _velMaxQuietoMs +
-            (velMaxMoviendo - _velMaxQuietoMs) * fPos;
+        final dtPaso = (dt.isFinite && dt > 0) ? dt.clamp(0.05, 1.0) : 0.18;
+        final velMaxMoviendo = max(
+          _velMaxQuietoMs,
+          _ajustes.velocidadMaxima.valor,
+        );
+        final velMax =
+            _velMaxQuietoMs + (velMaxMoviendo - _velMaxQuietoMs) * fPos;
         final topeAlong = velMax * dtPaso;
 
         double dxM = (filtrada.dx - _posicionFiltrada!.dx) * _grilla.metrosX;
@@ -1865,8 +1924,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
             hx /= hn;
             hy /= hn;
             final nx = -hy, ny = hx;
-            final topePerp = topeAlong *
-                (1.0 + (_facTopePerp - 1.0) * fPos);
+            final topePerp = topeAlong * (1.0 + (_facTopePerp - 1.0) * fPos);
             final a = (dxM * hx + dyM * hy).clamp(-topeAlong, topeAlong);
             final l = (dxM * nx + dyM * ny).clamp(-topePerp, topePerp);
             dxM = a * hx + l * nx;
@@ -1983,7 +2041,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
               : null,
         );
         final posicionSnap = celdaFirme != null
-            ? Offset(_grilla.centroX(celdaFirme.ix), _grilla.centroY(celdaFirme.iy))
+            ? Offset(
+                _grilla.centroX(celdaFirme.ix),
+                _grilla.centroY(celdaFirme.iy),
+              )
             : nuevaPosicionFinal;
         _posicionFinal = posicionSnap;
 
@@ -2000,15 +2061,18 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         final modo = adquiriendo
             ? ' · ajustando'
             : !_movimiento.disponible
-                ? ''
-                : (_factorMovimiento > 0.5 ? ' · en movimiento' : ' · quieto');
-        final textoEstado = 'Ubicacion estable (${activos.length} beacons)$modo';
-        final bool cambioUI = posicionSnap != _posicionMostradaUI ||
+            ? ''
+            : (_factorMovimiento > 0.5 ? ' · en movimiento' : ' · quieto');
+        final textoEstado =
+            'Ubicación estable (${activos.length} beacons)$modo';
+        final bool cambioUI =
+            posicionSnap != _posicionMostradaUI ||
             textoEstado != _estadoScan ||
             candidatos.length != _beaconsMostradosUI;
 
         final ahora = DateTime.now();
-        final bool pasoIntervalo = _ultimoRefrescoUI == null ||
+        final bool pasoIntervalo =
+            _ultimoRefrescoUI == null ||
             ahora.difference(_ultimoRefrescoUI!) > _intervaloRefrescoUI;
         if (mounted && (primeraUbicacion || (pasoIntervalo && cambioUI))) {
           _ultimoRefrescoUI = ahora;
@@ -2045,7 +2109,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // está por hablar.
         _anunciarPuntoClave();
       }
- 
+
       if (_destinoSeleccionado != null &&
           _posicionFinal != null &&
           !_llegoADestino &&
@@ -2061,7 +2125,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       debugPrint('[Posicionamiento] Error en _calcularPosicionRobusta: $e');
     }
   }
- 
+
   /// Decide si la posición ya se asentó (ver _anuncioUbicacionPendiente).
   /// [fAdq]: factor de la fase de adquisición en este ciclo (1 en el tramo
   /// pleno, 0 cuando terminó).
@@ -2069,8 +2133,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (_ubicacionAsentada) return;
     if (fAdq <= 0.0) {
       _ubicacionAsentada = true;
-      debugPrint('[Posicionamiento] Ubicación asentada: terminó la '
-          'adquisición.');
+      debugPrint(
+        '[Posicionamiento] Ubicación asentada: terminó la '
+        'adquisición.',
+      );
       return;
     }
     final ancla = _anclaAsentamiento;
@@ -2085,8 +2151,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
     if (fAdq < 1.0 && ahora.difference(desde) >= _ventanaAsentamiento) {
       _ubicacionAsentada = true;
-      debugPrint('[Posicionamiento] Ubicación asentada: quieta '
-          '${ahora.difference(desde).inMilliseconds} ms.');
+      debugPrint(
+        '[Posicionamiento] Ubicación asentada: quieta '
+        '${ahora.difference(desde).inMilliseconds} ms.',
+      );
     }
   }
 
@@ -2141,9 +2209,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Posición recortada al interior del plano, que es lo que acepta el
   /// pathfinder (ver el comentario en _calcularRuta).
   Offset _posicionParaRuta() => Offset(
-        _posicionFinal!.dx.clamp(0.001, 0.999),
-        _posicionFinal!.dy.clamp(0.001, 0.999),
-      );
+    _posicionFinal!.dx.clamp(0.001, 0.999),
+    _posicionFinal!.dy.clamp(0.001, 0.999),
+  );
 
   /// Texto de la ruta para el panel superior, con la distancia que falta.
   String _textoEstadoRuta(List<Offset> camino) {
@@ -2171,7 +2239,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (_calculandoRuta) return;
     final ahora = DateTime.now();
     // Cooldown: no lanzar un compute() por cada callback BLE.
-    final fueraDeCooldown = _ultimoIntentoRuta == null ||
+    final fueraDeCooldown =
+        _ultimoIntentoRuta == null ||
         ahora.difference(_ultimoIntentoRuta!) >= _cooldownRuta;
 
     // Mismo origen que usaría el pathfinder: tras un salto de piso, mientras
@@ -2218,10 +2287,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
     final sostenido =
         ahora.difference(_fueraDeRutaDesde!) >= _tiempoFueraDeRuta;
-    if (sostenido ||
-        ubicacion.desvioMetros >= _desvioReplanInmediatoMetros) {
-      debugPrint('[Ruta] Fuera de ruta '
-          '(${ubicacion.desvioMetros.toStringAsFixed(1)} m). Recalculando.');
+    if (sostenido || ubicacion.desvioMetros >= _desvioReplanInmediatoMetros) {
+      debugPrint(
+        '[Ruta] Fuera de ruta '
+        '(${ubicacion.desvioMetros.toStringAsFixed(1)} m). Recalculando.',
+      );
       _ultimoIntentoRuta = ahora;
       _calcularRuta();
     }
@@ -2229,11 +2299,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   Future<void> _calcularRuta() async {
     if (_posicionFinal == null || _destinoSeleccionado == null) {
-      debugPrint('[Ruta] _calcularRuta abortada: posicionFinal o destino null.');
+      debugPrint(
+        '[Ruta] _calcularRuta abortada: posicionFinal o destino null.',
+      );
       return;
     }
     if (_calculandoRuta) {
-      debugPrint('[Ruta] _calcularRuta abortada: ya hay un cálculo en curso (_calculandoRuta=true).');
+      debugPrint(
+        '[Ruta] _calcularRuta abortada: ya hay un cálculo en curso (_calculandoRuta=true).',
+      );
       return;
     }
     if (!_resolvedorListo) {
@@ -2245,7 +2319,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     // Si mientras se calcula el usuario cambia o cancela el destino, este
     // resultado ya no sirve (ver _generacionRuta).
     final generacion = _generacionRuta;
-    debugPrint('[Ruta] Iniciando cálculo hacia "${_destinoSeleccionado!.nombre}"...');
+    debugPrint(
+      '[Ruta] Iniciando cálculo hacia "${_destinoSeleccionado!.nombre}"...',
+    );
     try {
       // Clampear la posición a [0, 1) en ambos ejes antes de pasarla al
       // pathfinder. La trilateración puede devolver valores ligeramente fuera
@@ -2271,11 +2347,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           setState(() {
             _sinEscaleraDisponible = true;
             _rutaActual = null;
-            _estadoRuta = 'No hay escalera ni ascensor para '
+            _estadoRuta =
+                'No hay escalera ni ascensor para '
                 '${sube ? 'subir' : 'bajar'} en este piso';
           });
-          _voz.hablar('No hay escalera ni ascensor para '
-              '${sube ? 'subir' : 'bajar'} en este piso.');
+          _voz.hablar(
+            'No hay escalera ni ascensor para '
+            '${sube ? 'subir' : 'bajar'} en este piso.',
+          );
           return;
         }
         setState(() => _escaleraObjetivo = escalera);
@@ -2284,16 +2363,20 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // no, ese aviso sale después, solo (ver _anuncioUbicacionPendiente).
         if (widget.destinoFinalId != null && !_anuncioRetomadoHecho) {
           _anuncioRetomadoHecho = true;
-          _voz.hablar('${_tomarUbicacionLista()}'
-              'Vamos ${escalera.medioComoDestino}.');
+          _voz.hablar(
+            '${_tomarUbicacionLista()}'
+            'Vamos ${escalera.medioComoDestino}.',
+          );
         }
       } else if (!_esTramoEntrePisos &&
           widget.destinoFinalId != null &&
           !_anuncioRetomadoHecho) {
         // Salto al piso final: avisar que ya se guía al destino.
         _anuncioRetomadoHecho = true;
-        _voz.hablar('${_tomarUbicacionLista()}Vamos a '
-            '${_destinoSeleccionado!.nombre}.');
+        _voz.hablar(
+          '${_tomarUbicacionLista()}Vamos a '
+          '${_destinoSeleccionado!.nombre}.',
+        );
       }
 
       final objetivo = _puntoObjetivoTramo();
@@ -2326,9 +2409,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       final camino = decision.ruta;
       _celdaUltimoCalculo = celdaOrigen;
       _fueraDeRutaDesde = null;
-      debugPrint('[Ruta] ${decision.esNueva ? "Camino nuevo" : "Ruta anterior"}'
-          ': ${decision.motivo}'
-          '${decision.cambioDeFondo ? ' (cambio de fondo)' : ''}.');
+      debugPrint(
+        '[Ruta] ${decision.esNueva ? "Camino nuevo" : "Ruta anterior"}'
+        ': ${decision.motivo}'
+        '${decision.cambioDeFondo ? ' (cambio de fondo)' : ''}.',
+      );
       if (decision.cambioDeFondo) _rutaCambioDeFondo();
 
       // Hay camino: si después se vuelve a perder, se avisa de nuevo.
@@ -2403,9 +2488,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final motivo = _resolvedor.diagnosticarSinCamino(origen, destino);
     final ruta = _rutaActual;
     final habiaRuta = ruta != null && ruta.isNotEmpty;
-    debugPrint('[Ruta] Sin camino hasta el objetivo: '
-        '${motivo?.name ?? 'sin diagnóstico'}'
-        '${habiaRuta ? ' (se conserva la ruta anterior)' : ''}.');
+    debugPrint(
+      '[Ruta] Sin camino hasta el objetivo: '
+      '${motivo?.name ?? 'sin diagnóstico'}'
+      '${habiaRuta ? ' (se conserva la ruta anterior)' : ''}.',
+    );
     // Desde esta celda no se vuelve a probar: daría lo mismo.
     _celdaUltimoCalculo = celdaOrigen;
     if (habiaRuta) return;
@@ -2416,8 +2503,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           ? (_escaleraObjetivo?.medioConArticulo ?? 'la escalera')
           : 'ahí';
       _soltarDestino();
-      _voz.hablar('No se puede llegar a ${d.nombre}: '
-          'no hay un camino libre hasta $hasta.');
+      _voz.hablar(
+        'No se puede llegar a ${d.nombre}: '
+        'no hay un camino libre hasta $hasta.',
+      );
       return;
     }
 
@@ -2485,14 +2574,18 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (subio == null) return null;
     final escaleras = _lugares.where((l) => l.esEscalera).toList();
     if (escaleras.isEmpty) return null;
-    var candidatas =
-        escaleras.where((l) => subio ? l.baja : l.sube).toList();
+    var candidatas = escaleras.where((l) => subio ? l.baja : l.sube).toList();
     if (candidatas.isEmpty) candidatas = escaleras;
-    candidatas.sort((a, b) => _distanciaMetros(posicion, a.posicion)
-        .compareTo(_distanciaMetros(posicion, b.posicion)));
+    candidatas.sort(
+      (a, b) => _distanciaMetros(
+        posicion,
+        a.posicion,
+      ).compareTo(_distanciaMetros(posicion, b.posicion)),
+    );
     final esc = candidatas.first;
     // Si la posición ya está lejos de toda escalera, no forzar nada.
-    return _distanciaMetros(posicion, esc.posicion) <= _radioDeteccionLlegadaMetros
+    return _distanciaMetros(posicion, esc.posicion) <=
+            _radioDeteccionLlegadaMetros
         ? esc
         : null;
   }
@@ -2512,8 +2605,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// true si hay que subir para llegar al destino.
   bool get _subiendo {
     final actual = _numeroPisoActual;
-    final destino =
-        _destinoSeleccionado == null ? null : _numeroPisoDe(_destinoSeleccionado!);
+    final destino = _destinoSeleccionado == null
+        ? null
+        : _numeroPisoDe(_destinoSeleccionado!);
     return actual != null && destino != null && destino > actual;
   }
 
@@ -2593,17 +2687,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
     if (mejor != null) return mejor;
 
-    candidatas.sort((a, b) => _distanciaMetros(origen, a.posicion)
-        .compareTo(_distanciaMetros(origen, b.posicion)));
+    candidatas.sort(
+      (a, b) => _distanciaMetros(
+        origen,
+        a.posicion,
+      ).compareTo(_distanciaMetros(origen, b.posicion)),
+    );
     return candidatas.first;
   }
 
   /// Entre los lugares alcanzables con el mismo nombre (normalizado) que
   /// [nombreNorm], elige el del piso más cercano al actual.
   LugarInteres? _elegirDestino(String nombreNorm) {
-    return _elegirEntre(_lugaresEdificio
-        .where((l) => _normalizar(l.nombre) == nombreNorm && _puedeLlegarA(l))
-        .toList());
+    return _elegirEntre(
+      _lugaresEdificio
+          .where((l) => _normalizar(l.nombre) == nombreNorm && _puedeLlegarA(l))
+          .toList(),
+    );
   }
 
   /// Punto al que se llega a [l] (la entrada, si es una escalera o un
@@ -2657,8 +2757,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final pos = _posicionFinal;
     final enEstePiso = mejores.where((l) => l.pisoId == widget.pisoId).toList();
     if (enEstePiso.isNotEmpty && pos != null) {
-      enEstePiso.sort((a, b) => _distanciaMetros(pos, a.posicion)
-          .compareTo(_distanciaMetros(pos, b.posicion)));
+      enEstePiso.sort(
+        (a, b) => _distanciaMetros(
+          pos,
+          a.posicion,
+        ).compareTo(_distanciaMetros(pos, b.posicion)),
+      );
       return enEstePiso.first;
     }
     return mejores.first;
@@ -2672,20 +2776,49 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // voz y recién ahí se elige el más cercano del que pidió.
 
   static const Set<String> _palabrasBano = {
-    'bano', 'banos', 'bao', 'baos', 'sanitario', 'sanitarios', 'toilette',
-    'toilet', 'wc', 'servicios',
+    'bano',
+    'banos',
+    'bao',
+    'baos',
+    'sanitario',
+    'sanitarios',
+    'toilette',
+    'toilet',
+    'wc',
+    'servicios',
   };
   static const Set<String> _palabrasHombre = {
-    'hombre', 'hombres', 'caballero', 'caballeros', 'masculino', 'masculinos',
-    'varon', 'varones', 'chicos', 'ellos',
+    'hombre',
+    'hombres',
+    'caballero',
+    'caballeros',
+    'masculino',
+    'masculinos',
+    'varon',
+    'varones',
+    'chicos',
+    'ellos',
   };
   static const Set<String> _palabrasMujer = {
-    'mujer', 'mujeres', 'dama', 'damas', 'femenino', 'femeninos', 'femenina',
-    'chicas', 'ellas',
+    'mujer',
+    'mujeres',
+    'dama',
+    'damas',
+    'femenino',
+    'femeninos',
+    'femenina',
+    'chicas',
+    'ellas',
   };
   static const Set<String> _palabrasIndistinto = {
-    'cualquiera', 'cualquier', 'indistinto', 'igual', 'importa', 'mas',
-    'cercano', 'ninguno',
+    'cualquiera',
+    'cualquier',
+    'indistinto',
+    'igual',
+    'importa',
+    'mas',
+    'cercano',
+    'ninguno',
   };
 
   /// ¿El texto (ya normalizado) nombra un baño?
@@ -2730,8 +2863,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       return _resolverPorNombreOClave(textoNorm);
     }
 
-    final banos =
-        _lugaresEdificio.where((l) => _puedeLlegarA(l) && _esBano(l)).toList();
+    final banos = _lugaresEdificio
+        .where((l) => _puedeLlegarA(l) && _esBano(l))
+        .toList();
     // Dijo "baño" pero no hay ninguno cargado como tal: se busca igual por
     // nombre y palabras clave, por si algún lugar lo tiene de otra forma.
     if (banos.isEmpty) return _resolverPorNombreOClave(textoNorm);
@@ -2739,8 +2873,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     // Género que pidió el usuario ("baño de hombres" no se pregunta).
     var genero = _generoEnTexto(textoNorm);
 
-    final disponibles =
-        banos.map(_generoDe).whereType<_GeneroBano>().toSet();
+    final disponibles = banos.map(_generoDe).whereType<_GeneroBano>().toSet();
     final hayDeLosDos = disponibles.length > 1;
 
     // El género se pregunta sobre TODOS los baños, también los encerrados:
@@ -2763,7 +2896,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// _medirOpciones): un baño pegado pero del otro lado de una pared no es
   /// el más cercano.
   Future<LugarInteres?> _masCercanoCaminando(
-      List<LugarInteres> candidatos) async {
+    List<LugarInteres> candidatos,
+  ) async {
     final opciones = _priorizarAlcanzables(candidatos);
     if (opciones.length < 2 || _posicionFinal == null) {
       return _elegirEntre(opciones);
@@ -2870,7 +3004,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (opciones.isEmpty) {
       _pedidoCancelado = true;
       await _voz.hablar(
-          'No hay un camino libre hasta ninguno de esos lugares.');
+        'No hay un camino libre hasta ninguno de esos lugares.',
+      );
       return null;
     }
     if (opciones.length == 1) return opciones.first;
@@ -2898,15 +3033,21 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// lejos: primero las de este piso, por metros de CAMINO (no en línea
   /// recta: un lugar pegado pero del otro lado de una pared no es el más
   /// cercano); después las de otros pisos, por pisos de diferencia.
-  Future<List<_OpcionMedida>> _medirOpciones(List<LugarInteres> opciones) async {
+  Future<List<_OpcionMedida>> _medirOpciones(
+    List<LugarInteres> opciones,
+  ) async {
     final origen = _posicionParaRuta();
 
     // El camino real se calcula sólo para las más cercanas en línea recta:
     // con 15 aulas en el piso no tiene sentido lanzar 15 búsquedas para
     // decidir cuál es la primera. El resto queda con la línea recta.
     final enEstePiso = opciones.where((l) => l.pisoId == widget.pisoId).toList()
-      ..sort((a, b) => _distanciaMetros(origen, a.posicion)
-          .compareTo(_distanciaMetros(origen, b.posicion)));
+      ..sort(
+        (a, b) => _distanciaMetros(
+          origen,
+          a.posicion,
+        ).compareTo(_distanciaMetros(origen, b.posicion)),
+      );
     final conCamino = enEstePiso.take(_maxCaminosMedidos).toSet();
 
     final salida = <_OpcionMedida>[];
@@ -2916,8 +3057,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // Respaldo: línea recta (si todavía no hay grilla o no hay camino).
         metros = _distanciaMetros(origen, l.posicion);
         if (_resolvedorListo && conCamino.contains(l)) {
-          final camino =
-              await _resolvedor.encontrarCamino(origen, _puntoDeLlegada(l));
+          final camino = await _resolvedor.encontrarCamino(
+            origen,
+            _puntoDeLlegada(l),
+          );
           if (camino != null) metros = _calcularDistancia(camino);
         }
       }
@@ -2926,8 +3069,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     salida.sort((a, b) {
       final porPiso = a.pisos.compareTo(b.pisos);
       if (porPiso != 0) return porPiso;
-      return (a.metros ?? double.infinity)
-          .compareTo(b.metros ?? double.infinity);
+      return (a.metros ?? double.infinity).compareTo(
+        b.metros ?? double.infinity,
+      );
     });
     return salida;
   }
@@ -3012,7 +3156,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       intento == 1
           ? 'El más cercano es ${_nombreConDistancia(primera)}. ¿Vamos ahí?'
           : 'Decí sí para ir a ${primera.lugar.nombre}, '
-              'o no para escuchar las otras opciones.',
+                'o no para escuchar las otras opciones.',
       entiende: (n) =>
           BuscadorLugares.siONo(n) != null ||
           BuscadorLugares.opcionDicha(n, lugares, ordinales: false) != null ||
@@ -3021,8 +3165,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     );
     if (norm == null) return null;
 
-    final nombrada =
-        BuscadorLugares.opcionDicha(norm, lugares, ordinales: false);
+    final nombrada = BuscadorLugares.opcionDicha(
+      norm,
+      lugares,
+      ordinales: false,
+    );
     final respuesta = BuscadorLugares.siONo(norm);
 
     if (respuesta == true) {
@@ -3053,12 +3200,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Formas de decir "cualquiera me sirve" que pueden venir con un "no"
   /// adelante ("no importa"): se miran antes que el sí / no.
   static const Set<String> _palabrasDaIgual = {
-    'cualquiera', 'cualquier', 'indistinto', 'igual', 'importa',
+    'cualquiera',
+    'cualquier',
+    'indistinto',
+    'igual',
+    'importa',
   };
 
   static const Set<String> _palabrasCancelar = {
-    'ninguno', 'ninguna', 'nada', 'cancelar', 'cancela', 'cancelalo', 'deja',
-    'dejalo', 'olvidalo',
+    'ninguno',
+    'ninguna',
+    'nada',
+    'cancelar',
+    'cancela',
+    'cancelalo',
+    'deja',
+    'dejalo',
+    'olvidalo',
   };
 
   /// ¿El texto (ya normalizado) tiene alguna de [palabras]?
@@ -3088,8 +3246,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       frase = intento == 1
           ? 'Las otras opciones son: $lista. ¿A cuál vas?'
           : 'Decí el nombre, o primero, segundo'
-              '${otras.length > 2 ? ', tercero' : ''}. '
-              'Las opciones son: ${_enumerar(lugaresOtras.map((l) => l.nombre).toList())}.';
+                '${otras.length > 2 ? ', tercero' : ''}. '
+                'Las opciones son: ${_enumerar(lugaresOtras.map((l) => l.nombre).toList())}.';
     }
     final todas = opciones.map((o) => o.lugar).toList();
     final norm = await _preguntarYEscuchar(
@@ -3128,8 +3286,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     // del "no", por lo mismo que en _ofrecerMasCercano.
     if (palabras.any(_palabrasDaIgual.contains)) return otras.first.lugar;
 
-    final cancela = palabras.any(_palabrasCancelar.contains) ||
-        respuesta == false;
+    final cancela =
+        palabras.any(_palabrasCancelar.contains) || respuesta == false;
     if (cancela) {
       _pedidoCancelado = true;
       await _voz.hablar('Listo, no vamos a ninguno.');
@@ -3140,7 +3298,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (intento >= 2) {
       _pedidoCancelado = true;
       await _voz.hablar(
-          'No te entendí. Tocá la pantalla para pedirlo de nuevo.');
+        'No te entendí. Tocá la pantalla para pedirlo de nuevo.',
+      );
       return null;
     }
     return _decirOtrasOpciones(opciones, intento: intento + 1);
@@ -3164,11 +3323,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final nombres = _enumerar(dichas.map((l) => l.nombre).toList());
     final String frase;
     if (intento > 1) {
-      frase = 'Decí el nombre, o primero, segundo'
+      frase =
+          'Decí el nombre, o primero, segundo'
           '${dichas.length > 2 ? ', tercero' : ''}. '
           'Las opciones son: $nombres.';
     } else if (opciones.length > dichas.length) {
-      frase = 'Hay ${opciones.length} opciones. Las más cercanas son: '
+      frase =
+          'Hay ${opciones.length} opciones. Las más cercanas son: '
           '$nombres. ¿A cuál vas?';
     } else {
       frase = 'Hay ${dichas.length} opciones: $nombres. ¿A cuál vas?';
@@ -3234,8 +3395,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     };
     mismos.sort((a, b) {
       if (alcanzable[a] != alcanzable[b]) return alcanzable[a]! ? -1 : 1;
-      return _distanciaMetros(origen, a.posicion)
-          .compareTo(_distanciaMetros(origen, b.posicion));
+      return _distanciaMetros(
+        origen,
+        a.posicion,
+      ).compareTo(_distanciaMetros(origen, b.posicion));
     });
     if (mismos.first.id != d.id && mounted) {
       setState(() => _destinoSeleccionado = mismos.first);
@@ -3379,7 +3542,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         metrosY: _grilla.metrosY,
       );
       final finDeRuta = _finDeRutaSiObjetivoEnZona(entrada);
-      final cerca = _enObjetivo(pos, entrada) ||
+      final cerca =
+          _enObjetivo(pos, entrada) ||
           (finDeRuta != null && _enObjetivo(pos, finDeRuta));
       _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
       if (_ciclosEnLlegada >= _ciclosParaLlegada) {
@@ -3406,7 +3570,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         ? d.puntoEntrada(metrosX: _grilla.metrosX, metrosY: _grilla.metrosY)
         : d.posicion;
     final finDeRuta = _finDeRutaSiObjetivoEnZona(objetivoLlegada);
-    final cerca = _enObjetivo(pos, objetivoLlegada) ||
+    final cerca =
+        _enObjetivo(pos, objetivoLlegada) ||
         (finDeRuta != null && _enObjetivo(pos, finDeRuta));
     _ciclosEnLlegada = cerca ? _ciclosEnLlegada + 1 : 0;
     if (_ciclosEnLlegada >= _ciclosParaLlegada) {
@@ -3439,8 +3604,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final u = SeguidorRuta.ubicar(ruta, pos, _grilla);
     if (u.desvioMetros > SeguidorRuta.toleranciaProyeccionMetros) return pos;
     final tam = _grilla.tamCeldaMetros > 0 ? _grilla.tamCeldaMetros : 1.0;
-    final i = min(ruta.length - 1,
-        u.indice + (_avancePorAtrasoMetros / tam).round());
+    final i = min(
+      ruta.length - 1,
+      u.indice + (_avancePorAtrasoMetros / tam).round(),
+    );
     if (i == u.indice) return pos;
     final adelantada = ruta[i];
     return _distanciaMetros(adelantada, lugar) < _distanciaMinOrientacionMetros
@@ -3625,7 +3792,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(
+      RutaApp<void>(
         builder: (context) => PantallaNavegacion(
           pisoId: piso.id,
           rutaImagen: piso.rutaImagen,
@@ -3643,23 +3810,23 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       ),
     );
   }
- 
+
   double _calcularDistancia(List<Offset> camino) {
     // El camino es una secuencia de celdas adyacentes (1 celda ≈ 1 m real en
     // ambos ejes), así que la distancia ≈ cantidad de pasos × tamaño de celda.
     if (camino.length < 2) return 0;
     return (camino.length - 1) * _grilla.tamCeldaMetros;
   }
- 
+
   // ─── SELECCIÓN DE DESTINO POR VOZ ─────────────────────────────────────────
- 
+
   /// Activa el micrófono, escucha el destino y busca la mejor coincidencia.
   Future<void> _seleccionarDestinoPorVoz() async {
     if (_lugaresEdificio.isEmpty) {
       await _voz.hablar('No hay lugares configurados.');
       return;
     }
- 
+
     // Primero hablar y esperar que termine el audio (hablar() espera el
     // aviso del motor TTS). Sin otra espera acá: la deja VozService.escuchar
     // (ver _preguntarYEscuchar).
@@ -3689,8 +3856,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       entiende: (t) {
         final n = _normalizar(t);
         return _mencionaBano(n) ||
-            BuscadorLugares.candidatos(n, _lugaresEdificio.where(_puedeLlegarA))
-                .isNotEmpty;
+            BuscadorLugares.candidatos(
+              n,
+              _lugaresEdificio.where(_puedeLlegarA),
+            ).isNotEmpty;
       },
       onEscuchando: (activo) {
         if (mounted && turno == _turnoVoz) {
@@ -3700,7 +3869,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       onResultado: (textoReconocido) async {
         if (!mounted || turno != _turnoVoz) return;
         setState(() => _escuchando = false);
- 
+
         // Resuelve el pedido: con nombres repetidos elige el del piso más
         // cercano, y si pidió "baño" sin aclarar, pregunta cuál.
         final LugarInteres? destino;
@@ -3713,11 +3882,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // dejar este (dijo que no, o cortó la escucha): en los dos casos no
         // hay nada más que hacer ni que decir.
         if (!mounted || turno != _turnoVoz || _pedidoCancelado) return;
- 
+
         if (destino != null) {
           await _establecerDestino(destino);
         } else {
-          await _voz.hablar('No encontré "$textoReconocido". Intentá de nuevo.');
+          await _voz.hablar(
+            'No encontré "$textoReconocido". Intentá de nuevo.',
+          );
         }
       },
       onError: (error) async {
@@ -3730,18 +3901,18 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       },
     );
   }
- 
+
   /// Busca el lugar cuyo nombre tenga mayor similitud con el texto reconocido.
   LugarInteres? _buscarMejorCoincidencia(String texto) {
     final textoNorm = _normalizar(texto);
     // Se busca en todo el edificio, sólo entre los lugares alcanzables.
     final lugares = _lugaresEdificio.where(_puedeLlegarA).toList();
- 
+
     // Búsqueda exacta primero
     for (final lugar in lugares) {
       if (_normalizar(lugar.nombre) == textoNorm) return lugar;
     }
- 
+
     // Búsqueda por contención. Con menos de 3 letras no: "a", "e" o "va" (lo
     // que deja una palabra corta mal reconocida) están dentro de casi
     // cualquier nombre, y se iba a un lugar al azar sin preguntar. Un texto
@@ -3754,12 +3925,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         }
       }
     }
- 
+
     // Búsqueda por palabras individuales
     final palabras = textoNorm.split(' ').where((p) => p.length > 2).toList();
     LugarInteres? mejorCandidato;
     int mejorPuntaje = 0;
- 
+
     for (final lugar in lugares) {
       final nombreNorm = _normalizar(lugar.nombre);
       int puntaje = 0;
@@ -3771,16 +3942,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         mejorCandidato = lugar;
       }
     }
- 
+
     return mejorPuntaje > 0 ? mejorCandidato : null;
   }
- 
+
   /// Minúsculas, sin tildes ni signos. Una sola definición, compartida con
   /// la búsqueda por palabras clave.
   String _normalizar(String texto) => BuscadorLugares.normalizar(texto);
- 
+
   // ─── SELECCIÓN DE DESTINO POR LISTA (fallback táctil) ─────────────────────
- 
+
   void _seleccionarDestinoLista() async {
     // Nombres únicos de todo el edificio (alcanzables). Los lugares con el
     // mismo nombre en distintos pisos aparecen una sola vez: al elegirlo se
@@ -3791,16 +3962,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
     if (grupos.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No hay lugares de interes configurados')),
-        );
+        mostrarAviso(context, 'No hay lugares de interés configurados');
       }
       return;
     }
     final claves = grupos.keys.toList()
-      ..sort((a, b) => grupos[a]!.first.nombre
-          .toLowerCase()
-          .compareTo(grupos[b]!.first.nombre.toLowerCase()));
+      ..sort(
+        (a, b) => grupos[a]!.first.nombre.toLowerCase().compareTo(
+          grupos[b]!.first.nombre.toLowerCase(),
+        ),
+      );
 
     String pisosDe(List<LugarInteres> ls) {
       final nums = <int?>{for (final l in ls) _numeroPisoDe(l)};
@@ -3812,42 +3983,21 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
 
     // La lista se muestra visualmente; no leer todos los nombres por voz
- 
-    final seleccion = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('¿A dónde querés ir?'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: claves.length,
-            itemBuilder: (context, i) {
-              final ls = grupos[claves[i]]!;
-              final l = ls.first;
-              return ListTile(
-                leading: Icon(
-                  !l.esEscalera
-                      ? Icons.place
-                      : (l.esAscensor ? Icons.elevator : Icons.stairs),
-                  color: l.esEscalera ? Colors.orange : Colors.purple,
-                ),
-                title: Text(l.nombre, style: const TextStyle(fontSize: 18)),
-                subtitle: Text(pisosDe(ls)),
-                onTap: () => Navigator.pop(ctx, claves[i]),
-              );
-            },
-          ),
+
+    final seleccion = await mostrarListaDestinos(context, [
+      for (final clave in claves)
+        OpcionDestino(
+          clave: clave,
+          nombre: grupos[clave]!.first.nombre,
+          pisos: pisosDe(grupos[clave]!),
+          icono: !grupos[clave]!.first.esEscalera
+              ? Icons.place_rounded
+              : (grupos[clave]!.first.esAscensor
+                    ? Icons.elevator_rounded
+                    : Icons.stairs_rounded),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancelar'),
-          ),
-        ],
-      ),
-    );
- 
+    ]);
+
     if (seleccion != null && mounted) {
       // Misma resolución que por voz: si tocó un "Baño" sin género y el
       // edificio tiene de hombres y de mujeres, se pregunta cuál.
@@ -3857,7 +4007,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       if (destino != null) await _establecerDestino(destino);
     }
   }
- 
+
   void _cancelarNavegacion() {
     if (mounted) {
       _soltarDestino();
@@ -3909,9 +4059,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
     _seleccionarDestinoPorVoz();
   }
- 
+
   // ─── INSTRUCCIONES POR VOZ (OUTPUT) ───────────────────────────────────────
- 
+
   /// Distancia tal como se dice en voz. Cerca se dice al metro (es lo que
   /// importa para frenar a tiempo); lejos se redondea de a 5 m, porque el
   /// error del posicionamiento BLE es de ese orden y no tiene sentido fingir
@@ -3935,7 +4085,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// ruta) o si ya se llegó.
   ({String texto, String clave})? _indicacionParaVoz() {
     final heading = _orientacion.heading;
-    if (heading == null || _posicionFinal == null || _destinoSeleccionado == null) {
+    if (heading == null ||
+        _posicionFinal == null ||
+        _destinoSeleccionado == null) {
       return null;
     }
     // Ya llegó (a la escalera o al destino): no más indicaciones de giro.
@@ -4038,12 +4190,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   /// ¿Esta maniobra ya se anunció (a ese nivel o más) hace poco?
   bool _maniobraYaAnunciada(Maniobra m, int nivel, DateTime ahora) {
-    _maniobrasAnunciadas
-        .removeWhere((a) => ahora.difference(a.cuando) > _noRepetirManiobra);
-    return _maniobrasAnunciadas.any((a) =>
-        a.nivel >= nivel &&
-        a.giro == m.giro &&
-        _distanciaMetros(a.esquina, m.esquina) <= _mismaManiobraMetros);
+    _maniobrasAnunciadas.removeWhere(
+      (a) => ahora.difference(a.cuando) > _noRepetirManiobra,
+    );
+    return _maniobrasAnunciadas.any(
+      (a) =>
+          a.nivel >= nivel &&
+          a.giro == m.giro &&
+          _distanciaMetros(a.esquina, m.esquina) <= _mismaManiobraMetros,
+    );
   }
 
   /// Cómo se nombra lo que hay al final de la ruta, para el aviso previo de
@@ -4104,7 +4259,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final largo = sqrt(ux * ux + uy * uy);
     if (largo < 1e-6) return 0.0;
 
-    final avance = ((b.p.dx - a.p.dx) * _grilla.metrosX * ux +
+    final avance =
+        ((b.p.dx - a.p.dx) * _grilla.metrosX * ux +
             (b.p.dy - a.p.dy) * _grilla.metrosY * uy) /
         largo;
     final v = avance / seg;
@@ -4132,7 +4288,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     double umbralGiro,
     double umbralAviso,
     double piso,
-  })? _proximaManiobra() {
+  })?
+  _proximaManiobra() {
     final ruta = _rutaActual;
     final pos = _posicionFinal;
     if (ruta == null || ruta.length < 2 || pos == null) return null;
@@ -4169,8 +4326,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final p = _proximaManiobra();
     if (p == null) return false;
     final ahora = DateTime.now();
-    final faltaLuego =
-        max(0.0, p.falta - _velocidadAcercamientoMs * segundos);
+    final faltaLuego = max(0.0, p.falta - _velocidadAcercamientoMs * segundos);
     if (!p.maniobra.esFinal &&
         faltaLuego <= p.umbralGiro &&
         !_maniobraYaAnunciada(p.maniobra, 2, ahora)) {
@@ -4249,7 +4405,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       final texto = maniobra.esFinal
           ? 'En $distancia, ${_fraseFinDeRuta()}'
           : 'En $distancia, girá a la '
-              '${maniobra.giro == SentidoGiro.derecha ? 'derecha' : 'izquierda'}';
+                '${maniobra.giro == SentidoGiro.derecha ? 'derecha' : 'izquierda'}';
       // Se registra como "Seguí derecho": es lo que el usuario tiene que
       // hacer hasta la esquina, y así el filtro no agrega atrás un "Seguí
       // derecho, N metros" que diría lo mismo.
@@ -4290,8 +4446,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         _destinoSeleccionado != null && !_llegoADestino && !_llegoAEscalera;
     if (guiando && _indicacionPorSalir(_voz.duracionEstimada(texto))) return;
     if (_voz.hablarSecundaria(texto)) {
-      _fpAnunciados[p.etiqueta] =
-          (centro: p.centro, cuando: DateTime.now(), seAlejo: false);
+      _fpAnunciados[p.etiqueta] = (
+        centro: p.centro,
+        cuando: DateTime.now(),
+        seAlejo: false,
+      );
       _fpAnuncioPendiente = null;
     }
   }
@@ -4310,223 +4469,106 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     return _maniobraPorAnunciar(margen.inMilliseconds / 1000);
   }
 
-  // ─── WIDGETS ──────────────────────────────────────────────────────────────
- 
-  Widget _buildOrientacion() {
-    // Si la brújula no está disponible, mostrar mensaje informativo en lugar
-    // de ocultar silenciosamente el widget (el TTS ya lo anunció en _iniciarBrujula).
-    if (!_compassDisponible) {
-      return Semantics(
-        label: 'Brújula no disponible. Las instrucciones de giro pueden ser menos precisas.',
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: TemaApp.fondoAdvertencia,
-            borderRadius: BorderRadius.circular(TemaApp.radiusChip),
-            border: Border.all(color: TemaApp.advertencia.withValues(alpha: 0.6), width: 1),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.compass_calibration, color: TemaApp.advertencia, size: 20),
-              const SizedBox(width: 6),
-              Text(
-                'Brújula no disponible',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: TemaApp.advertencia,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
+  // ─── LO QUE SE MUESTRA ────────────────────────────────────────────────────
+  //
+  // Lo que se ve está en vista_navegacion.dart y no decide nada: recibe lo que
+  // hay que mostrar y avisa los toques. Acá se arma lo que se le pasa, sin
+  // efectos: build() sólo lee el estado.
 
+  /// La brújula: el rumbo relativo al plano, restando rotacionMapa para que
+  /// "arriba en pantalla" sea el Norte del plano. Es el valor correcto para
+  /// la flecha y el texto, NO para calcularIndicacion() (que recibe el heading
+  /// crudo de la brújula).
+  Widget _chipOrientacion() {
     final headingRaw = _orientacion.heading;
-    if (headingRaw == null) return const SizedBox.shrink();
-
-    // _buildOrientacion muestra la dirección del dispositivo relativa al plano:
-    // restamos rotacionMapa para que "arriba en pantalla" sea el Norte del plano.
-    // Este valor compensado es el correcto para el icono y la etiqueta de texto,
-    // NO para calcularIndicacion() (que recibe el heading crudo de la brújula).
-    final heading = ((headingRaw - _rotacionMapaEfectiva) % 360 + 360) % 360;
-
-    final direccion = OrientacionService.direccionCardinal(heading);
-
-    // Item 2: Semantics con label descriptivo para TalkBack/VoiceOver.
-    return Semantics(
-      label: 'Orientación: $direccion, ${heading.toStringAsFixed(0)} grados',
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: TemaApp.acentoSuave,
-          borderRadius: BorderRadius.circular(TemaApp.radiusChip),
-          border: Border.all(color: TemaApp.acento.withValues(alpha: 0.4), width: 1),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Bug 3 fix: usar siempre Icons.navigation (flecha arriba) y rotar
-            // heading/360 en sentido HORARIO (positivo). Antes se usaba -heading
-            // (antihorario) + ícono variable, que daba dirección opuesta/aleatoria.
-            AnimatedRotation(
-              turns: heading / 360,
-              duration: const Duration(milliseconds: 250),
-              // Item 9: ícono de brújula 28 px.
-              child: const Icon(Icons.navigation, color: TemaApp.acento, size: 24),
-            ),
-            const SizedBox(width: 6),
-            Text(
-              direccion,
-              style: const TextStyle(
-                // Item 9: texto de dirección 18 sp.
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-                color: TemaApp.acento,
-              ),
-            ),
-            const SizedBox(width: 4),
-            Text(
-              '${heading.toStringAsFixed(0)}°',
-              style: const TextStyle(
-                // Item 9: grados 16 sp (piso absoluto).
-                fontSize: 13,
-                color: TemaApp.textoSecundario,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
- 
-  /// Tarjeta fija para los estados de llegada (escalera / destino).
-  /// [anunciar]: si el lector de pantalla la lee sola al cambiar. No en la
-  /// orientación, donde cambia mientras gira y ya habla la voz.
-  Widget _buildTarjetaEstado({
-    required IconData icono,
-    required String titulo,
-    required String subtitulo,
-    required Color acento,
-    bool anunciar = true,
-  }) {
-    return Semantics(
-      liveRegion: anunciar,
-      label: '$titulo. $subtitulo',
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(8, 6, 8, 0),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-        decoration: BoxDecoration(
-          color: TemaApp.fondoCard,
-          borderRadius: BorderRadius.circular(TemaApp.radiusCard),
-          border: Border.all(color: acento.withValues(alpha: 0.6), width: 1.5),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 56, height: 56,
-              decoration: BoxDecoration(
-                color: acento.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(icono, color: acento, size: 36),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    titulo,
-                    style: const TextStyle(
-                      color: TemaApp.textoBlanco,
-                      fontSize: TemaApp.spInstruccion,
-                      fontWeight: FontWeight.w800,
-                      height: 1.1,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitulo,
-                    style: TextStyle(
-                      color: acento.withValues(alpha: 0.9),
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+    final heading = headingRaw == null
+        ? null
+        : ((headingRaw - _rotacionMapaEfectiva) % 360 + 360) % 360;
+    return ChipOrientacion(
+      disponible: _compassDisponible,
+      grados: heading,
+      direccion: heading == null
+          ? null
+          : OrientacionService.direccionCardinal(heading),
     );
   }
 
-  /// Tarjeta mientras se orienta al usuario hacia el lugar al llegar: cuánto
-  /// le falta girar, con la brújula del momento.
-  Widget _buildTarjetaOrientacion(OrientadorLlegada orientador) {
+  /// La tarjeta mientras se orienta al usuario hacia el lugar al llegar:
+  /// cuánto le falta girar, con la brújula del momento. No se anuncia sola:
+  /// cambia mientras gira y ya habla la voz.
+  DatosIndicacion _datosOrientacion(OrientadorLlegada orientador) {
     final heading = _orientacion.heading;
     final giro = heading == null
         ? null
         : OrientacionService.diferenciaAngular(
-            orientador.rumboObjetivo, heading);
+            orientador.rumboObjetivo,
+            heading,
+          );
     final deFrente =
         giro != null && giro.abs() <= OrientadorLlegada.toleranciaGrados;
     final nombre = _llegoAEscalera
         ? (_escaleraObjetivo?.medioConArticulo ?? 'la escalera')
         : (_destinoSeleccionado?.nombre ?? '');
-    return _buildTarjetaEstado(
+    final titulo = giro == null
+        ? 'Buscando la dirección'
+        : deFrente
+        ? 'De frente'
+        : OrientadorLlegada.textoGiro(giro);
+    final detalle = 'Hacia $nombre';
+    return DatosIndicacion(
+      tipo: TipoIndicacion.orientacion,
       icono: giro == null || deFrente
           ? Icons.arrow_upward_rounded
           : giro.abs() >= OrientadorLlegada.vueltaGrados
-              ? Icons.u_turn_left_rounded
-              : giro > 0
-                  ? Icons.turn_right_rounded
-                  : Icons.turn_left_rounded,
-      titulo: giro == null
-          ? 'Buscando la dirección'
-          : deFrente
-              ? 'De frente'
-              : OrientadorLlegada.textoGiro(giro),
-      subtitulo: 'Hacia $nombre',
-      acento: TemaApp.instruccionAccent,
-      anunciar: false,
+          ? Icons.u_turn_left_rounded
+          : giro > 0
+          ? Icons.turn_right_rounded
+          : Icons.turn_left_rounded,
+      titulo: titulo,
+      detalle: detalle,
+      etiqueta: '$titulo. $detalle',
     );
   }
 
-  Widget _buildIndicacionGiro() {
+  /// Lo que muestra la tarjeta de la indicación, o null si no hay nada que
+  /// indicar. La instrucción por voz se dispara en _actualizarInstruccionVoz()
+  /// desde el loop de posicionamiento, no acá: build() debe ser libre de
+  /// efectos.
+  DatosIndicacion? _datosIndicacion() {
+    final destino = _destinoSeleccionado;
+    if (destino == null) return null;
     final orientador = _orientador;
-    if (orientador != null) return _buildTarjetaOrientacion(orientador);
-    if (_llegoADestino && _destinoSeleccionado != null) {
-      return _buildTarjetaEstado(
+    if (orientador != null) return _datosOrientacion(orientador);
+    if (_llegoADestino) {
+      return DatosIndicacion(
+        tipo: TipoIndicacion.llegada,
         icono: Icons.flag_rounded,
         titulo: 'Llegaste',
-        subtitulo: _destinoSeleccionado!.nombre,
-        acento: TemaApp.instruccionAccent,
+        detalle: destino.nombre,
+        etiqueta: 'Llegaste. ${destino.nombre}',
       );
     }
     if (_llegoAEscalera) {
       final sig = _siguientePisoNumero;
       final enAscensor = _escaleraObjetivo?.esAscensor ?? false;
-      return _buildTarjetaEstado(
+      final titulo =
+          '${_subiendo ? 'Subí' : 'Bajá'} '
+          '${enAscensor ? 'por el ascensor' : 'la escalera'}'
+          '${sig != null ? ' a ${PisoUtil.nombre(sig)}' : ''}';
+      const detalle = 'Al llegar, mantené apretada la pantalla';
+      return DatosIndicacion(
+        tipo: TipoIndicacion.escalera,
         icono: enAscensor ? Icons.elevator_rounded : Icons.stairs_rounded,
-        titulo: '${_subiendo ? 'Subí' : 'Bajá'} '
-            '${enAscensor ? 'por el ascensor' : 'la escalera'}'
-            '${sig != null ? ' a ${PisoUtil.nombre(sig)}' : ''}',
-        subtitulo: 'Al llegar, mantené apretada la pantalla',
-        acento: Colors.orange,
+        titulo: titulo,
+        detalle: detalle,
+        etiqueta: '$titulo. $detalle',
       );
     }
 
     final heading = _orientacion.heading;
-    final tramo = _destinoSeleccionado == null ? null : _tramoDeGuiado();
-    if (heading == null || tramo == null) {
-      return const SizedBox.shrink();
-    }
- 
+    final tramo = _tramoDeGuiado();
+    if (heading == null || tramo == null) return null;
+
     final indicacion = OrientacionService.calcularIndicacion(
       headingUsuario: heading,
       posicionUsuario: tramo.desde,
@@ -4535,80 +4577,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       metrosX: widget.escalaX,
       metrosY: widget.escalaY,
     );
-
-    // La instrucción por voz se dispara en _actualizarInstruccionVoz() desde el
-    // loop de posicionamiento, no acá: build() debe ser libre de efectos.
-
-    // Item 2: Semantics con descripción completa para lectores de pantalla.
-    return Semantics(
-      label: '${indicacion.instruccion}, ${_distanciaEnPantalla(indicacion.distanciaMetros)}',
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(8, 6, 8, 0),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-        decoration: BoxDecoration(
-          color: TemaApp.instruccion,
-          borderRadius: BorderRadius.circular(TemaApp.radiusCard),
-          border: Border.all(color: TemaApp.instruccionAccent.withValues(alpha: 0.4), width: 1),
-          boxShadow: [
-            BoxShadow(
-              color: TemaApp.instruccionAccent.withValues(alpha: 0.15),
-              blurRadius: 16,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 56, height: 56,
-              decoration: BoxDecoration(
-                color: TemaApp.instruccionAccent.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(
-                indicacion.instruccion == 'Seguí derecho'
-                    ? Icons.arrow_upward_rounded
-                    : indicacion.instruccion == 'Date la vuelta'
-                        ? Icons.u_turn_left_rounded
-                        : indicacion.giroNecesario > 0
-                            ? Icons.turn_right_rounded
-                            : Icons.turn_left_rounded,
-                color: TemaApp.instruccionAccent,
-                size: 36,
-              ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    indicacion.instruccion,
-                    style: const TextStyle(
-                      color: TemaApp.textoBlanco,
-                      fontSize: TemaApp.spInstruccion,
-                      fontWeight: FontWeight.w800,
-                      height: 1.1,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    _distanciaEnPantalla(indicacion.distanciaMetros),
-                    style: TextStyle(
-                      color: TemaApp.instruccionAccent.withValues(alpha: 0.85),
-                      fontSize: TemaApp.spDistancia,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+    final distancia = _distanciaEnPantalla(indicacion.distanciaMetros);
+    return DatosIndicacion(
+      tipo: TipoIndicacion.guia,
+      icono: indicacion.instruccion == 'Seguí derecho'
+          ? Icons.arrow_upward_rounded
+          : indicacion.instruccion == 'Date la vuelta'
+          ? Icons.u_turn_left_rounded
+          : indicacion.giroNecesario > 0
+          ? Icons.turn_right_rounded
+          : Icons.turn_left_rounded,
+      titulo: indicacion.instruccion,
+      detalle: distancia,
+      etiqueta: '${indicacion.instruccion}, $distancia',
     );
   }
- 
+
   // ─── MAPA DESPLAZABLE ─────────────────────────────────────────────────────
 
   /// Tamaño del plano a zoom 1.
@@ -4674,6 +4658,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       ..setEntry(1, 3, ty);
   }
 
+  /// Cada vista nueva: si el zoom se movió lo suficiente, lo que se dibuja
+  /// sobre el plano se vuelve a medir.
+  void _actualizarZoomVista() {
+    final zoom = _transformMapa.value.getMaxScaleOnAxis();
+    if (zoom > 0 && (zoom / _zoomVista.value - 1).abs() > 0.04) {
+      _zoomVista.value = zoom;
+    }
+  }
+
   /// La persona arrastró o hizo zoom: el mapa deja de seguirla y la cámara
   /// suelta el control (si no, pelearía con el dedo).
   void _dejarDeSeguir() {
@@ -4711,10 +4704,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (pos == null || viewport == null || plano == null) return;
     // Si la cámara ya va hacia un zoom, se respeta ese y no el de este frame
     // (que está a mitad de camino).
-    final zoomActual = _camaraZoomObjetivo ?? _transformMapa.value.getMaxScaleOnAxis();
-    final zoom = max(zoomActual, _zoomEscalaBase(viewport, plano))
-        .clamp(_zoomMinimo(viewport, plano), _zoomMaximo)
-        .toDouble();
+    final zoomActual =
+        _camaraZoomObjetivo ?? _transformMapa.value.getMaxScaleOnAxis();
+    final zoom = max(
+      zoomActual,
+      _zoomEscalaBase(viewport, plano),
+    ).clamp(_zoomMinimo(viewport, plano), _zoomMaximo).toDouble();
     final punto = Offset(pos.dx * plano.width, pos.dy * plano.height);
     _moverVistaA(punto, zoom, animado: animado);
   }
@@ -4771,8 +4766,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final dt = previo == null
         ? 1 / 60
         : ((transcurrido - previo).inMicroseconds / 1e6)
-            .clamp(0.0, 0.1)
-            .toDouble();
+              .clamp(0.0, 0.1)
+              .toDouble();
     final k = 1 - exp(-dt / _tauCamaraSeg);
 
     final nuevoFoco = Offset.lerp(foco, focoObj, k)!;
@@ -4825,9 +4820,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final plano = _tamPlano;
     if (viewport == null || plano == null) return;
     final tx = _limitarEje(
-        viewport.width / 2 - zoom * punto.dx, viewport.width, plano.width * zoom);
-    final ty = _limitarEje(viewport.height / 2 - zoom * punto.dy,
-        viewport.height, plano.height * zoom);
+      viewport.width / 2 - zoom * punto.dx,
+      viewport.width,
+      plano.width * zoom,
+    );
+    final ty = _limitarEje(
+      viewport.height / 2 - zoom * punto.dy,
+      viewport.height,
+      plano.height * zoom,
+    );
     // Matriz armada a mano (escala + traslación): evita Matrix4.translate y
     // Matrix4.scale, que figuran como obsoletos en las versiones nuevas.
     _transformMapa.value = Matrix4.identity()
@@ -4837,58 +4838,21 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       ..setEntry(1, 3, ty);
   }
 
-  /// Botón redondo sobre el mapa para volver a centrarlo en el usuario y
-  /// reactivar el seguimiento. Se resalta (relleno de color) cuando el mapa
-  /// NO está siguiendo al usuario, que es cuando hace falta.
-  ///
-  /// Mirando otro piso, el mismo botón vuelve al piso del usuario.
-  Widget _buildBotonCentrar() {
-    final enOtroPiso = _otroPiso != null;
-    final siguiendo = _seguirUsuario && !enOtroPiso;
-    return Semantics(
-      button: true,
-      label: enOtroPiso
-          ? 'Volver a tu piso'
-          : 'Centrar el mapa en tu ubicación',
-      child: Material(
-        color: siguiendo ? TemaApp.fondoCard : TemaApp.acento,
-        shape: CircleBorder(
-          side: BorderSide(
-            color: TemaApp.acento.withValues(alpha: 0.6),
-            width: 1.5,
-          ),
-        ),
-        elevation: 4,
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: () {
-            if (enOtroPiso) {
-              _volverAMiPiso();
-              return;
-            }
-            setState(() => _seguirUsuario = true);
-            if (_posicionFinal != null) {
-              _centrarEnUsuario();
-            } else {
-              // Todavía sin ubicación: se muestra el plano entero y, apenas
-              // haya posición, el seguimiento lo centra solo.
-              _verMapaCompleto(animado: true);
-            }
-          },
-          child: SizedBox(
-            width: TemaApp.targetTactil,
-            height: TemaApp.targetTactil,
-            child: Icon(
-              siguiendo
-                  ? Icons.my_location_rounded
-                  : Icons.location_searching_rounded,
-              color: siguiendo ? TemaApp.acento : TemaApp.fondo,
-              size: 28,
-            ),
-          ),
-        ),
-      ),
-    );
+  /// El botón sobre el mapa: lo vuelve a centrar en el usuario y reactiva el
+  /// seguimiento. Mirando otro piso, vuelve al piso del usuario.
+  void _alTocarCentrar() {
+    if (_otroPiso != null) {
+      _volverAMiPiso();
+      return;
+    }
+    setState(() => _seguirUsuario = true);
+    if (_posicionFinal != null) {
+      _centrarEnUsuario();
+    } else {
+      // Todavía sin ubicación: se muestra el plano entero y, apenas
+      // haya posición, el seguimiento lo centra solo.
+      _verMapaCompleto(animado: true);
+    }
   }
 
   // ─── VER OTROS PISOS ──────────────────────────────────────────────────────
@@ -4931,11 +4895,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Lee de la base lo que hace falta para DIBUJAR un piso. Null si falla.
   Future<_VistaPiso?> _leerVistaPiso(PisoInfo piso) async {
     try {
-      final beacons =
-          await DatabaseHelper.instance.obtenerBeaconsPorPiso(piso.id);
+      final beacons = await DatabaseHelper.instance.obtenerBeaconsPorPiso(
+        piso.id,
+      );
       final zonas = await DatabaseHelper.instance.obtenerZonasPorPiso(piso.id);
-      final lugares =
-          await DatabaseHelper.instance.obtenerLugaresPorPiso(piso.id);
+      final lugares = await DatabaseHelper.instance.obtenerLugaresPorPiso(
+        piso.id,
+      );
       return _VistaPiso(
         info: piso,
         grilla: GrillaNav(
@@ -4950,581 +4916,196 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     } catch (e) {
       debugPrint('[Ver piso] No se pudo cargar ${piso.nombreVisible}: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No se pudo abrir ${piso.nombreVisible}')),
+        mostrarAviso(
+          context,
+          'No se pudo abrir ${piso.nombreVisible}',
+          error: true,
         );
       }
       return null;
     }
   }
 
-  /// Fila de botones de piso. Sólo sin destino elegido y si el edificio
-  /// tiene más de un piso descargado. El piso del usuario lleva el ícono de
-  /// ubicación; el que se está viendo va relleno.
-  Widget _buildSelectorPisos() {
-    final pisos = _pisosEdificio.values.toList();
+  /// Los botones de piso. Sólo sin destino elegido y si el edificio tiene más
+  /// de un piso descargado.
+  List<OpcionPiso> _opcionesPiso() {
+    if (_destinoSeleccionado != null || _pisosEdificio.length <= 1) {
+      return const [];
+    }
     final vistoId = _otroPiso?.info.id ?? widget.pisoId;
-    return Container(
-      height: 60,
-      decoration: const BoxDecoration(
-        color: TemaApp.fondoCard,
-        border: Border(bottom: BorderSide(color: Color(0xFF21262D))),
-      ),
-      child: Row(
-        children: [
-          const Padding(
-            padding: EdgeInsets.only(left: 14, right: 6),
-            child: Icon(Icons.layers_rounded,
-                color: TemaApp.textoSecundario, size: 22),
-          ),
-          Expanded(
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.fromLTRB(4, 8, 12, 8),
-              itemCount: pisos.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (context, i) {
-                final p = pisos[i];
-                final esMio = p.id == widget.pisoId;
-                final visto = p.id == vistoId;
-                final etiqueta = p.numero != null
-                    ? PisoUtil.etiquetaCorta(p.numero!)
-                    : p.nombre;
-                final colorTexto =
-                    visto ? TemaApp.fondo : TemaApp.textoBlanco;
-                return Semantics(
-                  button: true,
-                  selected: visto,
-                  label: 'Ver ${p.nombreVisible}${esMio ? ', tu piso' : ''}',
-                  excludeSemantics: true,
-                  child: Material(
-                    color: visto ? TemaApp.acento : TemaApp.fondoSurface,
-                    borderRadius: BorderRadius.circular(12),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(12),
-                      onTap: () => _verPiso(p),
-                      child: Container(
-                        constraints: const BoxConstraints(minWidth: 52),
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        alignment: Alignment.center,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (esMio) ...[
-                              Icon(Icons.my_location_rounded,
-                                  size: 16,
-                                  color: visto ? TemaApp.fondo : TemaApp.acento),
-                              const SizedBox(width: 6),
-                            ],
-                            Text(
-                              etiqueta,
-                              style: TextStyle(
-                                color: colorTexto,
-                                fontSize: 17,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
+    return [
+      for (final p in _pisosEdificio.values)
+        OpcionPiso(
+          etiqueta: p.numero != null
+              ? PisoUtil.etiquetaCorta(p.numero!)
+              : p.nombre,
+          nombre: p.nombreVisible,
+          esMio: p.id == widget.pisoId,
+          visto: p.id == vistoId,
+          alTocar: () => _verPiso(p),
+        ),
+    ];
   }
 
-  /// Cartel sobre el mapa mientras se mira otro piso, para que quede claro
+  /// El cartel sobre el mapa mientras se mira otro piso, para que quede claro
   /// que no es donde está el usuario.
-  Widget _buildCartelOtroPiso(_VistaPiso vista) {
+  String? get _avisoOtroPiso {
+    final vista = _otroPiso;
+    if (vista == null) return null;
     final mio = _pisosEdificio[widget.pisoId]?.nombreVisible;
-    return Semantics(
-      liveRegion: true,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: TemaApp.fondoCard.withValues(alpha: 0.92),
-          borderRadius: BorderRadius.circular(TemaApp.radiusButton),
-          border: Border.all(color: TemaApp.advertencia.withValues(alpha: 0.7)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.visibility_rounded,
-                color: TemaApp.advertencia, size: 18),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                'Viendo ${vista.info.nombreVisible}'
-                '${mio != null ? ' · estás en $mio' : ''}',
-                style: const TextStyle(
-                  color: TemaApp.textoBlanco,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
+    return 'Viendo ${vista.info.nombreVisible}'
+        '${mio != null ? ' · estás en $mio' : ''}';
+  }
+
+  /// Lo que se puede hacer ahora, arriba del micrófono.
+  String get _ayudaInferior => _escuchando
+      ? 'Decí el nombre del lugar'
+      : _esTramoEntrePisos
+      ? 'Mantené apretado para cambiar de piso'
+      : 'Tocá en cualquier parte de la pantalla';
+
+  /// El plano: escala fija + zoom/arrastre (ver _pixelesPorMetro). Arrastrar
+  /// no compite con el toque de toda la pantalla: si el dedo se mueve, no
+  /// cuenta como toque.
+  Widget _buildPlano(Recorrido? recorrido) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final viewport = Size(constraints.maxWidth, constraints.maxHeight);
+        // Piso que se dibuja: el del usuario, o el que se está
+        // mirando con el selector de pisos.
+        final otro = _otroPiso;
+        final grillaVista = otro?.grilla ?? _grilla;
+        final plano = _calcularTamPlano(
+          MediaQuery.sizeOf(context),
+          grillaVista,
+        );
+        // Si el recuadro cambió de tamaño (aparece o se va la
+        // tarjeta de giro, el aviso de "buscando ubicación"...),
+        // se revisan los límites con el tamaño nuevo.
+        final cambioTamano = _viewportMapa != viewport || _tamPlano != plano;
+        _viewportMapa = viewport;
+        _tamPlano = plano;
+        if (cambioTamano && _vistaMapaInicializada) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _corregirVista();
+          });
+        }
+
+        // Vista inicial (al abrir y al cambiar de piso mirado):
+        // centrada en el usuario si ya se lo ubicó y es su piso;
+        // si no, el plano entero.
+        if (!_vistaMapaInicializada) {
+          _vistaMapaInicializada = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            if (_posicionFinal != null && _otroPiso == null) {
+              _centrarEnUsuario(animado: false);
+            } else {
+              _verMapaCompleto();
+            }
+          });
+        }
+
+        return InteractiveViewer(
+          transformationController: _transformMapa,
+          constrained: false,
+          minScale: _zoomMinimo(viewport, plano),
+          maxScale: _zoomMaximo,
+          // Sin límite propio: los bordes los pone
+          // _corregirVista (ver "LÍMITES DE LA VISTA").
+          boundaryMargin: const EdgeInsets.all(double.infinity),
+          onInteractionStart: (_) => _dejarDeSeguir(),
+          // RepaintBoundary: mientras la cámara se mueve sólo
+          // cambia la matriz de la vista; el plano, la grilla
+          // y los marcadores ya pintados se reusan tal cual
+          // en cada frame en vez de volver a dibujarse.
+          child: RepaintBoundary(
+            child: SizedBox(
+              width: plano.width,
+              height: plano.height,
+              // Lo que se dibuja encima mide lo mismo en pantalla con
+              // cualquier zoom. Sólo se redibuja cuando el zoom cambia.
+              child: ValueListenableBuilder<double>(
+                valueListenable: _zoomVista,
+                builder: (context, zoom, _) => MapaWidget(
+                  // Una clave por piso: al cambiar de piso se
+                  // arma un mapa nuevo en vez de reciclar el
+                  // anterior con la imagen de otro.
+                  key: ValueKey(otro?.info.id ?? widget.pisoId),
+                  rutaImagen: otro?.info.rutaImagen ?? widget.rutaImagen,
+                  beacons: otro?.beacons ?? _beaconsEnElMapa,
+                  zonas: otro?.zonas ?? _zonas,
+                  lugares: otro?.lugares ?? _lugares,
+                  // En otro piso no se dibuja al usuario ni la
+                  // ruta: no está ahí.
+                  posicionUsuario: otro == null ? _posicionFinal : null,
+                  modoEdicion: false,
+                  mostrarGrilla: true,
+                  grilla: grillaVista,
+                  recorrido: otro == null ? recorrido : null,
+                  headingUsuario: otro == null && _orientacion.heading != null
+                      ? ((_orientacion.heading! - _rotacionMapaEfectiva) % 360 +
+                                360) %
+                            360
+                      : null,
+                  escalaVista: zoom,
                 ),
-                overflow: TextOverflow.ellipsis,
               ),
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
-  Widget _buildBarraMicrofono() {
-    final bool escuchando = _escuchando;
-    return Semantics(
-      label: escuchando ? 'Escuchando, hablá ahora' : 'Tocá aquí y decí el destino',
-      button: true,
-      child: GestureDetector(
-        onTap: escuchando ? null : _seleccionarDestinoPorVoz,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 250),
-          width: double.infinity,
-          height: 100,
-          decoration: BoxDecoration(
-            color: escuchando
-                ? const Color(0xFF1A0A00)
-                : TemaApp.fondoCard,
-            border: Border(
-              top: BorderSide(
-                color: escuchando ? TemaApp.advertencia : TemaApp.acento,
-                width: 2,
-              ),
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 250),
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: escuchando
-                      ? TemaApp.advertencia.withValues(alpha: 0.15)
-                      : TemaApp.acento.withValues(alpha: 0.12),
-                  border: Border.all(
-                    color: escuchando ? TemaApp.advertencia : TemaApp.acento,
-                    width: 2,
-                  ),
-                ),
-                child: Icon(
-                  escuchando ? Icons.hearing_rounded : Icons.mic_rounded,
-                  color: escuchando ? TemaApp.advertencia : TemaApp.acento,
-                  size: 30,
-                ),
-              ),
-              const SizedBox(width: 16),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    escuchando ? 'Escuchando...' : 'TOCÁ Y HABLÁ',
-                    style: TextStyle(
-                      color: escuchando ? TemaApp.advertencia : TemaApp.acento,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                  Text(
-                    escuchando
-                        ? 'Decí el nombre del lugar'
-                        : _esTramoEntrePisos
-                            ? 'Mantené apretado para cambiar de piso'
-                            : 'Tocá en cualquier parte de la pantalla',
-                    style: const TextStyle(color: TemaApp.textoSecundario, fontSize: 14),
-                  ),
-                ],
-              ),
-              if (escuchando) ...[
-                const SizedBox(width: 16),
-                SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    color: TemaApp.advertencia,
-                    strokeWidth: 2.5,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
- 
   @override
   Widget build(BuildContext context) {
-    return Theme(
-      data: TemaApp.tema,
-      child: Scaffold(
-        backgroundColor: TemaApp.fondo,
-        appBar: AppBar(
-          backgroundColor: TemaApp.fondoCard,
-          foregroundColor: TemaApp.textoBlanco,
-          elevation: 0,
-          bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(1),
-            child: Container(height: 1, color: const Color(0xFF21262D)),
-          ),
-          title: Row(
-            children: [
-              Container(
-                width: 8, height: 8,
-                decoration: BoxDecoration(
-                  color: TemaApp.acento,
-                  shape: BoxShape.circle,
-                  boxShadow: [BoxShadow(color: TemaApp.acento.withValues(alpha: 0.6), blurRadius: 8, spreadRadius: 1)],
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                _nombrePiso ?? 'Navegación',
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: TemaApp.textoBlanco),
-              ),
-            ],
-          ),
-          actions: [
-            // Sólo en la app del admin: regular los ajustes del edificio
-            // caminando (ver AjustesNavegacion). El usuario no los cambia.
-            if (EntornoApp.esAdmin)
-              Semantics(
-                label: 'Ajustes de navegación',
-                button: true,
-                child: SizedBox(
-                  width: TemaApp.targetTactil,
-                  height: TemaApp.targetTactil,
-                  child: IconButton(
-                    icon: const Icon(Icons.tune_rounded, color: TemaApp.textoSecundario),
-                    tooltip: 'Ajustes de navegación',
-                    onPressed: () => mostrarPanelAjustesNavegacion(context),
-                  ),
-                ),
-              ),
-            if (_destinoSeleccionado != null)
-              Semantics(
-                label: 'Cancelar navegación',
-                button: true,
-                child: SizedBox(
-                  width: TemaApp.targetTactil,
-                  height: TemaApp.targetTactil,
-                  child: IconButton(
-                    icon: const Icon(Icons.close_rounded, color: TemaApp.textoSecundario),
-                    tooltip: 'Cancelar navegación',
-                    onPressed: _cancelarNavegacion,
-                  ),
-                ),
-              ),
-          ],
-        ),
-
-        body: Semantics(
-          label: 'Tocá en cualquier parte de la pantalla para elegir tu destino por voz',
-          onLongPressHint: 'cambiar de piso',
-          explicitChildNodes: true,
-          // Dos gestos sobre toda la pantalla:
-          //  - toque corto  → elegir destino por voz (como siempre);
-          //  - mantener ~1 s → cambiar de piso (salto al piso siguiente).
-          // Se usa RawGestureDetector para poder fijar la duración del
-          // mantener: la de GestureDetector (0.5 s) es demasiado corta y un
-          // toque apoyado sin querer podría cargar otro piso.
-          //
-          // CONVIVENCIA CON EL MAPA DESPLAZABLE: ninguno de los dos gestos
-          // choca con arrastrar o hacer zoom. Si el dedo se mueve más de unos
-          // pocos píxeles antes de que pase el segundo, Flutter descarta el
-          // toque y el mantener, y el movimiento queda para el mapa.
-          // Se descartó el doble toque para cambiar de piso por dos motivos:
-          // obliga a que cada toque simple espere ~0,3 s (por si viene un
-          // segundo toque) y con TalkBack el doble toque lo usa el lector.
-          // El mantener, con TalkBack, es "doble toque sostenido".
-          child: RawGestureDetector(
-            // translucent deja pasar los eventos a los hijos (mapa, botones,
-            // barra de micrófono), que capturan sus propios toques y gestos.
-            behavior: HitTestBehavior.translucent,
-            gestures: <Type, GestureRecognizerFactory>{
-              TapGestureRecognizer:
-                  GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
-                () => TapGestureRecognizer(),
-                (r) => r.onTap = _iniciarSeleccionDestinoPorPantalla,
-              ),
-              LongPressGestureRecognizer: GestureRecognizerFactoryWithHandlers<
-                  LongPressGestureRecognizer>(
-                () => LongPressGestureRecognizer(duration: _duracionMantener),
-                (r) => r.onLongPress = _cambiarDePiso,
-              ),
-            },
-            child: Column(
-              children: [
-            // Panel de destino + brújula
-            Container(
-              padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
-              decoration: BoxDecoration(
-                color: TemaApp.fondoCard,
-                border: const Border(bottom: BorderSide(color: Color(0xFF21262D))),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: _destinoSeleccionado != null
-                        ? Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(Icons.place_rounded, color: TemaApp.poi, size: 20),
-                                  const SizedBox(width: 6),
-                                  Expanded(
-                                    child: Text(
-                                      _esTramoEntrePisos &&
-                                              _numeroPisoDe(_destinoSeleccionado!) != null
-                                          ? '${_destinoSeleccionado!.nombre} · '
-                                              '${PisoUtil.nombre(_numeroPisoDe(_destinoSeleccionado!)!)}'
-                                          : _destinoSeleccionado!.nombre,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 17,
-                                        color: TemaApp.textoBlanco,
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              if (_estadoRuta.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 2, left: 26),
-                                  child: Text(
-                                    _estadoRuta,
-                                    style: const TextStyle(fontSize: 13, color: TemaApp.textoSecundario),
-                                  ),
-                                ),
-                            ],
-                          )
-                        : Text(
-                            'Tocá la pantalla para elegir destino',
-                            style: TextStyle(fontSize: 15, color: TemaApp.textoSecundario),
-                          ),
-                  ),
-                  const SizedBox(width: 8),
-                  _buildOrientacion(),
-                  Semantics(
-                    label: _destinoSeleccionado != null ? 'Cambiar destino' : 'Seleccionar destino desde lista',
-                    button: true,
-                    child: SizedBox(
-                      width: TemaApp.targetTactil,
-                      height: TemaApp.targetTactil,
-                      child: IconButton(
-                        icon: Icon(
-                          _destinoSeleccionado != null ? Icons.edit_location_alt_rounded : Icons.format_list_bulleted_rounded,
-                          color: TemaApp.acento,
-                          size: 28,
-                        ),
-                        tooltip: 'Seleccionar destino desde lista',
-                        onPressed: _seleccionarDestinoLista,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            // Selector de piso para mirar otros pisos (sólo sin destino).
-            if (_destinoSeleccionado == null && _pisosEdificio.length > 1)
-              _buildSelectorPisos(),
-
-            // Indicacion de giro
-            if (_destinoSeleccionado != null) _buildIndicacionGiro(),
-
-            // Banner buscando ubicación
-            if (_posicionFinal == null && _escaneando)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                color: TemaApp.acentoSuave,
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 20, height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.5,
-                        color: TemaApp.acento,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Buscando tu ubicación...',
-                      style: const TextStyle(fontSize: 15, color: TemaApp.acento, fontWeight: FontWeight.w600),
-                    ),
-                  ],
-                ),
-              ),
-
-            // Mapa
-            Expanded(
-              child: Container(
-                margin: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF21262D), width: 1),
-                ),
-                clipBehavior: Clip.antiAlias,
-                // Mapa desplazable: escala fija + zoom/arrastre (ver
-                // _pixelesPorMetro). Arrastrar no compite con el toque de
-                // toda la pantalla: si el dedo se mueve, no cuenta como toque.
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final viewport =
-                        Size(constraints.maxWidth, constraints.maxHeight);
-                    // Piso que se dibuja: el del usuario, o el que se está
-                    // mirando con el selector de pisos.
-                    final otro = _otroPiso;
-                    final grillaVista = otro?.grilla ?? _grilla;
-                    final plano = _calcularTamPlano(
-                        MediaQuery.sizeOf(context), grillaVista);
-                    // Si el recuadro cambió de tamaño (aparece o se va la
-                    // tarjeta de giro, el aviso de "buscando ubicación"...),
-                    // se revisan los límites con el tamaño nuevo.
-                    final cambioTamano =
-                        _viewportMapa != viewport || _tamPlano != plano;
-                    _viewportMapa = viewport;
-                    _tamPlano = plano;
-                    if (cambioTamano && _vistaMapaInicializada) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) _corregirVista();
-                      });
-                    }
-
-                    // Vista inicial (al abrir y al cambiar de piso mirado):
-                    // centrada en el usuario si ya se lo ubicó y es su piso;
-                    // si no, el plano entero.
-                    if (!_vistaMapaInicializada) {
-                      _vistaMapaInicializada = true;
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (!mounted) return;
-                        if (_posicionFinal != null && _otroPiso == null) {
-                          _centrarEnUsuario(animado: false);
-                        } else {
-                          _verMapaCompleto();
-                        }
-                      });
-                    }
-
-                    return Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        InteractiveViewer(
-                          transformationController: _transformMapa,
-                          constrained: false,
-                          minScale: _zoomMinimo(viewport, plano),
-                          maxScale: _zoomMaximo,
-                          // Sin límite propio: los bordes los pone
-                          // _corregirVista (ver "LÍMITES DE LA VISTA").
-                          boundaryMargin:
-                              const EdgeInsets.all(double.infinity),
-                          onInteractionStart: (_) => _dejarDeSeguir(),
-                          // RepaintBoundary: mientras la cámara se mueve sólo
-                          // cambia la matriz de la vista; el plano, la grilla
-                          // y los marcadores ya pintados se reusan tal cual
-                          // en cada frame en vez de volver a dibujarse.
-                          child: RepaintBoundary(
-                            child: SizedBox(
-                              width: plano.width,
-                              height: plano.height,
-                              child: MapaWidget(
-                                // Una clave por piso: al cambiar de piso se
-                                // arma un mapa nuevo en vez de reciclar el
-                                // anterior con la imagen de otro.
-                                key: ValueKey(otro?.info.id ?? widget.pisoId),
-                                rutaImagen:
-                                    otro?.info.rutaImagen ?? widget.rutaImagen,
-                                beacons: otro?.beacons ?? _beaconsEnElMapa,
-                                zonas: otro?.zonas ?? _zonas,
-                                lugares: otro?.lugares ?? _lugares,
-                                // En otro piso no se dibuja al usuario ni la
-                                // ruta: no está ahí.
-                                posicionUsuario:
-                                    otro == null ? _posicionFinal : null,
-                                modoEdicion: false,
-                                mostrarGrilla: true,
-                                grilla: grillaVista,
-                                ruta: otro == null ? _rutaActual : null,
-                                headingUsuario: otro == null &&
-                                        _orientacion.heading != null
-                                    ? ((_orientacion.heading! -
-                                                    _rotacionMapaEfectiva) %
-                                                360 +
-                                            360) %
-                                        360
-                                    : null,
-                              ),
-                            ),
-                          ),
-                        ),
-                        if (otro != null)
-                          Positioned(
-                            top: 10,
-                            left: 10,
-                            right: 10,
-                            child: Align(
-                              alignment: Alignment.topLeft,
-                              child: _buildCartelOtroPiso(otro),
-                            ),
-                          ),
-                        Positioned(
-                          right: 12,
-                          bottom: 12,
-                          child: _buildBotonCentrar(),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            ),
-
-            // Estado beacons colapsable
-            Semantics(
-              liveRegion: true,
-              child: Theme(
-                data: TemaApp.tema.copyWith(dividerColor: Colors.transparent),
-                child: ExpansionTile(
-                  tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
-                  minTileHeight: 38,
-                  leading: Icon(Icons.sensors_rounded, color: TemaApp.acento, size: 18),
-                  title: Text(
-                    _estadoScan,
-                    style: const TextStyle(fontSize: 14, color: TemaApp.textoSecundario),
-                  ),
-                  children: [
-                    if (_posicionFinal != null)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                        child: Text(
-                          'Beacons activos: ${_beaconsEnElMapa.values.where((b) => b.rssiFiltrado > _umbralRSSI).length} / ${_beaconsEnElMapa.length} configurados',
-                          style: const TextStyle(fontSize: 14, color: TemaApp.textoSecundario),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-
-            // Barra de micrófono
-            _buildBarraMicrofono(),
-              ],
-            ),
-          ),
-        ),
-      ),
+    final destino = _destinoSeleccionado;
+    final escalera = _escaleraObjetivo;
+    // Sólo para mostrar: no toca la ruta ni la guía.
+    final recorrido = _seguimientoRecorrido.actualizar(
+      clave: destino == null ? null : (destino.id, escalera?.id),
+      ruta: _rutaActual,
+      grilla: _grilla,
+      marca: !_esTramoEntrePisos
+          ? MarcaTramo.destino
+          : (escalera?.esAscensor ?? false)
+          ? MarcaTramo.ascensor
+          : MarcaTramo.escalera,
+    );
+    return VistaNavegacion(
+      titulo: _nombrePiso ?? 'Navegación',
+      destino: destino == null
+          ? null
+          : _esTramoEntrePisos && _numeroPisoDe(destino) != null
+          ? '${destino.nombre} · '
+                '${PisoUtil.nombre(_numeroPisoDe(destino)!)}'
+          : destino.nombre,
+      estadoRuta: _estadoRuta,
+      brujula: _chipOrientacion(),
+      pisos: _opcionesPiso(),
+      indicacion: _datosIndicacion(),
+      recorrido: recorrido,
+      plano: _buildPlano(recorrido),
+      avisoOtroPiso: _avisoOtroPiso,
+      buscandoUbicacion: _posicionFinal == null && _escaneando,
+      siguiendo: _seguirUsuario && _otroPiso == null,
+      alCentrar: _alTocarCentrar,
+      estadoSenal: _estadoScan,
+      detalleSenal: _posicionFinal == null
+          ? null
+          : 'Beacons activos: ${_beaconsEnElMapa.values.where((b) => b.rssiFiltrado > _umbralRSSI).length} / ${_beaconsEnElMapa.length} configurados',
+      escuchando: _escuchando,
+      ayuda: _ayudaInferior,
+      ayudaImportante: _escuchando || _esTramoEntrePisos,
+      alTocarPantalla: _iniciarSeleccionDestinoPorPantalla,
+      alMantenerPantalla: _cambiarDePiso,
+      duracionMantener: _duracionMantener,
+      alElegirDeLista: _seleccionarDestinoLista,
+      alCancelar: destino == null ? null : _cancelarNavegacion,
+      alAbrirAjustes: EntornoApp.esAdmin
+          ? () => mostrarPanelAjustesNavegacion(context)
+          : null,
     );
   }
 }

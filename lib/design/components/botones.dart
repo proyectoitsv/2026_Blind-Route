@@ -8,6 +8,7 @@ import '../estilo.dart';
 import '../formas.dart';
 import '../relieve.dart';
 import '../tipografia.dart';
+import 'cuadro_icono.dart';
 import 'presion.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -201,57 +202,62 @@ class BotonPrincipal extends StatelessWidget {
   }
 }
 
-// ─── BOTÓN PRINCIPAL GRANDE ─────────────────────────────────────────────────
+// ─── BOTÓN PRINCIPAL GRANDE (LA FICHA) ──────────────────────────────────────
 //
-// El mismo botón principal (acento plano y levantado, texto oscuro; se hunde
-// y se achica al presionarlo), en grande: para la acción que se tiene que
-// poder acertar sin mirar con cuidado, como "Comenzar a navegar" en el
-// inicio. Llena el lugar que le dan (va en un Expanded) con el ícono arriba,
-// el texto en 22 y, debajo, una aclaración. Tiene la forma de una tarjeta
-// (radio 20). Es el botón principal de su pantalla: no va con un
-// BotonPrincipal al lado.
+// Para la acción que se tiene que poder acertar sin mirar con cuidado, como
+// "Comenzar a navegar" en el inicio. Es una ficha: una tarjeta levantada con
+// el borde de los controles (radio 20) que se toca entera. Arriba, el ícono
+// en un cuadro hundido de 64, el título en 22 y una descripción; abajo, una
+// franja de acento a todo el ancho con el texto de la acción, que le da el
+// peso de botón principal. Llena el lugar que le dan (va en un Expanded), con
+// el contenido centrado arriba de la franja. Es el botón principal de su
+// pantalla: no va con un BotonPrincipal al lado.
 //
 // No tiene alto propio: mide lo que le dan o, si no le alcanza, lo que pide
-// su contenido (con letra grande, el texto se parte en renglones y el botón
-// crece). El texto va en 22 y no en 34: así, aun con la letra al 200 % en un
+// su contenido (con letra grande, el texto se parte en renglones y la ficha
+// crece). El título va en 22 y no en 34: así, aun con la letra al 200 % en un
 // teléfono de 360 dp, ninguna palabra se parte ("Comenzar", en 34, ya no
 // entraría en un renglón).
 //
-// TalkBack lee el texto (o etiquetaSemantica) y "botón". La aclaración
-// ("Tocá para comenzar") es para quien ve: no la lee.
+// Contraste: título 13,85 y descripción 9,10 sobre la superficie; texto de la
+// franja 11,47 sobre el acento.
+//
+// TalkBack lee el título (o etiquetaSemantica) y "botón". La descripción y el
+// texto de la franja son para quien ve: no los lee.
 
-/// El botón principal en grande: llena el lugar que le dan.
+/// La ficha: el botón principal en grande, que llena el lugar que le dan.
 class BotonPrincipalGrande extends StatelessWidget {
   const BotonPrincipalGrande({
     super.key,
     required this.texto,
     required this.icono,
+    required this.accion,
     required this.alPresionar,
     this.detalle,
     this.etiquetaSemantica,
   });
 
+  /// El título de la ficha.
   final String texto;
 
-  /// Ícono de arriba (Icons.*_rounded). Decorativo.
+  /// Ícono de arriba (Icons.*_rounded), en acento. Decorativo.
   final IconData icono;
+
+  /// El texto de la franja ("Empezar"). TalkBack no lo lee.
+  final String accion;
 
   /// null: deshabilitado.
   final VoidCallback? alPresionar;
 
-  /// Aclaración debajo del texto, para quien ve ("Tocá para comenzar").
-  /// TalkBack no la lee.
+  /// Descripción debajo del título, para quien ve. TalkBack no la lee.
   final String? detalle;
 
   /// Lo que dice TalkBack en lugar de [texto], si hace falta más contexto.
   final String? etiquetaSemantica;
 
-  /// A los costados, el relleno de una tarjeta; arriba y abajo, más aire,
-  /// así se ve grande aun cuando mide lo que su contenido. El texto queda
-  /// lejos de la sombra interior al presionar.
-  static const EdgeInsets _rellenoGrande = EdgeInsets.symmetric(
-    horizontal: EspaciadoApp.rellenoTarjeta,
-    vertical: EspaciadoApp.entreSecciones,
+  /// La franja: las esquinas de abajo, las de la tarjeta.
+  static const BorderRadius _bordeFranja = BorderRadius.vertical(
+    bottom: Radius.circular(FormasApp.radioTarjeta),
   );
 
   @override
@@ -259,36 +265,74 @@ class BotonPrincipalGrande extends StatelessWidget {
     final e = EstiloApp.de(context);
     final habilitado = alPresionar != null;
     final estilo = _estiloBase(
-      texto: e.textoSobreAcento,
+      texto: e.textoPrincipal,
       textoDeshabilitado: e.textoSecundario,
       tamano: _tamanoGrande,
-      relleno: _rellenoGrande,
+      relleno: EdgeInsets.zero,
       forma: const RoundedRectangleBorder(borderRadius: FormasApp.bordeTarjeta),
     );
-    // El color del ícono y de los textos sale del botón: oscuro sobre el
-    // acento (11,47) y, deshabilitado, el texto secundario.
-    final contenido = Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icono, size: FormasApp.iconoGrande),
-        const SizedBox(height: EspaciadoApp.medio),
-        Text(
-          texto,
-          textAlign: TextAlign.center,
-          style: TipografiaApp.titulo,
-          semanticsLabel: etiquetaSemantica,
+    final cuerpo = Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: EspaciadoApp.rellenoTarjeta,
+        vertical: EspaciadoApp.entreSecciones,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CuadroIcono(
+            icono: icono,
+            color: habilitado ? e.acento : e.textoSecundario,
+            lado: FormasApp.cuadroFicha,
+            tamanoIcono: FormasApp.iconoIndicacion,
+          ),
+          const SizedBox(height: EspaciadoApp.medio),
+          Text(
+            texto,
+            textAlign: TextAlign.center,
+            style: TipografiaApp.titulo,
+            semanticsLabel: etiquetaSemantica,
+          ),
+          if (detalle != null) ...[
+            const SizedBox(height: EspaciadoApp.chico),
+            ExcludeSemantics(
+              child: Text(
+                detalle!,
+                textAlign: TextAlign.center,
+                style: TipografiaApp.cuerpo.copyWith(color: e.textoSecundario),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+    final franja = ExcludeSemantics(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: habilitado ? e.acento : e.separador,
+          borderRadius: _bordeFranja,
         ),
-        if (detalle != null) ...[
-          const SizedBox(height: EspaciadoApp.chico),
-          ExcludeSemantics(
-            child: Text(
-              detalle!,
-              textAlign: TextAlign.center,
-              style: TipografiaApp.cuerpo,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: EspaciadoApp.rellenoTarjeta,
+            vertical: EspaciadoApp.margenLateral,
+          ),
+          child: Text(
+            accion,
+            textAlign: TextAlign.center,
+            style: TipografiaApp.destacado.copyWith(
+              color: habilitado ? e.textoSobreAcento : e.textoSecundario,
             ),
           ),
-        ],
-      ],
+        ),
+      ),
+    );
+    // Con alto de sobra, el espacio se reparte arriba y abajo del cuerpo y la
+    // franja queda contra el borde; sin alto (en una lista), mide lo que
+    // miden los dos. Un Expanded acá no andaría en una lista.
+    final contenido = Column(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [const SizedBox.shrink(), cuerpo, franja],
     );
     return ConEstados(
       deshabilitado: !habilitado,
@@ -297,11 +341,13 @@ class BotonPrincipalGrande extends StatelessWidget {
         return EscalaPresion(
           presionado: presionado,
           child: RelieveAnimado(
-            decoracion: _decoracionPrincipal(
-              e,
-              estados,
-              habilitado: habilitado,
+            decoracion: DecoracionRelieve(
+              color: presionado ? e.hundido : e.superficie,
               radio: FormasApp.bordeTarjeta,
+              elevacion: elevacionControl(estados),
+              borde: _bordeControl(e, estados),
+              sombraOscura: e.sombraOscura,
+              sombraClara: e.sombraClara,
             ),
             presionado: presionado,
             child: FilledButton(
@@ -599,7 +645,9 @@ BorderSide _bordeControl(EstiloApp e, Set<WidgetState> estados) {
 /// con borde, adentro de un área tocable de 48. Es el de las barras (volver,
 /// acciones, cerrar una hoja). El ícono va en texto principal (13,85) o, si
 /// es [destructivo] (eliminar), en rojo (5,31 sobre la superficie, 5,94
-/// hundido al presionar).
+/// hundido al presionar). [resaltado] lo rellena de acento, con el ícono
+/// oscuro (11,47), para cuando conviene usarlo ya: "Centrar el mapa", cuando
+/// el mapa dejó de seguir al usuario.
 ///
 /// [etiqueta] es lo que dice TalkBack y lo que aparece al mantenerlo
 /// apretado.
@@ -610,6 +658,7 @@ class BotonRedondo extends StatelessWidget {
     required this.etiqueta,
     required this.alPresionar,
     this.destructivo = false,
+    this.resaltado = false,
   });
 
   final IconData icono;
@@ -621,13 +670,20 @@ class BotonRedondo extends StatelessWidget {
   /// Una acción que borra algo: el ícono en rojo.
   final bool destructivo;
 
+  /// Relleno de acento. Sobre el acento, el borde gris no hace falta.
+  final bool resaltado;
+
   @override
   Widget build(BuildContext context) {
     final e = EstiloApp.de(context);
     final habilitado = alPresionar != null;
     const tamano = Size.square(FormasApp.botonRedondo);
     final estilo = _estiloBase(
-      texto: destructivo ? e.error : e.textoPrincipal,
+      texto: resaltado
+          ? e.textoSobreAcento
+          : destructivo
+          ? e.error
+          : e.textoPrincipal,
       textoDeshabilitado: e.textoSecundario,
       tamano: tamano,
       relleno: EdgeInsets.zero,
@@ -654,13 +710,22 @@ class BotonRedondo extends StatelessWidget {
                   child: RelieveAnimado(
                     presionado: presionado,
                     decoracion: DecoracionRelieve(
-                      color: presionado ? e.hundido : e.superficie,
+                      color: resaltado
+                          ? e.acento
+                          : presionado
+                          ? e.hundido
+                          : e.superficie,
                       circulo: true,
                       elevacion: elevacionControl(estados),
                       tamano: TamanoRelieve.chico,
-                      borde: _bordeControl(e, estados),
+                      borde: resaltado
+                          ? BorderSide.none
+                          : _bordeControl(e, estados),
                       sombraOscura: e.sombraOscura,
-                      sombraClara: e.sombraClara,
+                      // Sobre el acento, la luz se vería como una mancha.
+                      sombraClara: resaltado && presionado
+                          ? null
+                          : e.sombraClara,
                     ),
                   ),
                 ),

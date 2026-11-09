@@ -53,6 +53,11 @@ class BaseFalsa {
   /// ("DELETE FROM pisos WHERE id = ?").
   final List<String> pedidos = [];
 
+  /// Las respuestas a medida para los SELECT que esta base no sabe armar (los
+  /// JOIN de la navegación), por cómo empieza el SQL. Se vacían con
+  /// [reiniciar].
+  final Map<String, List<Map<String, Object?>> Function()> armadas = {};
+
   /// Lo que la base pone en una fila nueva si no se lo dan, como los DEFAULT
   /// de las tablas de DatabaseHelper.
   static const Map<String, Map<String, Object?>> _porDefecto = {
@@ -70,6 +75,7 @@ class BaseFalsa {
   void reiniciar() {
     tablas.clear();
     pedidos.clear();
+    armadas.clear();
   }
 
   /// Las filas de [tabla].
@@ -134,6 +140,9 @@ class BaseFalsa {
       return _resultado([
         {'user_version': 17},
       ]);
+    }
+    for (final armada in armadas.entries) {
+      if (sql.startsWith(armada.key)) return _resultado(armada.value());
     }
     final partes = RegExp(
       r'^SELECT (.+?) FROM (\w+)(?: WHERE (.+?))?(?: ORDER BY (.+?))?'

@@ -14,8 +14,9 @@ import 'voz_service.dart';
 /// ─── Sistema de diseño (fase 5.1 del rediseño) ───
 /// Va envuelta en AmbienteDiseno (el tema nuevo y «Reducir movimiento») y
 /// abre las pantallas con RutaApp, con la transición de la tabla de
-/// movimiento. "Comenzar a navegar" es el botón principal en grande: llena
-/// todo el lugar libre, así se acierta sin mirar con cuidado. "Mapas
+/// movimiento. "Comenzar a navegar" es el botón principal en grande, la ficha
+/// (BotonPrincipalGrande): llena todo el lugar libre, así se acierta sin
+/// mirar con cuidado. "Mapas
 /// disponibles" y "Ajustes" son las filas de un grupo, y TalkBack las nombra
 /// como antes ("Mapas disponibles para descargar", "Ajustes: voz, movimiento
 /// y vibración").
@@ -88,7 +89,9 @@ class _PantallaPrincipalUsuarioState extends State<PantallaPrincipalUsuario> {
                             child: BotonPrincipalGrande(
                               icono: Icons.explore_rounded,
                               texto: 'Comenzar a navegar',
-                              detalle: 'Tocá para comenzar',
+                              detalle:
+                                  'Primero te ubico. Después decís a dónde ir.',
+                              accion: 'Empezar',
                               alPresionar: () => _abrir(const ModoAutomatico()),
                             ),
                           ),

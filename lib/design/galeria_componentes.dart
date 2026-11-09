@@ -431,7 +431,8 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
     BotonPrincipalGrande(
       icono: Icons.explore_rounded,
       texto: 'Comenzar a navegar',
-      detalle: 'Tocá para comenzar',
+      detalle: 'Primero te ubico. Después decís a dónde ir.',
+      accion: 'Empezar',
       alPresionar: () => _aviso('Comenzar a navegar (grande)'),
     ),
     _entreElementos,
@@ -485,6 +486,12 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
           icono: Icons.tune_rounded,
           etiqueta: 'Ajustes',
           alPresionar: () => _aviso('Ajustes'),
+        ),
+        BotonRedondo(
+          icono: Icons.location_searching_rounded,
+          etiqueta: 'Centrar',
+          resaltado: true,
+          alPresionar: () => _aviso('Centrar'),
         ),
       ],
     ),
@@ -1296,17 +1303,22 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       ),
       _entreSecciones,
       GrupoFilas(
-        titulo: 'Mapa de las pantallas sin migrar',
+        titulo: 'Sobre la imagen del plano',
         pie:
-            'Contra un plano blanco, que es lo que suele haber detrás. La '
-            'ruta no llega a 3:1: en la fase 5 lleva la ranura oscura. La '
-            'zona va sólo como relleno, nunca como texto.',
+            'Contra un plano blanco, que es lo que suele haber detrás. Los '
+            'colores claros se leen por el contorno oscuro. La zona va sólo '
+            'como relleno, nunca como texto.',
         filas: [
-          fila('Ruta del mapa', ColoresApp.mapaRutaInicio, 'trazo', blanco),
           fila(
-            'Celda del usuario',
-            ColoresApp.mapaUsuario,
-            'celda y flecha',
+            'Contorno',
+            ColoresApp.mapaContorno,
+            'de lo que va sobre el plano',
+            blanco,
+          ),
+          fila(
+            'Guías de trazo',
+            ColoresApp.mapaGuia,
+            'asistente de la configuración',
             blanco,
           ),
           fila(

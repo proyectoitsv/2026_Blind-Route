@@ -19,8 +19,8 @@ import 'transiciones.dart';
 //     widgets de Material sueltos quedan planos, con el borde de 1 px.
 //   · Inter en toda la escala (TipografiaApp).
 //
-// Las pantallas lo toman a medida que se migran (fase 5). Hasta entonces
-// siguen con TemaApp.tema, el de antes, que toma los colores de la paleta.
+// Las pantallas lo toman de AmbienteDiseno: los MaterialApp de las apps
+// siguen con el tema de los entrypoints, que el rediseño no toca.
 //
 // ─── Esquema de colores (roles de Material 3) ───
 //   surface                  fondo        fondo de las pantallas

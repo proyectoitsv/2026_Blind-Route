@@ -63,8 +63,8 @@ class EstiloApp extends ThemeExtension<EstiloApp> {
   );
 
   /// Los colores del tema vigente. Debajo de un tema sin esta extensión (el
-  /// de antes, TemaApp.tema, mientras dure la migración) devuelve los
-  /// oscuros, así un componente nuevo se ve bien en una pantalla vieja.
+  /// del MaterialApp de las apps, por afuera de AmbienteDiseno) devuelve los
+  /// oscuros, así una hoja abierta desde ahí se ve bien.
   static EstiloApp de(BuildContext context) =>
       Theme.of(context).extension<EstiloApp>() ?? oscuro;
 

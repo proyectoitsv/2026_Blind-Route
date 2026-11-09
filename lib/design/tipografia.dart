@@ -71,6 +71,16 @@ abstract final class TipografiaApp {
     letterSpacing: -0.7,
   );
 
+  /// 28, bold. La indicación de la navegación ("Girá a la izquierda"): lo
+  /// más importante de la pantalla, en el tamaño de la métrica mediana.
+  static const TextStyle instruccion = TextStyle(
+    fontFamily: familia,
+    fontSize: 28,
+    fontWeight: FontWeight.w700,
+    height: 1.15,
+    letterSpacing: -0.5,
+  );
+
   /// (title) 22, semibold. Título de barra, de diálogo y de hoja.
   static const TextStyle titulo = TextStyle(
     fontFamily: familia,

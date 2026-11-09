@@ -5,7 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart' show PostgrestException;
 
 import 'ajustes_navegacion.dart';
 import 'supabase_service.dart';
-import 'tema.dart';
+import 'design/design.dart';
 
 // ─── PANEL DE AJUSTES DE NAVEGACIÓN (sólo app del administrador) ────────────
 //
@@ -25,23 +25,10 @@ import 'tema.dart';
 Future<void> mostrarPanelAjustesNavegacion(BuildContext context) async {
   await AjustesNavegacion.instancia.cargar();
   if (!context.mounted) return;
-  await showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: TemaApp.fondoCard,
-    shape: const RoundedRectangleBorder(
-      borderRadius:
-          BorderRadius.vertical(top: Radius.circular(TemaApp.radiusCard)),
-    ),
-    // El tema de la app, explícito: [context] es el de la pantalla de
-    // navegación, que está POR ENCIMA de su propio Theme(TemaApp.tema). Sin
-    // esto la hoja tomaba el tema claro de MaterialApp y los textos del
-    // selector de alcance salían oscuros sobre el fondo oscuro (sólo se leían
-    // al tocarlos).
-    builder: (_) => Theme(
-      data: TemaApp.tema,
-      child: const _PanelAjustesNavegacion(),
-    ),
+  await mostrarHoja<void>(
+    context,
+    titulo: 'Ajustes de navegación',
+    contenido: (_) => const _PanelAjustesNavegacion(),
   );
 }
 
@@ -106,14 +93,15 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
       } on PostgrestException catch (e) {
         error = e.code == '42501'
             ? 'La nube rechazó el cambio. Revisar la sesión de admin y que '
-                'se haya corrido supabase/ajustes_navegacion.sql.'
+                  'se haya corrido supabase/ajustes_navegacion.sql.'
             : 'Error de la nube: ${e.message}';
         break;
       } on StateError catch (e) {
         error = e.message;
         break;
       } catch (e) {
-        error = 'Sin conexión: quedan en el teléfono y se suben al abrir la '
+        error =
+            'Sin conexión: quedan en el teléfono y se suben al abrir la '
             'navegación con señal.';
         break;
       }
@@ -129,135 +117,116 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
 
   @override
   Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
     final edificio = _ajustes.edificioActual;
-    return SafeArea(
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.85,
+    final pista = TipografiaApp.nota.copyWith(color: e.textoSecundario);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          edificio == null ? 'Sin edificio' : 'Edificio: $edificio',
+          style: TipografiaApp.subtitulo.copyWith(color: e.textoSecundario),
         ),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Semantics(
-                header: true,
-                child: const Text(
-                  'Ajustes de navegación',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: TemaApp.textoBlanco,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                edificio == null ? 'Sin edificio' : 'Edificio: $edificio',
-                style: const TextStyle(
-                    fontSize: 14, color: TemaApp.textoSecundario),
-              ),
-              const SizedBox(height: 12),
-              _diagnosticoSenal(),
-              const SizedBox(height: 12),
-              _estadoNube(),
-              const SizedBox(height: 12),
-              _selectorAlcance(),
-              const SizedBox(height: 8),
-              Text(
-                _alcance == _Alcance.general
-                    ? 'Rige en todos los edificios, salvo los que tengan un '
-                        'valor propio.'
-                    : 'Rige sólo en este edificio. Lo que no se cambia sigue '
-                        'el valor general.',
-                style: const TextStyle(
-                    fontSize: 13, color: TemaApp.textoSecundario),
-              ),
-              const SizedBox(height: 16),
-              _titulo('Giros'),
-              for (final p in _ajustes.parametrosGiro) _control(p),
-              const SizedBox(height: 4),
-              _titulo('Seguimiento de la posición'),
-              const Padding(
-                padding: EdgeInsets.only(bottom: 12),
-                child: Text(
-                  'Arranca tarde y avanza de golpe: bajar el umbral y las '
-                  'ventanas, subir los filtros. Se pasa de largo: bajar el '
-                  'empuje y la velocidad máxima.',
-                  style:
-                      TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
-                ),
-              ),
-              for (final p in _ajustes.parametrosPosicion) _control(p),
-              const SizedBox(height: 4),
-              _titulo('Puntos clave'),
-              const Padding(
-                padding: EdgeInsets.only(bottom: 12),
-                child: Text(
-                  'Se adelanta caminando hacia una esquina: bajar el radio o '
-                  'la coincidencia mínima. Parado ahí no lo reconoce: '
-                  'subirlos. El log [Fingerprint] dice qué dio cada uno.',
-                  style:
-                      TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
-                ),
-              ),
-              for (final p in _ajustes.parametrosPuntoClave) _control(p),
-              const SizedBox(height: 4),
-              _titulo('Pruebas (no se guardan)'),
-              const Padding(
-                padding: EdgeInsets.only(bottom: 4),
-                child: Text(
-                  'Para comparar. Se vuelven a prender al cerrar la app; en '
-                  'la del usuario siempre están prendidos.',
-                  style:
-                      TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
-                ),
-              ),
-              _interruptor(
-                titulo: 'Freno lateral por brújula',
-                detalle: 'Con la brújula desviada retiene parte del avance y '
-                    'lo suelta de golpe al doblar.',
-                valor: _ajustes.frenarLateralConBrujula,
-                cambiar: (v) => _ajustes.frenarLateralConBrujula = v,
-              ),
-              _interruptor(
-                titulo: 'Sacar la posición de zonas prohibidas',
-                detalle: 'Si cae en una zona no transitable, la lleva a la '
-                    'celda libre más cercana.',
-                valor: _ajustes.restringirZonas,
-                cambiar: (v) => _ajustes.restringirZonas = v,
-              ),
-            ],
-          ),
+        const SizedBox(height: EspaciadoApp.medio),
+        _diagnosticoSenal(e),
+        const SizedBox(height: EspaciadoApp.medio),
+        _estadoNube(e),
+        const SizedBox(height: EspaciadoApp.medio),
+        _selectorAlcance(),
+        const SizedBox(height: EspaciadoApp.chico),
+        Text(
+          _alcance == _Alcance.general
+              ? 'Rige en todos los edificios, salvo los que tengan un '
+                    'valor propio.'
+              : 'Rige sólo en este edificio. Lo que no se cambia sigue '
+                    'el valor general.',
+          style: pista,
         ),
-      ),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        const EncabezadoSeccion(titulo: 'Giros'),
+        const SizedBox(height: EspaciadoApp.medio),
+        for (final p in _ajustes.parametrosGiro) _control(e, p),
+        const SizedBox(height: EspaciadoApp.medio),
+        const EncabezadoSeccion(titulo: 'Seguimiento de la posición'),
+        const SizedBox(height: EspaciadoApp.chico),
+        Text(
+          'Arranca tarde y avanza de golpe: bajar el umbral y las '
+          'ventanas, subir los filtros. Se pasa de largo: bajar el '
+          'empuje y la velocidad máxima.',
+          style: pista,
+        ),
+        const SizedBox(height: EspaciadoApp.medio),
+        for (final p in _ajustes.parametrosPosicion) _control(e, p),
+        const SizedBox(height: EspaciadoApp.medio),
+        const EncabezadoSeccion(titulo: 'Puntos clave'),
+        const SizedBox(height: EspaciadoApp.chico),
+        Text(
+          'Se adelanta caminando hacia una esquina: bajar el radio o '
+          'la coincidencia mínima. Parado ahí no lo reconoce: '
+          'subirlos. El log [Fingerprint] dice qué dio cada uno.',
+          style: pista,
+        ),
+        const SizedBox(height: EspaciadoApp.medio),
+        for (final p in _ajustes.parametrosPuntoClave) _control(e, p),
+        const SizedBox(height: EspaciadoApp.medio),
+        const EncabezadoSeccion(titulo: 'Pruebas (no se guardan)'),
+        const SizedBox(height: EspaciadoApp.chico),
+        Text(
+          'Para comparar. Se vuelven a prender al cerrar la app; en '
+          'la del usuario siempre están prendidos.',
+          style: pista,
+        ),
+        const SizedBox(height: EspaciadoApp.medio),
+        GrupoFilas(
+          filas: [
+            FilaGrupo.interruptor(
+              titulo: 'Freno lateral por brújula',
+              subtitulo:
+                  'Con la brújula desviada retiene parte del avance y '
+                  'lo suelta de golpe al doblar.',
+              valor: _ajustes.frenarLateralConBrujula,
+              alCambiar: (v) =>
+                  setState(() => _ajustes.frenarLateralConBrujula = v),
+            ),
+            FilaGrupo.interruptor(
+              titulo: 'Sacar la posición de zonas prohibidas',
+              subtitulo:
+                  'Si cae en una zona no transitable, la lleva a la '
+                  'celda libre más cercana.',
+              valor: _ajustes.restringirZonas,
+              alCambiar: (v) => setState(() => _ajustes.restringirZonas = v),
+            ),
+          ],
+        ),
+      ],
     );
   }
 
   Widget _selectorAlcance() {
-    return SegmentedButton<_Alcance>(
-      segments: const [
-        ButtonSegment(
-          value: _Alcance.edificio,
-          label: Text('Este edificio'),
-          icon: Icon(Icons.apartment_rounded),
+    return ControlSegmentado<_Alcance>(
+      etiqueta: 'Alcance de los ajustes',
+      opciones: const [
+        OpcionSegmento(
+          valor: _Alcance.edificio,
+          texto: 'Este edificio',
+          icono: Icons.apartment_rounded,
         ),
-        ButtonSegment(
-          value: _Alcance.general,
-          label: Text('General'),
-          icon: Icon(Icons.public_rounded),
+        OpcionSegmento(
+          valor: _Alcance.general,
+          texto: 'General',
+          icono: Icons.public_rounded,
         ),
       ],
-      selected: {_alcance},
-      onSelectionChanged: (s) => setState(() => _alcance = s.first),
+      seleccionada: _alcance,
+      alCambiar: (a) => setState(() => _alcance = a),
     );
   }
 
   /// Si los cambios llegaron a la nube.
-  Widget _estadoNube() {
+  Widget _estadoNube(EstiloApp e) {
     final String texto;
-    Color color = TemaApp.textoSecundario;
+    Color color = e.textoSecundario;
     Widget? accion;
     if (!_nube.configurado) {
       texto = 'Sin nube configurada: los cambios quedan sólo en este teléfono.';
@@ -265,73 +234,83 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
       texto = 'Subiendo a la nube…';
     } else if (_errorNube != null) {
       texto = _errorNube!;
-      color = TemaApp.advertencia;
-      accion = TextButton(onPressed: _subir, child: const Text('Reintentar'));
+      color = e.advertencia;
+      accion = BotonSecundario(
+        texto: 'Reintentar',
+        compacto: true,
+        alPresionar: _subir,
+      );
     } else if (_ajustes.hayPendientes) {
       texto = 'Hay cambios sin subir a la nube.';
-      color = TemaApp.advertencia;
-      accion = TextButton(onPressed: _subir, child: const Text('Subir ahora'));
+      color = e.advertencia;
+      accion = BotonSecundario(
+        texto: 'Subir ahora',
+        compacto: true,
+        alPresionar: _subir,
+      );
     } else {
       texto = 'Todo guardado en la nube.';
-      color = TemaApp.acento;
+      color = e.acento;
     }
     return Row(
       children: [
         Expanded(
-          child: Text(texto, style: TextStyle(fontSize: 13, color: color)),
+          child: Text(texto, style: TipografiaApp.nota.copyWith(color: color)),
         ),
-        ?accion,
+        if (accion != null) ...[
+          const SizedBox(width: EspaciadoApp.chico),
+          accion,
+        ],
       ],
     );
   }
 
   /// Cuántas lecturas por segundo llegan de verdad de los beacons (lo mide
   /// la navegación). Con pocas, avisa que el límite está en los beacons.
-  Widget _diagnosticoSenal() {
+  Widget _diagnosticoSenal(EstiloApp e) {
     final texto = _ajustes.diagnosticoSenal;
     final hora = _ajustes.diagnosticoSenalHora;
     if (texto == null || hora == null) {
-      return const Text(
+      return Text(
         'Señal: sin medir (se mide cada 5 s navegando).',
-        style: TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
+        style: TipografiaApp.nota.copyWith(color: e.textoSecundario),
       );
     }
     final hace = DateTime.now().difference(hora).inSeconds;
     final lps = _ajustes.lecturasPorSegundo;
     final poca = lps != null && lps < 3;
-    final color = poca ? TemaApp.advertencia : TemaApp.acento;
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: poca ? TemaApp.fondoAdvertencia : TemaApp.fondoPanel,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: color.withValues(alpha: 0.6)),
-      ),
+    final color = poca ? e.advertencia : e.acento;
+    return PanelRelieve(
+      hundido: true,
+      tamano: TamanoRelieve.chico,
+      radio: FormasApp.bordeCampo,
+      borde: BorderSide(color: color, width: FormasApp.grosorLinea),
+      relleno: const EdgeInsets.all(EspaciadoApp.medio),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'SEÑAL AHORA',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1.1,
+            'Señal ahora',
+            style: TipografiaApp.nota.copyWith(
               color: color,
+              fontWeight: FontWeight.w600,
             ),
           ),
-          const SizedBox(height: 2),
+          const SizedBox(height: EspaciadoApp.minimo),
           Text(
             '$texto (hace $hace s)',
-            style: const TextStyle(fontSize: 13, color: TemaApp.textoBlanco),
+            style: TipografiaApp.conCifrasTabulares(
+              TipografiaApp.nota,
+            ).copyWith(color: e.textoPrincipal),
           ),
           if (poca)
-            const Padding(
-              padding: EdgeInsets.only(top: 4),
+            Padding(
+              padding: const EdgeInsets.only(top: EspaciadoApp.minimo),
               child: Text(
                 'Pocas lecturas: no se puede tener poco atraso y poco ruido '
                 'a la vez. Configurar los beacons para emitir cada 100 a '
                 '200 ms.',
-                style: TextStyle(fontSize: 12, color: TemaApp.advertencia),
+                style: TipografiaApp.nota.copyWith(color: e.advertencia),
               ),
             ),
         ],
@@ -339,55 +318,14 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
     );
   }
 
-  Widget _titulo(String texto) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Semantics(
-          header: true,
-          child: Text(
-            texto.toUpperCase(),
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1.2,
-              color: TemaApp.acento,
-            ),
-          ),
-        ),
-      );
-
-  Widget _interruptor({
-    required String titulo,
-    required String detalle,
-    required bool valor,
-    required void Function(bool) cambiar,
-  }) {
-    return SwitchListTile(
-      contentPadding: EdgeInsets.zero,
-      value: valor,
-      title: Text(
-        titulo,
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w600,
-          color: TemaApp.textoBlanco,
-        ),
-      ),
-      subtitle: Text(
-        detalle,
-        style: const TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
-      ),
-      onChanged: (v) => setState(() => cambiar(v)),
-    );
-  }
-
   /// Control de un parámetro en el alcance elegido: el valor, de qué capa
   /// sale y, si tiene uno propio en esa capa, cómo volver al de abajo.
-  Widget _control(ParametroAjuste p) {
+  Widget _control(EstiloApp e, ParametroAjuste p) {
     final general = _alcance == _Alcance.general;
     final hayEdificio = _ajustes.edificioActual != null;
     final editable = general || (p.porEdificio && hayEdificio);
-    final valor = _arrastre[p.clave] ??
-        (general ? _ajustes.valorGeneral(p) : p.valor);
+    final valor =
+        _arrastre[p.clave] ?? (general ? _ajustes.valorGeneral(p) : p.valor);
 
     // De dónde sale el valor y cómo volver al de la capa de abajo.
     String origen;
@@ -396,7 +334,8 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
     String? aviso;
     if (general) {
       if (_ajustes.generalCambiado(p)) {
-        origen = 'Cambiado para todos (el del código es '
+        origen =
+            'Cambiado para todos (el del código es '
             '${p.formatear(p.porDefecto)}).';
         textoVolver = 'Volver al valor del código';
         volver = () => _ajustes.volverAlCodigo(p);
@@ -412,7 +351,8 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
     } else if (!hayEdificio) {
       origen = 'Sin edificio: no se puede cambiar por edificio.';
     } else if (_ajustes.origen(p) == OrigenAjuste.edificio) {
-      origen = 'Cambiado en este edificio (el general es '
+      origen =
+          'Cambiado en este edificio (el general es '
           '${p.formatear(_ajustes.valorGeneral(p))}).';
       textoVolver = 'Volver al valor general';
       volver = () => _ajustes.volverAlGeneral(p);
@@ -420,87 +360,59 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
       origen = 'Valor general.';
     }
 
+    final pista = TipografiaApp.nota.copyWith(color: e.textoSecundario);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.only(bottom: EspaciadoApp.margenLateral),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // El nombre y el valor los lee el lector de pantalla desde el
-          // slider: este texto queda sólo para la vista.
-          ExcludeSemantics(
-            child: Text(
-              '${p.nombre}: ${p.formatear(valor)}',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: editable ? TemaApp.textoBlanco : TemaApp.textoSecundario,
-              ),
-            ),
-          ),
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              activeTrackColor: TemaApp.acento,
-              thumbColor: TemaApp.acento,
-              inactiveTrackColor: TemaApp.fondoSurface,
-              overlayColor: TemaApp.acento.withValues(alpha: 0.15),
-              valueIndicatorColor: TemaApp.acento,
-              valueIndicatorTextStyle: const TextStyle(
-                color: TemaApp.fondo,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            child: Semantics(
-              label: p.nombre,
-              child: Slider(
-                value: valor,
-                min: p.minimo,
-                max: p.maximo,
-                divisions: p.divisiones,
-                label: p.formatear(valor),
-                semanticFormatterCallback: p.hablado,
-                onChanged: editable
-                    ? (v) => setState(() => _arrastre[p.clave] = v)
-                    : null,
-                onChangeEnd: editable
-                    ? (v) {
-                        setState(() {
-                          _arrastre.remove(p.clave);
-                          if (general) {
-                            _ajustes.cambiarGeneral(p, v);
-                          } else {
-                            _ajustes.cambiarEnEdificio(p, v);
-                          }
-                        });
-                        _subir();
+          Deslizador(
+            etiqueta: p.nombre,
+            valor: valor,
+            min: p.minimo,
+            max: p.maximo,
+            divisiones: p.divisiones,
+            formato: p.formatear,
+            formatoSemantico: p.hablado,
+            ayuda: origen,
+            alCambiar: editable
+                ? (v) => setState(() => _arrastre[p.clave] = v)
+                : null,
+            alTerminar: editable
+                ? (v) {
+                    setState(() {
+                      _arrastre.remove(p.clave);
+                      if (general) {
+                        _ajustes.cambiarGeneral(p, v);
+                      } else {
+                        _ajustes.cambiarEnEdificio(p, v);
                       }
-                    : null,
-              ),
-            ),
-          ),
-          Text(
-            origen,
-            style: const TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
+                    });
+                    _subir();
+                  }
+                : null,
           ),
           if (aviso != null)
             Text(
               aviso,
-              style: const TextStyle(fontSize: 12, color: TemaApp.advertencia),
+              style: TipografiaApp.nota.copyWith(color: e.advertencia),
             ),
           if (volver != null)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton(
-                onPressed: () {
-                  setState(volver!);
-                  _subir();
-                },
-                child: Text(textoVolver!),
+            Padding(
+              padding: const EdgeInsets.only(top: EspaciadoApp.minimo),
+              child: Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: BotonSecundario(
+                  texto: textoVolver!,
+                  compacto: true,
+                  alPresionar: () {
+                    setState(volver!);
+                    _subir();
+                  },
+                ),
               ),
             ),
-          Text(
-            p.ayuda,
-            style: const TextStyle(fontSize: 12, color: TemaApp.textoSecundario),
-          ),
+          Text(p.ayuda, style: pista),
         ],
       ),
     );
