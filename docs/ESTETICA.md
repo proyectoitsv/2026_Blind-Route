@@ -33,9 +33,31 @@ En la Tabla 1 se resumen los colores principales. Los contrastes se calcularon c
 
 El relieve se arma con dos sombras, una oscura abajo a la derecha y otra clara arriba a la izquierda, que en lo levantado tienen 6 dp de desplazamiento y 12 dp de desenfoque, y en lo hundido van por dentro con 4 y 8 dp. Los botones y las tarjetas van levantados, mientras que el plano, los campos y las pistas van hundidos. Como la superficie da 1,11:1 contra el fondo, el relieve solo no alcanza para distinguir un control, por lo que todo lo que se toca lleva un borde de 1 px, salvo los rellenos de acento, que ya pasan el mínimo.
 
-La tipografía es Inter 4.1, empaquetada en la app con pesos de 400 a 700, con el texto común en 17 sp, los títulos en 22, la indicación de la navegación en 28 y los números grandes en 40 con cifras tabulares. Cuando la letra del teléfono llega a 1,2 veces la normal, los componentes se reacomodan, pasando la grilla de tarjetas a una columna o bajando los botones debajo del texto, para que ninguna palabra quede partida.
+La tipografía es Inter 4.1, empaquetada en la app con pesos de 400 a 700 y con la escala de la Tabla 2, donde los números llevan cifras tabulares para que no se muevan al cambiar. Cuando la letra del teléfono llega a 1,2 veces la normal, los componentes se reacomodan, pasando la grilla de tarjetas a una columna o bajando los botones debajo del texto, para que ninguna palabra quede partida.
 
-El movimiento sigue la Tabla 2, con curvas que arrancan rápido y frenan suave, sin rebotes y sin animaciones que se repitan, por lo que mientras se espera algo se muestra un texto fijo en lugar de una ruedita. Con "Quitar animaciones" del teléfono o con "Reducir movimiento" de Ajustes rige la última columna.
+| Uso | Tamaño (sp) | Peso |
+|---|---|---|
+| Números grandes | 40 | 600 |
+| Título grande | 34 | 700 |
+| Indicación de la navegación | 28 | 700 |
+| Números medianos | 28 | 600 |
+| Título de tarjeta | 22 | 600 |
+| Título de sección | 20 | 600 |
+| Texto destacado | 17 | 600 |
+| Botón | 17 | 500 |
+| Texto común | 17 | 400 |
+| Subtítulo | 15 | 400 |
+| Título de la barra superior | 14 | 600 |
+| Nota | 13 | 400 |
+| Leyenda | 12 | 500 |
+
+*Tabla 2. Escala de letra.*
+
+Los íconos son los de Material en su variante redondeada, de 24 dp en filas, barras y botones, de 20 dp en chips y botones redondos y de 56 dp en los estados de pantalla, como una lista vacía o un error de conexión. No crecen con la letra, ya que lo que hay que leer es el texto y de esta manera los controles mantienen su forma. En las filas y las tarjetas el ícono va en cian dentro de un cuadro hundido de 40 dp, y la variante de contorno quedó para las pestañas inactivas, que hoy aparecen solamente en la galería. Las únicas flechas de otra variante son las de rumbo de `orientacion_service.dart`, que es parte de la lógica y no se tocó.
+
+Las formas usan sólo cuatro radios, 12 dp en los campos, las pistas y el cuadro de los íconos, 14 en los botones, 20 en las tarjetas y 24 en las hojas y las barras flotantes, mientras que los chips y los botones de ícono son redondos del todo. Los botones y los campos miden 52 dp de alto y los botones redondos tienen 36 dp de dibujo adentro de un área de 48 dp. El espaciado es de 16 dp a los costados y dentro de las tarjetas, 12 dp entre tarjetas y 28 dp entre secciones.
+
+El movimiento sigue la Tabla 3, con curvas que arrancan rápido y frenan suave, sin rebotes y sin animaciones que se repitan, por lo que mientras se espera algo se muestra un texto fijo en lugar de una ruedita. Con "Quitar animaciones" del teléfono o con "Reducir movimiento" de Ajustes rige la última columna.
 
 | Acción | Normal | Con movimiento reducido |
 |---|---|---|
@@ -47,7 +69,7 @@ El movimiento sigue la Tabla 2, con curvas que arrancan rápido y frenan suave, 
 | Cambio de tramo | Colores en 300 ms y cabezal por la ruta en 350 ms | El cabezal salta |
 | Llegada | Fundido de 200 ms | Fundido de 120 ms |
 
-*Tabla 2. Duración de las animaciones principales.*
+*Tabla 3. Duración de las animaciones principales.*
 
 Los componentes están en `lib/design/components/` y ninguna pantalla define colores sueltos, ya que todos salen de `lib/design/colores.dart` con su contraste anotado. Cada control tiene al menos 48 dp de área táctil, un nombre en español para TalkBack y el foco visible con un borde de acento de 2 px. La letra al 200 % se comprueba con tests que usan Inter de verdad y revisan que ningún texto se corte ni se parta, y en total quedaron 334 tests.
 
@@ -79,7 +101,7 @@ Esta fase se hizo tres veces. La primera versión se descartó porque se veía p
 
 ### Fase 3, animaciones
 
-Se implementó la Tabla 2 y se creó la pantalla Ajustes de la Figura 3, para poder reducir el movimiento desde la app sin depender del ajuste del teléfono y para poder apagar la vibración. Las hojas inferiores pasaron a tener una ruta propia, debido a que la de Material no dejaba cambiar la curva ni hacer el fundido y TalkBack la anunciaba como "Dialog". Se probó en el teléfono y anduvo. La fase 4, que iba a sumar texturas, se canceló.
+Se implementó la Tabla 3 y se creó la pantalla Ajustes de la Figura 3, para poder reducir el movimiento desde la app sin depender del ajuste del teléfono y para poder apagar la vibración. Las hojas inferiores pasaron a tener una ruta propia, debido a que la de Material no dejaba cambiar la curva ni hacer el fundido y TalkBack la anunciaba como "Dialog". Se probó en el teléfono y anduvo. La fase 4, que iba a sumar texturas, se canceló.
 
 <p align="center">
   <img src="estetica/fase-3-ajustes.jpg" width="180" alt="Pantalla Ajustes, con Ajustes de voz y los interruptores Reducir movimiento y Vibración.">
