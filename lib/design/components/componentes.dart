@@ -17,7 +17,9 @@
 //                            PestanaBarra (píldora de pestañas),
 //                            BarraAcciones y AccionPildora (píldora de
 //                            acciones)
-//   botones.dart             BotonPrincipal (acento plano),
+//   boton_pulso.dart         BotonPulso (círculo de acento con ondas, la
+//                            acción del inicio)
+//   botones.dart            BotonPrincipal (acento plano),
 //                            BotonPrincipalGrande (llena el lugar),
 //                            BotonSecundario, BotonRedondo, FilaBotones
 //                            (lado a lado o apilados)
@@ -59,6 +61,7 @@
 // abre con: flutter run --flavor user -t lib/main_galeria.dart
 export 'aviso.dart';
 export 'barras.dart';
+export 'boton_pulso.dart';
 export 'botones.dart';
 export 'campo_texto.dart';
 export 'chips.dart';

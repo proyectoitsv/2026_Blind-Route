@@ -66,6 +66,7 @@ Future<ObservadorRutas> armarPantalla(
   WidgetTester tester,
   Widget pantalla, {
   double escala = 1,
+  bool asentar = true,
 }) async {
   tester.view.physicalSize = telefono * 3;
   tester.view.devicePixelRatio = 3;
@@ -80,7 +81,13 @@ Future<ObservadorRutas> armarPantalla(
       home: pantalla,
     ),
   );
-  await tester.pumpAndSettle();
+  // Sin asentar, para una pantalla con algo que se repite (las ondas del
+  // inicio): pumpAndSettle no terminaría nunca.
+  if (asentar) {
+    await tester.pumpAndSettle();
+  } else {
+    await tester.pump();
+  }
   return observador;
 }
 

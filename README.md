@@ -1,185 +1,218 @@
 <p align="center">
-  <img src="docs/estetica/fase-1-icono.png" width="140" alt="Logo de BlindRoute: un pin azul y un camino que va de azul a verde, sobre un fondo oscuro.">
+  <img src="docs/estetica/fase-1-icono.png" width="128" alt="Logotipo de BlindRoute: un marcador de ubicación azul y un camino que pasa de azul a verde, sobre fondo oscuro.">
 </p>
 
 <h1 align="center">BlindRoute</h1>
 
 <p align="center">
-  Navegación por voz dentro de edificios para personas con discapacidad visual.<br>
-  <strong>Te dice por dónde ir, paso a paso, donde el GPS no llega.</strong>
+  <strong>Navegación guiada por voz en interiores para personas con discapacidad visual.</strong><br>
+  <sub>Indica el camino paso a paso dentro de edificios, donde el GPS no llega.</sub>
 </p>
 
 <p align="center">
   <img alt="Android 7.0 o superior" src="https://img.shields.io/badge/Android-7.0%2B-3DDC84?logo=android&logoColor=white">
-  <img alt="iOS: todavía no" src="https://img.shields.io/badge/iOS-todav%C3%ADa%20no-8A8F98?logo=apple&logoColor=white">
   <img alt="Flutter 3.41" src="https://img.shields.io/badge/Flutter-3.41-02569B?logo=flutter&logoColor=white">
   <img alt="Dart 3.11" src="https://img.shields.io/badge/Dart-3.11-0175C2?logo=dart&logoColor=white">
   <img alt="Compatible con TalkBack" src="https://img.shields.io/badge/accesible-TalkBack-29D9FF">
 </p>
 
-<p align="center">
-  <img src="docs/estetica/fase-5.7-guiando.jpg" width="260" alt="Pantalla de navegación con la indicación Seguí derecho, 11 metros, la ruta sobre el plano y la posición de la persona.">
-</p>
+<table align="center">
+  <tr>
+    <td align="center" width="33%"><img src="docs/estetica/inicio.jpg" width="220" alt="Pantalla de inicio con un círculo celeste en el centro para comenzar a navegar."></td>
+    <td align="center" width="33%"><img src="docs/estetica/fase-5.7-guiando.jpg" width="220" alt="Pantalla de navegación con la indicación para seguir derecho 11 metros, la ruta sobre el plano y la posición de la persona."></td>
+    <td align="center" width="33%"><img src="docs/estetica/fase-5.7-llegaste.jpg" width="220" alt="Pantalla de navegación con el aviso de llegada y los tramos recorridos en verde."></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>1.</b> Comenzar</sub></td>
+    <td align="center"><sub><b>2.</b> Seguir las indicaciones</sub></td>
+    <td align="center"><sub><b>3.</b> Llegar al destino</sub></td>
+  </tr>
+</table>
 
 ---
 
-## Índice
+## Contenido
 
-- [Qué es](#qué-es)
-- [Cómo funciona](#cómo-funciona)
-- [Las dos apps](#las-dos-apps)
-- [Capturas](#capturas)
-- [Qué hace hoy](#qué-hace-hoy)
-- [Compatibilidad](#compatibilidad)
-- [Estado del proyecto](#estado-del-proyecto)
-- [Cómo compilar e instalar](#cómo-compilar-e-instalar)
-- [Estructura del código](#estructura-del-código)
-- [Tecnologías](#tecnologías)
-- [Datos y privacidad](#datos-y-privacidad)
-- [Más documentación](#más-documentación)
+1. [Descripción](#descripción)
+2. [Funcionamiento](#funcionamiento)
+3. [Aplicaciones](#aplicaciones)
+4. [Funciones principales](#funciones-principales)
+5. [Accesibilidad](#accesibilidad)
+6. [Capturas de pantalla](#capturas-de-pantalla)
+7. [Requisitos y compatibilidad](#requisitos-y-compatibilidad)
+8. [Estado del proyecto](#estado-del-proyecto)
+9. [Compilación e instalación](#compilación-e-instalación)
+10. [Estructura del código](#estructura-del-código)
+11. [Tecnologías](#tecnologías)
+12. [Datos y privacidad](#datos-y-privacidad)
+13. [Documentación adicional](#documentación-adicional)
 
-## Qué es
+## Descripción
 
-Moverse solo por un edificio que no se conoce, como una facultad, un hospital o un shopping, es difícil para una persona ciega o con baja visión, y el GPS del teléfono no sirve bajo techo. **BlindRoute** resuelve eso: la persona dice a dónde quiere ir y la app la guía **por voz**, con indicaciones como "Girá a la izquierda" o "Seguí derecho", hasta dejarla frente al lugar.
+Desplazarse sin ayuda por un edificio desconocido, como una universidad, un hospital o un centro comercial, representa una dificultad importante para las personas ciegas o con baja visión. Además, el GPS de los teléfonos no funciona en interiores.
 
-La app está pensada para usarse **sin mirar la pantalla**: se toca en cualquier parte para hablar, todo lo importante se dice en voz alta y funciona con TalkBack, el lector de pantalla de Android.
+**BlindRoute** ofrece una solución a este problema. La persona indica en voz alta a qué lugar desea ir y la aplicación la guía **mediante instrucciones habladas** (seguir derecho, girar a la izquierda, tomar la escalera) hasta dejarla frente al destino.
 
-## Cómo funciona
+La aplicación está diseñada para utilizarse **sin necesidad de mirar la pantalla**: basta con tocarla en cualquier punto para hablar, toda la información importante se comunica por voz y es compatible con TalkBack, el lector de pantalla de Android.
 
-Antes de usarla, el edificio se prepara una sola vez: se colocan **beacons**, unos dispositivos chicos que emiten una señal Bluetooth, y se carga su plano en la app del administrador. Después, cada vez que alguien navega, pasa esto:
+## Funcionamiento
 
-| | Qué pasa | Con qué |
+El edificio se prepara una única vez. Se instalan **balizas Bluetooth** (*beacons*), pequeños dispositivos que emiten una señal de forma continua, y se carga el plano de cada piso en la aplicación de administración. A partir de ese momento, cada recorrido sigue estos pasos:
+
+| Paso | Descripción | Recurso utilizado |
 |:---:|---|---|
-| 1 | El teléfono escucha los beacons cercanos y estima **dónde estás** dentro del plano. | Bluetooth |
-| 2 | Decís **a dónde querés ir**, por nombre o por tipo de lugar ("baño", "quiero comer"). | Micrófono |
-| 3 | La app calcula el **camino** esquivando paredes y zonas por donde no se puede pasar. | Plano del edificio |
-| 4 | Te **guía por voz**, sabiendo hacia dónde estás mirando, y corrige si te desviás. | Voz y brújula |
-| 5 | Al llegar, te hace **girar hasta quedar de frente** al lugar y te avisa. | Brújula |
+| **1** | El teléfono detecta las balizas cercanas y estima **la posición** de la persona sobre el plano. | Bluetooth |
+| **2** | La persona indica **el destino**, por nombre o por tipo de lugar (por ejemplo, «baño» o «comer»). | Micrófono |
+| **3** | La aplicación calcula **el camino**, evitando paredes y zonas no transitables. | Plano del edificio |
+| **4** | La aplicación **guía por voz** según la dirección hacia la que mira la persona y recalcula la ruta si se desvía. | Voz y brújula |
+| **5** | Al llegar, indica hacia dónde girar hasta **quedar de frente** al lugar y anuncia la llegada. | Brújula |
 
-## Las dos apps
+## Aplicaciones
 
-Del mismo código salen dos aplicaciones, que se instalan por separado:
+El proyecto genera dos aplicaciones a partir del mismo código, que se instalan por separado:
 
-| App | Para quién | Para qué |
+| Aplicación | Destinada a | Función |
 |---|---|---|
-| **BlindRoute** | La persona que navega | Descargar los mapas publicados y moverse por el edificio |
-| **BlindRoute Admin** | Quien prepara el edificio | Cargar edificios, pisos, beacons, zonas y lugares, calibrar la señal y publicar los mapas |
+| **BlindRoute** | Personas que necesitan orientarse | Descargar los mapas publicados y recorrer el edificio |
+| **BlindRoute Admin** | Responsables de preparar el edificio | Cargar edificios, pisos, balizas, zonas y lugares, calibrar la señal y publicar los mapas |
 
-## Capturas
-
-Generadas en la computadora con datos y planos de ejemplo.
-
-**App del usuario**
+## Funciones principales
 
 <table>
   <tr>
-    <td align="center"><img src="docs/estetica/fase-5.7-ficha.jpg" width="190" alt="Inicio con la ficha Comenzar a navegar y las opciones Mapas disponibles y Ajustes."><br><sub>Inicio</sub></td>
-    <td align="center"><img src="docs/estetica/fase-5.7-lista-destinos.jpg" width="190" alt="Hoja con la pregunta A dónde querés ir y la lista de lugares."><br><sub>Elegir destino</sub></td>
-    <td align="center"><img src="docs/estetica/fase-5.7-llegaste.jpg" width="190" alt="Navegación con el aviso Llegaste y los tramos recorridos en verde."><br><sub>Llegada</sub></td>
-    <td align="center"><img src="docs/estetica/fase-5.2-descargando.jpg" width="190" alt="Catálogo de mapas disponibles, con un mapa descargándose."><br><sub>Mapas disponibles</sub></td>
+    <th width="50%">Aplicación para la persona usuaria</th>
+    <th width="50%">Aplicación de administración</th>
+  </tr>
+  <tr valign="top">
+    <td>
+      <ul>
+        <li><b>Detección automática</b> del edificio y del piso a partir de las balizas.</li>
+        <li><b>Destino por voz</b>, por nombre o por categoría, o bien desde una lista.</li>
+        <li><b>Indicaciones anticipadas</b> antes de cada giro y recálculo de la ruta ante un desvío.</li>
+        <li><b>Recorridos entre pisos</b> por escalera o ascensor.</li>
+        <li><b>Orientación al llegar</b>, hasta quedar de frente al lugar.</li>
+        <li><b>Catálogo de mapas</b> para descargar, actualizar o eliminar.</li>
+        <li><b>Preferencias</b> de velocidad, volumen y tono de la voz, vibración y reducción de movimiento.</li>
+      </ul>
+    </td>
+    <td>
+      <ul>
+        <li>Edificios y pisos con la imagen del plano y su <b>escala en metros</b>.</li>
+        <li>Ubicación de <b>balizas</b>, <b>zonas no transitables</b> y <b>lugares de interés</b> (aulas, baños, escaleras, ascensores).</li>
+        <li><b>Calibración</b> de la señal y <b>puntos de referencia</b> para mejorar la precisión.</li>
+        <li><b>Publicación en la nube</b> de los mapas para la aplicación de la persona usuaria.</li>
+        <li><b>Panel de ajustes</b> de la navegación, por edificio o generales.</li>
+      </ul>
+    </td>
   </tr>
 </table>
 
-**App del administrador**
+## Accesibilidad
 
+La accesibilidad es el criterio principal del diseño:
+
+- **Lector de pantalla:** todos los controles tienen etiquetas en español para TalkBack.
+- **Texto ampliado:** las pantallas admiten el tamaño de letra al 200 % sin que se corte la información importante.
+- **Contraste:** cada color se verificó según las pautas WCAG (texto de al menos 4,5:1 y controles de al menos 3:1).
+- **Áreas táctiles** de 48 dp como mínimo.
+- **Movimiento reducido:** se respeta la opción «Quitar animaciones» del sistema y existe un ajuste propio en la aplicación.
+
+## Capturas de pantalla
+
+Las capturas se generaron en la computadora con datos y planos de ejemplo.
+
+<details open>
+<summary><b>Aplicación para la persona usuaria</b></summary>
+<br>
 <table>
   <tr>
-    <td align="center"><img src="docs/estetica/fase-5.4-edificios.jpg" width="190" alt="Lista de edificios con el botón Agregar edificio."><br><sub>Edificios</sub></td>
-    <td align="center"><img src="docs/estetica/fase-5.4-pisos.jpg" width="190" alt="Lista de pisos de un edificio, con botones para probar la navegación, cambiar el número y eliminar."><br><sub>Pisos</sub></td>
-    <td align="center"><img src="docs/estetica/fase-5.7-panel-admin.jpg" width="190" alt="Panel de ajustes de navegación con deslizadores."><br><sub>Ajustes de navegación</sub></td>
+    <td align="center"><img src="docs/estetica/fase-5.7-lista-destinos.jpg" width="180" alt="Lista de destinos para elegir a qué lugar ir."><br><sub>Elección del destino</sub></td>
+    <td align="center"><img src="docs/estetica/fase-5.2-descargando.jpg" width="180" alt="Catálogo de mapas disponibles, con un mapa en descarga."><br><sub>Mapas disponibles</sub></td>
+    <td align="center"><img src="docs/estetica/fase-3-ajustes.jpg" width="180" alt="Pantalla de ajustes con las opciones de voz, movimiento y vibración."><br><sub>Ajustes</sub></td>
   </tr>
 </table>
+</details>
 
-**Con la letra al 200 %**
-
+<details open>
+<summary><b>Aplicación de administración</b></summary>
+<br>
 <table>
   <tr>
-    <td align="center"><img src="docs/estetica/fase-5.7-guiando-200.jpg" width="190" alt="Navegación con la letra al 200 %, con la indicación en primer lugar."><br><sub>Navegación</sub></td>
-    <td align="center"><img src="docs/estetica/fase-5.2-catalogo-200.jpg" width="190" alt="Catálogo de mapas con la letra al 200 %."><br><sub>Mapas disponibles</sub></td>
+    <td align="center"><img src="docs/estetica/fase-5.4-edificios.jpg" width="180" alt="Lista de edificios con el botón para agregar uno nuevo."><br><sub>Edificios</sub></td>
+    <td align="center"><img src="docs/estetica/fase-5.6-zonas.jpg" width="180" alt="Edición de las zonas no transitables sobre el plano."><br><sub>Configuración del piso</sub></td>
+    <td align="center"><img src="docs/estetica/fase-5.7-panel-admin.jpg" width="180" alt="Panel de ajustes de navegación con controles deslizantes."><br><sub>Ajustes de navegación</sub></td>
   </tr>
 </table>
+</details>
 
-## Qué hace hoy
+<details>
+<summary><b>Con la letra al 200 %</b></summary>
+<br>
+<table>
+  <tr>
+    <td align="center"><img src="docs/estetica/fase-5.7-guiando-200.jpg" width="180" alt="Navegación con la letra al 200 %, con la indicación en primer lugar."><br><sub>Navegación</sub></td>
+    <td align="center"><img src="docs/estetica/fase-5.2-catalogo-200.jpg" width="180" alt="Catálogo de mapas con la letra al 200 %."><br><sub>Mapas disponibles</sub></td>
+  </tr>
+</table>
+</details>
 
-**Para la persona que navega**
+## Requisitos y compatibilidad
 
-- **Encuentra sola el edificio y el piso** a partir de los beacons que escucha.
-- **Destino por voz:** se toca cualquier parte de la pantalla y se dice el nombre o el tipo de lugar. También se puede elegir de una lista.
-- **Indicaciones habladas** que se anticipan a cada esquina, y una ruta nueva si te pasás o tomás otro pasillo.
-- **Varios pisos:** te lleva hasta la escalera o el ascensor, y manteniendo apretada la pantalla se cambia de piso.
-- **Orientación al llegar:** te indica para dónde girar hasta quedar de frente al lugar.
-- **Mapas disponibles:** se descargan, actualizan o quitan desde un catálogo.
-- **A tu gusto:** velocidad, volumen, tono y repetición de la voz, vibración y "Reducir movimiento".
-
-**Para quien prepara el edificio**
-
-- Edificios y pisos, con la imagen del plano y su escala en metros.
-- Ubicación de los **beacons**, **zonas** por donde no se puede pasar y **lugares** (aulas, baños, escaleras, ascensores) con palabras para encontrarlos.
-- **Calibración** de la señal y **puntos clave** para afinar la posición en lugares puntuales.
-- **Publicación en la nube**, para que los mapas le lleguen a la app del usuario.
-- Panel para regular la navegación caminando, por edificio o en general.
-
-**Accesibilidad**
-
-- Funciona con **TalkBack**, con etiquetas en español en los controles propios.
-- La pantalla se puede usar con **letra al 200 %** sin que se corten los textos importantes.
-- Contraste calculado para cada color y áreas táctiles de al menos **48 dp**.
-- Respeta "Quitar animaciones" del teléfono.
-
-## Compatibilidad
-
-| Plataforma | Estado |
+| Requisito | Detalle |
 |---|---|
-| **Android** | ✅ Desde **Android 7.0** (API 24), compilada para **Android 16** (API 36). Se prueba en un Samsung Galaxy S24 Ultra. |
-| **iOS** | ⏳ **Todavía no.** Existe la carpeta `ios/` que crea Flutter (iOS 13 o superior), pero faltan los permisos de Bluetooth y micrófono, y las dos apps están armadas solamente para Android. |
+| **Sistema operativo** | Android 7.0 (API 24) o superior. Compilada para Android 16 (API 36). |
+| **Dispositivo de prueba** | Samsung Galaxy S24 Ultra |
+| **Sensores** | Bluetooth y brújula |
+| **Entorno** | Un edificio con balizas instaladas y su mapa publicado |
 
-Para navegar hacen falta un teléfono con **Bluetooth y brújula**, y un edificio con **beacons instalados** y su mapa publicado.
+**Permisos que solicita la aplicación:**
 
-| Permiso | Para qué se usa |
+| Permiso | Uso |
 |---|---|
-| Bluetooth | Escuchar los beacons |
-| Ubicación | Android la exige para buscar dispositivos Bluetooth |
-| Micrófono | Decir el destino |
-| Fotos | Elegir la imagen del plano (administrador) |
-| Internet | Bajar y publicar mapas |
-| Vibración | Avisos al doblar y al llegar |
+| Bluetooth | Detectar las balizas |
+| Ubicación | Requerido por Android para buscar dispositivos Bluetooth |
+| Micrófono | Indicar el destino por voz |
+| Fotos | Seleccionar la imagen del plano (solo administración) |
+| Internet | Descargar y publicar mapas |
+| Vibración | Avisos al girar y al llegar |
 
 ## Estado del proyecto
 
-El proyecto está en desarrollo y todavía se está calibrando en el teléfono.
+El proyecto se encuentra en desarrollo y en etapa de calibración en dispositivos reales.
 
-| Parte | Estado |
+| Componente | Estado |
 |---|:---:|
-| Posicionamiento, rutas y guía por voz | 🔄 |
-| App del administrador y publicación en la nube | ✅ |
-| Rediseño visual (rama `estética`) | ✅ |
-| Prueba en el teléfono de las pantallas rediseñadas | ⏳ |
-| Versión para iOS | ⏳ |
+| Posicionamiento, cálculo de rutas y guía por voz | 🔄 En ajuste |
+| Aplicación de administración y publicación en la nube | ✅ Completo |
+| Rediseño visual | ✅ Completo |
+| Pruebas en el teléfono de las pantallas rediseñadas | ⏳ Pendiente |
 
-✅ hecho · 🔄 en ajuste · ⏳ pendiente. El rediseño se explica en [`docs/ESTETICA.md`](docs/ESTETICA.md).
+El proceso del rediseño visual se documenta en [`docs/ESTETICA.md`](docs/ESTETICA.md).
 
-## Cómo compilar e instalar
+## Compilación e instalación
 
-### Requisitos
+**Requisitos:** Flutter 3.41 (Dart 3.11), el SDK de Android y un teléfono con la depuración USB activada.
 
-- **Flutter 3.41** (Dart 3.11) y el SDK de Android.
-- Un teléfono Android con la **depuración USB** activada.
-
-### Correr las apps
+**1. Instalar las dependencias**
 
 ```bash
 flutter pub get
 ```
 
+**2. Ejecutar la aplicación para la persona usuaria**
+
 ```bash
 flutter run --flavor user -t lib/main_user.dart
 ```
+
+**3. Ejecutar la aplicación de administración**
 
 ```bash
 flutter run --flavor admin -t lib/main_admin.dart
 ```
 
-### Generar un APK e instalarlo
+<details>
+<summary><b>Generar e instalar un APK</b></summary>
 
 ```bash
 flutter build apk --debug --flavor user -t lib/main_user.dart
@@ -189,9 +222,11 @@ flutter build apk --debug --flavor user -t lib/main_user.dart
 adb install -r build/app/outputs/flutter-apk/app-user-debug.apk
 ```
 
-Conviene instalar con `adb install -r` y no con `flutter install`, que puede desinstalar la app y borrar sus datos. Para la del administrador, se cambia `user` por `admin`.
+Se recomienda instalar con `adb install -r` en lugar de `flutter install`, ya que este último puede desinstalar la aplicación y borrar sus datos. Para la aplicación de administración, se reemplaza `user` por `admin`.
+</details>
 
-### Tests y galería de componentes
+<details>
+<summary><b>Pruebas automáticas y galería de componentes</b></summary>
 
 ```bash
 flutter test
@@ -201,51 +236,52 @@ flutter test
 flutter run --flavor user -t lib/main_galeria.dart
 ```
 
-La galería muestra todos los componentes visuales. Se instala en lugar de la app del usuario, y se vuelve con el comando de arriba.
+La galería muestra todos los componentes visuales. Se instala en lugar de la aplicación para la persona usuaria; para volver, se ejecuta nuevamente el paso 2.
+</details>
 
 ## Estructura del código
 
-Todo está en `lib/`, y las dos apps comparten casi todo:
+El código se encuentra en `lib/` y es compartido por ambas aplicaciones:
 
-| Dónde | Qué hay |
+| Ubicación | Contenido |
 |---|---|
-| `main_user.dart`, `main_admin.dart` | El punto de entrada de cada app |
+| `main_user.dart`, `main_admin.dart` | Punto de entrada de cada aplicación |
 | `pantalla_*.dart`, `vista_navegacion.dart`, `mapa_widget.dart` | Pantallas y dibujo del plano |
-| `design/` | Sistema de diseño: colores, letra, formas, movimiento y componentes |
-| `bluetooth_helper.dart`, `procesador_senal.dart`, `posicionador.dart`, `filtro_un_euro.dart` | De la señal Bluetooth a la posición |
+| `design/` | Sistema de diseño: colores, tipografía, formas, movimiento y componentes |
+| `bluetooth_helper.dart`, `procesador_senal.dart`, `posicionador.dart`, `filtro_un_euro.dart` | Procesamiento de la señal Bluetooth y cálculo de la posición |
 | `pathfinder.dart`, `grilla_nav.dart`, `seguidor_ruta.dart`, `orientador_llegada.dart` | Cálculo y seguimiento de la ruta |
-| `voz_service.dart`, `buscador_lugares.dart` | Voz y búsqueda de lugares |
-| `database.dart` | Base de datos del teléfono |
-| `supabase_service.dart`, `supabase_config.dart` | Nube |
+| `voz_service.dart`, `buscador_lugares.dart` | Síntesis y reconocimiento de voz, búsqueda de lugares |
+| `database.dart` | Base de datos local |
+| `supabase_service.dart`, `supabase_config.dart` | Conexión con la nube |
 
-Los tests están en `test/` y el SQL de la nube, en `supabase/`.
+Las pruebas automáticas se encuentran en `test/` y los scripts SQL de la nube, en `supabase/`.
 
 ## Tecnologías
 
-| Área | Librería |
+| Área | Bibliotecas |
 |---|---|
-| Interfaz | Flutter, Material 3 y la fuente Inter |
+| Interfaz | Flutter, Material 3, tipografía Inter |
 | Bluetooth | `flutter_blue_plus` |
 | Sensores | `flutter_compass`, `sensors_plus` |
 | Voz | `flutter_tts`, `speech_to_text` |
-| Datos en el teléfono | `sqflite`, `shared_preferences`, `path_provider` |
+| Almacenamiento local | `sqflite`, `shared_preferences`, `path_provider` |
 | Nube | `supabase_flutter` |
-| Otros | `permission_handler`, `image_picker`, `wakelock_plus` |
+| Otras | `permission_handler`, `image_picker`, `wakelock_plus` |
 
 ## Datos y privacidad
 
-- La **posición se calcula en el teléfono** y no se manda a la nube.
-- La app del usuario **no pide cuenta**. Sólo el administrador inicia sesión, con email y contraseña.
-- La nube guarda los **mapas publicados**, sus planos y los ajustes de navegación.
-- La voz se reconoce con el **servicio de voz del teléfono**, y sólo cuando se pide un destino.
+- La **posición se calcula en el propio teléfono** y no se envía a la nube.
+- La aplicación para la persona usuaria **no requiere una cuenta**. Solo la administración inicia sesión, con correo electrónico y contraseña.
+- La nube almacena únicamente los **mapas publicados**, sus planos y los ajustes de navegación.
+- El reconocimiento de voz utiliza el **servicio del propio teléfono** y se activa solo al solicitar un destino.
 
-## Más documentación
+## Documentación adicional
 
-| Archivo | Para qué sirve |
+| Archivo | Contenido |
 |---|---|
-| [`docs/ESTETICA.md`](docs/ESTETICA.md) | Cómo quedó la parte visual, cómo se llegó y qué falta |
-| [`supabase/ajustes_navegacion.sql`](supabase/ajustes_navegacion.sql) | Tabla y permisos de los ajustes en la nube |
+| [`docs/ESTETICA.md`](docs/ESTETICA.md) | Diseño visual actual, su evolución y tareas pendientes |
+| [`supabase/ajustes_navegacion.sql`](supabase/ajustes_navegacion.sql) | Tabla y permisos de los ajustes de navegación en la nube |
 
 ---
 
-<p align="center"><sub>Este repositorio no incluye una licencia de código abierto. La fuente Inter se distribuye bajo la licencia OFL.</sub></p>
+<p align="center"><sub>Este repositorio no incluye una licencia de código abierto. La tipografía Inter se distribuye bajo la licencia SIL Open Font License.</sub></p>

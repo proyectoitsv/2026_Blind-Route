@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:blindroute/design/design.dart';
 import 'package:blindroute/modo_automatico.dart';
 import 'package:blindroute/pantalla_ajustes.dart';
@@ -13,8 +15,8 @@ import 'ayudas_pantallas.dart';
 // INICIO DE LA APP DEL USUARIO (fase 5.1 del rediseño)
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// La pantalla migrada al sistema de diseño: el botón grande que llena el
-// lugar libre, las dos filas, lo que dice TalkBack y en qué orden, las guías
+// La pantalla migrada al sistema de diseño: el botón con pulso que ocupa la
+// primera vista, las dos filas debajo (a la vista desplazando), lo que dice TalkBack y en qué orden, las guías
 // de área táctil, etiquetas y contraste, la letra al 200 % (con Inter de
 // verdad, ayudas_pantallas.dart) y adónde lleva cada cosa (cortando la voz
 // antes). Va con el MaterialApp de la app, con el tema de antes, como en
@@ -25,6 +27,10 @@ import 'ayudas_pantallas.dart';
 // ModoAutomatico arranca el Bluetooth y PantallaMapasOnline consulta la nube
 // y la base local: de esas dos se mira qué ruta se abre y se saca antes de
 // que se arme.
+//
+// Las ondas del botón se repiten sin parar: con ellas, pumpAndSettle no
+// termina nunca. Los tests van con «Reducir movimiento» prendido, salvo el
+// de las ondas, que lo apaga.
 
 /// Arma el inicio como en la app, con la letra en [escala].
 Future<ObservadorRutas> _armar(WidgetTester tester, {double escala = 1}) =>
@@ -40,9 +46,10 @@ void main() {
 
   setUpAll(cargarInter);
 
-  setUp(() {
+  setUp(() async {
     SharedPreferences.setMockInitialValues({});
     AjustesMovimiento.instancia.reiniciarParaTests();
+    await AjustesMovimiento.instancia.cambiarReducirMovimiento(true);
     llamadasVoz.clear();
     mensajero.setMockMethodCallHandler(canalVoz, (llamada) async {
       llamadasVoz.add(llamada.method);
@@ -52,38 +59,102 @@ void main() {
 
   tearDown(() => mensajero.setMockMethodCallHandler(canalVoz, null));
 
-  testWidgets('al abrirse inicializa la voz; el botón grande llena el lugar '
-      'libre y las filas van abajo', (tester) async {
+  testWidgets('al abrirse inicializa la voz; el botón con pulso ocupa la '
+      'primera vista y las filas quedan debajo', (tester) async {
     await _armar(tester);
     // inicializar() fija el idioma de la voz.
     expect(llamadasVoz, contains('setLanguage'));
-    // Un solo botón principal: el grande.
-    expect(find.byType(BotonPrincipalGrande), findsOneWidget);
+    // Un solo botón principal: el del pulso.
+    expect(find.byType(BotonPulso), findsOneWidget);
+    expect(find.byType(BotonPrincipalGrande), findsNothing);
     expect(find.byType(BotonPrincipal), findsNothing);
-    expect(find.byType(FilaGrupo), findsNWidgets(2));
-    // No queda lugar libre: el grupo va abajo, con su margen, y el botón
-    // grande ocupa todo lo demás.
-    final grupo = tester.getRect(find.byType(GrupoFilas));
-    final boton = tester.getRect(find.byType(BotonPrincipalGrande));
+    // Las filas ya están armadas (TalkBack las encuentra), aunque no se vean.
+    expect(find.byType(FilaGrupo, skipOffstage: false), findsNWidgets(2));
+    // El círculo va en el medio, a lo ancho.
+    final circulo = tester.getCenter(find.byType(BotonPulso));
+    expect(circulo.dx, moreOrLessEquals(telefono.width / 2));
+    // Las filas no se ven de entrada: empiezan debajo de la pantalla.
+    final grupo = tester.getRect(find.byType(GrupoFilas, skipOffstage: false));
+    expect(grupo.top, greaterThanOrEqualTo(telefono.height));
+    final desplazable = tester.state<ScrollableState>(find.byType(Scrollable));
+    expect(desplazable.position.maxScrollExtent, greaterThan(0));
+    // Desplazando, aparecen enteras.
+    await tester.scrollUntilVisible(find.text('Ajustes'), 200);
+    await tester.pumpAndSettle();
     expect(
-      grupo.bottom,
-      moreOrLessEquals(telefono.height - EspaciadoApp.entreSecciones),
-    );
-    expect(
-      grupo.top - boton.bottom,
-      moreOrLessEquals(EspaciadoApp.entreSecciones),
-    );
-    expect(boton.height, greaterThan(telefono.height / 2));
-    // Con la letra normal entra todo, sin desplazarse.
-    expect(
-      tester
-          .state<ScrollableState>(find.byType(Scrollable))
-          .position
-          .maxScrollExtent,
-      0,
+      tester.getRect(find.byType(GrupoFilas)).bottom,
+      lessThanOrEqualTo(telefono.height),
     );
     // Es la primera pantalla: sin botón para volver.
     expect(find.byTooltip('Volver'), findsNothing);
+  });
+
+  testWidgets('las ondas se mueven sólo sin «Reducir movimiento» y se '
+      'frenan con otra pantalla encima', (tester) async {
+    // Lo guardado se escribe con el reloj de verdad: con el falso del test
+    // no termina nunca.
+    await tester.runAsync(
+      () => AjustesMovimiento.instancia.cambiarReducirMovimiento(false),
+    );
+    final observador = await armarPantalla(
+      tester,
+      const PantallaPrincipalUsuario(),
+      asentar: false,
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(tester.binding.hasScheduledFrame, isTrue);
+    // Con Ajustes encima, el ticker se apaga y la pantalla se asienta.
+    await tester.scrollUntilVisible(find.text('Ajustes'), 200);
+    await tester.tap(find.text('Ajustes'));
+    await tester.pumpAndSettle();
+    expect(observador.abiertas.last, isA<RutaApp<void>>());
+    expect(tester.binding.hasScheduledFrame, isFalse);
+    // Con «Reducir movimiento», al volver no se mueven.
+    await tester.runAsync(
+      () => AjustesMovimiento.instancia.cambiarReducirMovimiento(true),
+    );
+    await tester.tap(find.byTooltip('Volver'));
+    await tester.pumpAndSettle();
+    expect(find.byType(BotonPulso), findsOneWidget);
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets('toda la primera vista lleva a navegar: el círculo, sus '
+      'costados, la frase de arriba y la pista de abajo', (tester) async {
+    final observador = await _armar(tester);
+    final circulo = tester.getCenter(find.byIcon(Icons.navigation_rounded));
+    for (final lugar in [
+      circulo,
+      // A un costado del círculo, cerca del borde de la pantalla.
+      Offset(24, circulo.dy),
+      Offset(telefono.width - 24, circulo.dy + 120),
+      tester.getCenter(find.text('Navegación interior para todos')),
+      tester.getCenter(find.text('Mapas y ajustes')),
+    ]) {
+      final antes = observador.abiertas.length;
+      await tester.tapAt(lugar);
+      expect(observador.abiertas.length, antes + 1, reason: '$lugar');
+      final ruta = observador.abiertas.last as RutaApp<void>;
+      final contexto = tester.element(find.byType(PantallaPrincipalUsuario));
+      expect(ruta.builder(contexto).runtimeType, ModoAutomatico);
+      Navigator.of(contexto).removeRoute(ruta);
+      await tester.pumpAndSettle();
+    }
+  });
+
+  test('la flecha del círculo va y viene a los costados y se asienta', () {
+    expect(BotonPulso.giroFlecha(0), 0);
+    final giros = [
+      for (var i = 0; i <= 100; i++) BotonPulso.giroFlecha(i / 100),
+    ];
+    // Va hacia los dos lados, sin pasar de 12°.
+    expect(giros.reduce(math.max), greaterThan(0));
+    expect(giros.reduce(math.min), lessThan(0));
+    for (final g in giros) {
+      expect(g.abs(), lessThanOrEqualTo(BotonPulso.vaivenFlecha));
+    }
+    // Al terminar el pulso está casi quieta: no salta al empezar el otro.
+    expect(giros.last.abs(), lessThan(0.05 * BotonPulso.vaivenFlecha));
   });
 
   testWidgets('TalkBack: el título, la frase, el botón grande y las filas, en '
@@ -105,6 +176,9 @@ void main() {
         hasTapAction: true,
       ),
     );
+    // Las filas, a la vista desplazando.
+    await tester.scrollUntilVisible(find.text('Ajustes'), 200);
+    await tester.pumpAndSettle();
     for (final etiqueta in [
       'Mapas disponibles para descargar',
       'Ajustes: voz, movimiento y vibración',
@@ -138,8 +212,7 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(palabrasPartidas(tester), isEmpty);
     expect(textosCortados(tester), isEmpty);
-    // No entra todo: la pantalla se desplaza y el botón grande mide lo que
-    // pide su contenido, sin achicarse.
+    // No entra todo: la pantalla se desplaza.
     expect(
       tester
           .state<ScrollableState>(find.byType(Scrollable))
@@ -161,6 +234,7 @@ void main() {
       'sistema de diseño; al volver, el inicio sigue igual', (tester) async {
     final observador = await _armar(tester);
     llamadasVoz.clear();
+    await tester.scrollUntilVisible(find.text('Ajustes'), 200);
     await tester.tap(find.text('Ajustes'));
     await tester.pumpAndSettle();
     expect(llamadasVoz, contains('stop'));
@@ -170,7 +244,7 @@ void main() {
     await tester.tap(find.byTooltip('Volver'));
     await tester.pumpAndSettle();
     expect(find.byType(PantallaAjustes), findsNothing);
-    expect(find.byType(BotonPrincipalGrande), findsOneWidget);
+    expect(find.byType(BotonPulso), findsOneWidget);
   });
 
   for (final (texto, pantalla) in const [
@@ -182,6 +256,7 @@ void main() {
     ) async {
       final observador = await _armar(tester);
       llamadasVoz.clear();
+      await tester.scrollUntilVisible(find.text(texto), 200);
       await tester.tap(find.text(texto));
       // El toque ya abrió la ruta, que se arma recién en el cuadro
       // siguiente: se mira qué pantalla abre y se saca antes.
@@ -193,7 +268,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(llamadasVoz, contains('stop'));
       expect(find.byType(pantalla), findsNothing);
-      expect(find.byType(BotonPrincipalGrande), findsOneWidget);
+      expect(find.byType(BotonPulso), findsOneWidget);
     });
   }
 }

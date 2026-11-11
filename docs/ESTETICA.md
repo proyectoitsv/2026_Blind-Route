@@ -57,7 +57,7 @@ Los íconos son los de Material en su variante redondeada, de 24 dp en filas, ba
 
 Las formas usan sólo cuatro radios, 12 dp en los campos, las pistas y el cuadro de los íconos, 14 en los botones, 20 en las tarjetas y 24 en las hojas y las barras flotantes, mientras que los chips y los botones de ícono son redondos del todo. Los botones y los campos miden 52 dp de alto y los botones redondos tienen 36 dp de dibujo adentro de un área de 48 dp. El espaciado es de 16 dp a los costados y dentro de las tarjetas, 12 dp entre tarjetas y 28 dp entre secciones.
 
-El movimiento sigue la Tabla 3, con curvas que arrancan rápido y frenan suave, sin rebotes y sin animaciones que se repitan, por lo que mientras se espera algo se muestra un texto fijo en lugar de una ruedita. Con "Quitar animaciones" del teléfono o con "Reducir movimiento" de Ajustes rige la última columna.
+El movimiento sigue la Tabla 3, con curvas que arrancan rápido y frenan suave, sin rebotes y sin animaciones que se repitan, por lo que mientras se espera algo se muestra un texto fijo en lugar de una ruedita. La única excepción son las ondas del botón del inicio, que son decorativas y se quedan quietas con movimiento reducido. Con "Quitar animaciones" del teléfono o con "Reducir movimiento" de Ajustes rige la última columna.
 
 | Acción | Normal | Con movimiento reducido |
 |---|---|---|
@@ -182,6 +182,18 @@ Con la letra al 200 % la indicación va primero y lo de arriba se desplaza, para
   <img src="estetica/fase-5.7-ficha.jpg" width="170" alt="Inicio con la ficha Comenzar a navegar y su franja cian Empezar.">
 </p>
 <p align="center"><em>Figura 10. Navegación guiando, al llegar y con la letra al 200 %, y la ficha del inicio.</em></p>
+
+### Después de la 5.7, inicio con pulso y brújula
+
+La ficha del inicio se reemplazó por un círculo de acento en el medio de la pantalla, sin tarjeta alrededor, que cada 2,6 s larga dos ondas que se abren y se apagan, como la señal de un GPS (`BotonPulso`). Con cada pulso la flecha del círculo va y viene a los costados, cada vez menos, como la aguja de una brújula que busca el norte. Como sin ver es difícil acertarle justo al círculo, toda la primera vista lleva a navegar, también la frase de arriba, la pista de abajo y los costados, y con "Reducir movimiento" las ondas y la flecha quedan quietas. "Mapas disponibles" y "Ajustes" pasaron debajo de la primera vista, de modo que se descubren desplazando, como se ve en la Figura 11, aunque TalkBack llega a ellos recorriendo la pantalla igual que antes.
+
+La brújula de la navegación dejó de mostrar puntos cardinales, porque el norte de la app es el del plano, es decir lo que el administrador deja arriba en la pantalla, y no el geográfico. Ahora muestra solamente los grados respecto de ese norte, la pastilla se tiñe de acento de a poco a partir de los 45° y, a menos de 5°, lleva el borde de acento y vibra una vez, suave, con el interruptor de vibración de Ajustes. Para que vuelva a vibrar hay que alejarse más de 15°, así no vibra a cada lectura estando quieto en el límite.
+
+<p align="center">
+  <img src="estetica/inicio.jpg" width="180" alt="Inicio con el círculo cian en el medio y sus ondas.">
+  <img src="estetica/inicio-abajo.jpg" width="180" alt="El inicio desplazado, con las filas Mapas disponibles y Ajustes.">
+</p>
+<p align="center"><em>Figura 11. El inicio con el botón con pulso y, desplazando, los mapas y los ajustes.</em></p>
 
 ## 3. Pendientes
 

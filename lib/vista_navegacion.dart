@@ -549,25 +549,49 @@ class _FilaDestino extends StatelessWidget {
   }
 }
 
-/// Hacia dónde mira el teléfono sobre el plano: la flecha, el punto cardinal
-/// y los grados. Sin brújula, lo avisa.
+/// Hacia dónde mira el teléfono sobre el plano: la flecha y los grados
+/// respecto del norte del plano (lo que queda arriba en la pantalla, que fija
+/// el administrador al cargar el piso). No es el norte geográfico: por eso no
+/// lleva puntos cardinales. Sin brújula, lo avisa.
+///
+/// A medida que el teléfono apunta al norte del plano, la pastilla se tiñe de
+/// a poco de acento (desde [margenTinte] grados); a menos de
+/// [toleranciaNorte], lleva el borde de acento y vibra una vez, suave. Para
+/// volver a vibrar hay que alejarse más de [rearmeNorte] grados: así, quieto
+/// en el límite, no vibra a cada lectura.
 class ChipOrientacion extends StatefulWidget {
-  const ChipOrientacion({
-    super.key,
-    required this.disponible,
-    this.grados,
-    this.direccion,
-  });
+  const ChipOrientacion({super.key, required this.disponible, this.grados});
 
   /// Si hay brújula. Si no, un aviso en lugar de esconderse: la voz ya lo
   /// dijo, y las indicaciones de giro pueden ser menos precisas.
   final bool disponible;
 
-  /// El rumbo sobre el plano. null: todavía no llegó ninguna lectura.
+  /// El rumbo sobre el plano, de 0 a 360. null: todavía no llegó ninguna
+  /// lectura.
   final double? grados;
 
-  /// El punto cardinal ("NE").
-  final String? direccion;
+  /// Desde cuántos grados del norte del plano empieza el tinte.
+  static const double margenTinte = 45;
+
+  /// A cuántos grados o menos se considera que apunta al norte del plano.
+  static const double toleranciaNorte = 5;
+
+  /// A cuántos grados hay que alejarse para que vuelva a vibrar.
+  static const double rearmeNorte = 15;
+
+  /// Cuánto acento lleva el relleno, como mucho (apuntando al norte). Con el
+  /// 20 %, el texto en acento da 5,8:1 y el gris, más.
+  static const double tinteMaximo = 0.2;
+
+  /// Cuántos grados lo separan del norte del plano, de 0 a 180.
+  static double desvio(double grados) {
+    final g = (grados % 360 + 360) % 360;
+    return g > 180 ? 360 - g : g;
+  }
+
+  /// De 0 (a [margenTinte] o más) a 1 (justo al norte del plano).
+  static double cercania(double grados) =>
+      (1 - desvio(grados) / margenTinte).clamp(0.0, 1.0);
 
   @override
   State<ChipOrientacion> createState() => _ChipOrientacionState();
@@ -578,6 +602,12 @@ class _ChipOrientacionState extends State<ChipOrientacion> {
   /// 1° la flecha gira 2° hacia adelante, no una vuelta entera hacia atrás.
   late double _vueltas = (widget.grados ?? 0) / 360;
 
+  /// Si ya vibró por apuntar al norte y todavía no se alejó lo suficiente.
+  /// Arranca en lo que haya: si se abre mirando al norte, no vibra.
+  late bool _enNorte =
+      widget.grados != null &&
+      ChipOrientacion.desvio(widget.grados!) <= ChipOrientacion.toleranciaNorte;
+
   @override
   void didUpdateWidget(covariant ChipOrientacion anterior) {
     super.didUpdateWidget(anterior);
@@ -585,25 +615,38 @@ class _ChipOrientacionState extends State<ChipOrientacion> {
     if (grados == null) return;
     final destino = grados / 360;
     _vueltas = destino + (_vueltas - destino).roundToDouble();
+    final desvio = ChipOrientacion.desvio(grados);
+    if (!_enNorte && desvio <= ChipOrientacion.toleranciaNorte) {
+      _enNorte = true;
+      HapticaApp.suave();
+    } else if (_enNorte && desvio > ChipOrientacion.rearmeNorte) {
+      _enNorte = false;
+    }
   }
 
   /// Una pastilla hundida, como un chip de dato.
-  Widget _pastilla(EstiloApp e, List<Widget> hijos) => DecoratedBox(
+  Widget _pastilla(
+    EstiloApp e,
+    List<Widget> hijos, {
+    Color? relleno,
+    BorderSide borde = BorderSide.none,
+  }) => AnimatedContainer(
+    duration: MovimientoApp.duracion(context, MovimientoApp.cambioProgreso),
+    curve: MovimientoApp.curva,
     decoration: DecoracionRelieve(
-      color: e.hundido,
+      color: relleno ?? e.hundido,
       pildora: true,
       elevacion: -1,
       tamano: TamanoRelieve.chico,
+      borde: borde,
       sombraOscura: e.sombraOscura,
       sombraClara: e.sombraClara,
     ),
-    child: Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: EspaciadoApp.medio,
-        vertical: EspaciadoApp.chico,
-      ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: hijos),
+    padding: const EdgeInsets.symmetric(
+      horizontal: EspaciadoApp.medio,
+      vertical: EspaciadoApp.chico,
     ),
+    child: Row(mainAxisSize: MainAxisSize.min, children: hijos),
   );
 
   @override
@@ -637,43 +680,51 @@ class _ChipOrientacionState extends State<ChipOrientacion> {
     }
     final grados = widget.grados;
     if (grados == null) return const SizedBox.shrink();
-    final enteros = grados.toStringAsFixed(0);
+    final enteros = ((grados % 360 + 360) % 360).round() % 360;
+    final cercania = ChipOrientacion.cercania(grados);
+    final alNorte =
+        ChipOrientacion.desvio(grados) <= ChipOrientacion.toleranciaNorte;
+    final relleno = Color.alphaBlend(
+      e.acento.withValues(alpha: ChipOrientacion.tinteMaximo * cercania),
+      e.hundido,
+    );
     return Semantics(
       container: true,
-      label: 'Orientación: ${widget.direccion}, $enteros grados',
+      label: alNorte
+          ? 'Orientación: $enteros grados, hacia el norte del plano'
+          : 'Orientación: $enteros grados del norte del plano',
       excludeSemantics: true,
-      child: _pastilla(e, [
-        // Rota en sentido horario con el rumbo. La brújula cambia varias
-        // veces por segundo: como mucho 120 ms, lo de un cambio frecuente.
-        AnimatedRotation(
-          turns: _vueltas,
-          duration: MovimientoApp.duracion(
-            context,
-            MovimientoApp.cambioProgreso,
+      child: _pastilla(
+        e,
+        relleno: relleno,
+        borde: alNorte
+            ? BorderSide(color: e.acento, width: FormasApp.grosorLinea)
+            : BorderSide.none,
+        [
+          // Rota en sentido horario con el rumbo. La brújula cambia varias
+          // veces por segundo: como mucho 120 ms, lo de un cambio frecuente.
+          AnimatedRotation(
+            turns: _vueltas,
+            duration: MovimientoApp.duracion(
+              context,
+              MovimientoApp.cambioProgreso,
+            ),
+            curve: MovimientoApp.curva,
+            child: Icon(
+              Icons.navigation_rounded,
+              size: FormasApp.iconoChico,
+              color: e.acento,
+            ),
           ),
-          curve: MovimientoApp.curva,
-          child: Icon(
-            Icons.navigation_rounded,
-            size: FormasApp.iconoChico,
-            color: e.acento,
+          const SizedBox(width: EspaciadoApp.minimo),
+          Text(
+            '$enteros°',
+            style: TipografiaApp.conCifrasTabulares(
+              TipografiaApp.subtitulo,
+            ).copyWith(color: e.acento, fontWeight: FontWeight.w600),
           ),
-        ),
-        const SizedBox(width: EspaciadoApp.minimo),
-        Text(
-          '${widget.direccion}',
-          style: TipografiaApp.subtitulo.copyWith(
-            color: e.acento,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(width: EspaciadoApp.minimo),
-        Text(
-          '$enteros°',
-          style: TipografiaApp.conCifrasTabulares(
-            TipografiaApp.nota,
-          ).copyWith(color: e.textoSecundario),
-        ),
-      ]),
+        ],
+      ),
     );
   }
 }

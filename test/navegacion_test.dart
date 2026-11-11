@@ -177,9 +177,7 @@ Widget _vista(
   titulo: 'Planta baja',
   destino: destino,
   estadoRuta: estadoRuta,
-  brujula:
-      brujula ??
-      const ChipOrientacion(disponible: true, grados: 45, direccion: 'NE'),
+  brujula: brujula ?? const ChipOrientacion(disponible: true, grados: 45),
   pisos: pisos,
   indicacion: indicacion,
   recorrido: recorrido,
@@ -237,7 +235,8 @@ void main() {
       expect(find.byTooltip('Ajustes de navegación'), findsNothing);
       expect(find.byType(LineaTiempo), findsNothing);
       expect(find.byType(TarjetaIndicacion), findsNothing);
-      expect(find.text('NE'), findsOneWidget);
+      // Sin puntos cardinales: el norte del plano no es el geográfico.
+      expect(find.text('NE'), findsNothing);
       expect(find.text('45°'), findsOneWidget);
     });
 
@@ -251,7 +250,7 @@ void main() {
         'Seleccionar destino desde lista',
         'Tocá en cualquier parte de la pantalla para elegir tu destino por voz',
         'Tocá la pantalla para elegir destino',
-        'Orientación: NE, 45 grados',
+        'Orientación: 45 grados del norte del plano',
         'Centrar el mapa en tu ubicación',
         'Buscando beacons...',
         'Tocá aquí y decí el destino',
@@ -435,7 +434,7 @@ void main() {
         'Cambiar destino',
         'Tocá en cualquier parte de la pantalla para elegir tu destino por voz',
         'Aula 12\nRuta a Aula 12: 19.0m',
-        'Orientación: NE, 45 grados',
+        'Orientación: 45 grados del norte del plano',
         'Girá a la izquierda, 7 metros',
         'Centrar el mapa en tu ubicación',
         'Buscando beacons...',
@@ -597,13 +596,7 @@ void main() {
       tester,
     ) async {
       Widget armar(double grados) => MaterialApp(
-        home: Scaffold(
-          body: ChipOrientacion(
-            disponible: true,
-            grados: grados,
-            direccion: 'N',
-          ),
-        ),
+        home: Scaffold(body: ChipOrientacion(disponible: true, grados: grados)),
       );
       await tester.pumpWidget(armar(359));
       await tester.pumpAndSettle();
@@ -614,6 +607,90 @@ void main() {
       await tester.pumpAndSettle();
       // De 359° a 1° son 2° hacia adelante, no una vuelta para atrás.
       expect(vueltas(), moreOrLessEquals(1 + 1 / 360));
+    });
+
+    testWidgets('la brújula se tiñe al acercarse al norte del plano y vibra '
+        'una vez al llegar, con rearme', (tester) async {
+      AjustesMovimiento.instancia.reiniciarParaTests();
+      addTearDown(AjustesMovimiento.instancia.reiniciarParaTests);
+      final vibraciones = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (llamada) async {
+          if (llamada.method == 'HapticFeedback.vibrate') {
+            vibraciones.add(llamada.arguments as String);
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      final semantica = tester.ensureSemantics();
+      Widget armar(double grados) => MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: ChipOrientacion(disponible: true, grados: grados),
+          ),
+        ),
+      );
+      DecoracionRelieve deco() =>
+          tester
+                  .widget<AnimatedContainer>(
+                    find.descendant(
+                      of: find.byType(ChipOrientacion),
+                      matching: find.byType(AnimatedContainer),
+                    ),
+                  )
+                  .decoration!
+              as DecoracionRelieve;
+      await tester.pumpWidget(armar(90));
+      await tester.pumpAndSettle();
+      // Lejos: el relleno hundido de siempre, sin borde ni vibración.
+      expect(deco().color, ColoresApp.hundido);
+      expect(deco().borde, BorderSide.none);
+      expect(find.text('90°'), findsOneWidget);
+      // A 20°: un poco teñido.
+      await tester.pumpWidget(armar(340));
+      await tester.pumpAndSettle();
+      final medio = deco().color;
+      expect(medio, isNot(ColoresApp.hundido));
+      expect(vibraciones, isEmpty);
+      // Al norte: más teñido, borde de acento y una vibración suave.
+      await tester.pumpWidget(armar(358));
+      await tester.pumpAndSettle();
+      expect(deco().color.b, greaterThan(medio.b));
+      expect(deco().borde.color, ColoresApp.acento);
+      expect(vibraciones, ['HapticFeedbackType.lightImpact']);
+      expect(
+        find.bySemanticsLabel(
+          'Orientación: 358 grados, hacia el norte del plano',
+        ),
+        findsOneWidget,
+      );
+      // Moverse cerca del norte no vuelve a vibrar…
+      for (final g in [3.0, 10.0, 1.0]) {
+        await tester.pumpWidget(armar(g));
+        await tester.pump();
+      }
+      expect(vibraciones, hasLength(1));
+      // …alejarse más de 15° y volver, sí.
+      await tester.pumpWidget(armar(30));
+      await tester.pump();
+      await tester.pumpWidget(armar(2));
+      await tester.pump();
+      expect(vibraciones, hasLength(2));
+      // Con el interruptor de vibración apagado, no.
+      await AjustesMovimiento.instancia.cambiarVibracion(false);
+      await tester.pumpWidget(armar(40));
+      await tester.pump();
+      await tester.pumpWidget(armar(0));
+      await tester.pump();
+      expect(vibraciones, hasLength(2));
+      semantica.dispose();
     });
 
     testWidgets('los pisos: el del usuario con su ícono, el visto elegido, y '

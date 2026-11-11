@@ -4484,13 +4484,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final heading = headingRaw == null
         ? null
         : ((headingRaw - _rotacionMapaEfectiva) % 360 + 360) % 360;
-    return ChipOrientacion(
-      disponible: _compassDisponible,
-      grados: heading,
-      direccion: heading == null
-          ? null
-          : OrientacionService.direccionCardinal(heading),
-    );
+    return ChipOrientacion(disponible: _compassDisponible, grados: heading);
   }
 
   /// La tarjeta mientras se orienta al usuario hacia el lugar al llegar:
