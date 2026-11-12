@@ -183,13 +183,6 @@ Las capturas se generaron en la computadora con datos y planos de ejemplo.
 
 El proyecto se encuentra en desarrollo y en etapa de calibración en dispositivos reales.
 
-| Componente | Estado |
-|---|:---:|
-| Posicionamiento, cálculo de rutas y guía por voz | 🔄 En ajuste |
-| Aplicación de administración y publicación en la nube | ✅ Completo |
-| Rediseño visual | ✅ Completo |
-| Pruebas en el teléfono de las pantallas rediseñadas | ⏳ Pendiente |
-
 El proceso del rediseño visual se documenta en [`docs/ESTETICA.md`](docs/ESTETICA.md).
 
 ## Compilación e instalación
