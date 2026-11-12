@@ -88,6 +88,7 @@ El proyecto genera dos aplicaciones a partir del mismo código, que se instalan 
       <ul>
         <li><b>Detección automática</b> del edificio y del piso a partir de las balizas.</li>
         <li><b>Destino por voz</b>, por nombre o por categoría, o bien desde una lista.</li>
+        <li><b>Voz sin conexión</b>: la aplicación descarga el español para entender la voz sin internet (Android 13 o superior).</li>
         <li><b>Indicaciones anticipadas</b> antes de cada giro y recálculo de la ruta ante un desvío.</li>
         <li><b>Recorridos entre pisos</b> por escalera o ascensor.</li>
         <li><b>Orientación al llegar</b>, hasta quedar de frente al lugar.</li>
@@ -164,6 +165,7 @@ Las capturas se generaron en la computadora con datos y planos de ejemplo.
 | **Dispositivo de prueba** | Samsung Galaxy S24 Ultra |
 | **Sensores** | Bluetooth y brújula |
 | **Entorno** | Un edificio con balizas instaladas y su mapa publicado |
+| **Voz sin conexión** | Android 13 o superior. La primera vez, con conexión, la aplicación descarga el español para el reconocimiento de voz. Con versiones anteriores, entender la voz requiere internet. |
 
 **Permisos que solicita la aplicación:**
 
@@ -173,7 +175,8 @@ Las capturas se generaron en la computadora con datos y planos de ejemplo.
 | Ubicación | Requerido por Android para buscar dispositivos Bluetooth |
 | Micrófono | Indicar el destino por voz |
 | Fotos | Seleccionar la imagen del plano (solo administración) |
-| Internet | Descargar y publicar mapas |
+| Internet | Descargar y publicar mapas, descargar el idioma de la voz y entender la voz mientras el idioma no esté descargado |
+| Estado de la red | Avisar cuando no hay conexión para entender la voz |
 | Vibración | Avisos al girar y al llegar |
 
 ## Estado del proyecto
@@ -250,11 +253,11 @@ El código se encuentra en `lib/` y es compartido por ambas aplicaciones:
 | `design/` | Sistema de diseño: colores, tipografía, formas, movimiento y componentes |
 | `bluetooth_helper.dart`, `procesador_senal.dart`, `posicionador.dart`, `filtro_un_euro.dart` | Procesamiento de la señal Bluetooth y cálculo de la posición |
 | `pathfinder.dart`, `grilla_nav.dart`, `seguidor_ruta.dart`, `orientador_llegada.dart` | Cálculo y seguimiento de la ruta |
-| `voz_service.dart`, `buscador_lugares.dart` | Síntesis y reconocimiento de voz, búsqueda de lugares |
+| `voz_service.dart`, `reconocimiento_telefono.dart`, `buscador_lugares.dart` | Síntesis y reconocimiento de voz, reconocimiento sin conexión, búsqueda de lugares |
 | `database.dart` | Base de datos local |
 | `supabase_service.dart`, `supabase_config.dart` | Conexión con la nube |
 
-Las pruebas automáticas se encuentran en `test/` y los scripts SQL de la nube, en `supabase/`.
+Las pruebas automáticas se encuentran en `test/` y los scripts SQL de la nube, en `supabase/`. El código nativo de Android que consulta y descarga el idioma para el reconocimiento de voz sin conexión se encuentra en `android/app/src/main/kotlin/com/example/blindroute/MainActivity.kt`.
 
 ## Tecnologías
 
@@ -263,7 +266,7 @@ Las pruebas automáticas se encuentran en `test/` y los scripts SQL de la nube, 
 | Interfaz | Flutter, Material 3, tipografía Inter |
 | Bluetooth | `flutter_blue_plus` |
 | Sensores | `flutter_compass`, `sensors_plus` |
-| Voz | `flutter_tts`, `speech_to_text` |
+| Voz | `flutter_tts`, `speech_to_text` y el reconocimiento de voz en el teléfono de Android |
 | Almacenamiento local | `sqflite`, `shared_preferences`, `path_provider` |
 | Nube | `supabase_flutter` |
 | Otras | `permission_handler`, `image_picker`, `wakelock_plus` |
@@ -273,7 +276,8 @@ Las pruebas automáticas se encuentran en `test/` y los scripts SQL de la nube, 
 - La **posición se calcula en el propio teléfono** y no se envía a la nube.
 - La aplicación para la persona usuaria **no requiere una cuenta**. Solo la administración inicia sesión, con correo electrónico y contraseña.
 - La nube almacena únicamente los **mapas publicados**, sus planos y los ajustes de navegación.
-- El reconocimiento de voz utiliza el **servicio del propio teléfono** y se activa solo al solicitar un destino.
+- El micrófono se activa **solo al solicitar un destino** o al responder una pregunta de la aplicación.
+- Con el español descargado en el teléfono, la voz se reconoce **en el propio teléfono** y el audio no sale de él. Si no está descargado, se usa el reconocedor de Google por internet, que **envía el audio a los servidores de Google**.
 
 ## Documentación adicional
 

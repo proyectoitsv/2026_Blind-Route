@@ -3097,9 +3097,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// pregunta. Con eso se elige entre las interpretaciones del reconocedor
   /// (ver VozService.escuchar).
   ///
-  /// Sin espera entre la pregunta y la escucha: VozService.escuchar ya deja
-  /// 200 ms para que se apague el altavoz. Antes había otros 200 ms acá, y
-  /// un "sí" dicho enseguida caía antes de que el micrófono se abriera.
+  /// Sin conexión (y sin el español descargado en el teléfono), dice
+  /// [VozService.avisoSinConexion] y devuelve null.
+  ///
+  /// Sin espera entre la pregunta y la escucha: VozService.escuchar abre el
+  /// micrófono en cuanto termina la frase. Antes había 200 ms acá y otros
+  /// 200 ms allá, y un "sí" dicho enseguida caía antes de que el micrófono
+  /// se abriera.
   Future<String?> _preguntarYEscuchar(
     String frase, {
     bool Function(String norm)? entiende,
@@ -3111,6 +3115,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
     final respuesta = Completer<String?>();
     bool cortada = false;
+    bool sinConexion = false;
     await _voz.escuchar(
       timeout: const Duration(seconds: 8),
       entiende: entiende == null ? null : (t) => entiende(_normalizar(t)),
@@ -3124,6 +3129,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       },
       onError: (error) {
         cortada = error == VozService.errorCancelado;
+        sinConexion = error == VozService.errorSinConexion;
         if (!respuesta.isCompleted) respuesta.complete(null);
       },
     );
@@ -3134,6 +3140,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // La cortó el usuario (tocó la pantalla mientras se escuchaba): no se
       // insiste ni se elige por él.
       _pedidoCancelado = true;
+      return null;
+    }
+    if (sinConexion) {
+      // Se cortó la conexión en medio de la conversación: se dice y no se
+      // insiste, que preguntar de nuevo no va a servir.
+      _pedidoCancelado = true;
+      await _voz.hablar(_voz.avisoSinConexion);
       return null;
     }
     return texto == null ? '' : _normalizar(texto);
@@ -3827,6 +3840,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       return;
     }
 
+    // Sin el español descargado en el teléfono y sin conexión, la voz no se
+    // puede entender: se dice por qué y qué hacer, sin abrir el micrófono
+    // (ver "RECONOCER EN EL TELÉFONO" en VozService).
+    if (!await _voz.puedeEntenderVoz()) {
+      if (mounted) await _voz.hablar(_voz.avisoSinConexion);
+      return;
+    }
+    if (!mounted) return;
+
     // Primero hablar y esperar que termine el audio (hablar() espera el
     // aviso del motor TTS). Sin otra espera acá: la deja VozService.escuchar
     // (ver _preguntarYEscuchar).
@@ -3897,6 +3919,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         setState(() => _escuchando = false);
         // La cortó el propio usuario con un toque: no es "no te escuché".
         if (error == VozService.errorCancelado) return;
+        // Se cortó la conexión: repetir no va a servir.
+        if (error == VozService.errorSinConexion) {
+          await _voz.hablar(_voz.avisoSinConexion);
+          return;
+        }
         await _voz.hablar('No te escuché. Intentá de nuevo.');
       },
     );

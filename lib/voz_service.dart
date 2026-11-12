@@ -4,6 +4,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import 'ajustes_voz.dart';
+import 'reconocimiento_telefono.dart';
 
 /// Servicio central de voz para BlindRoute.
 /// Centraliza Text-to-Speech (TTS) y Speech-to-Text (STT).
@@ -82,10 +83,18 @@ class VozService {
       _sttDisponible = await _stt.initialize(
         onError: (error) {
           _escuchando = false;
+          debugPrint('[Voz] Error del reconocedor: ${error.errorMsg}');
+          // Una escucha en el teléfono que no arrancó sigue por internet
+          // (ver "RECONOCER EN EL TELÉFONO"): no se cierra.
+          if (_atenderErrorDelMotor?.call(error.errorMsg) ?? false) return;
           // Silencio o "no se entendió" llegan por acá y no por onResult:
           // hay que avisarle a quien está escuchando (ver "una sesión, un
-          // aviso" más abajo).
-          _cerrarSesionTrasGracia('sin texto');
+          // aviso" más abajo). Sin conexión, con su motivo.
+          _cerrarSesionTrasGracia(
+            _erroresDeRed.contains(error.errorMsg)
+                ? errorSinConexion
+                : 'sin texto',
+          );
         },
         onStatus: (status) {
           if (status == 'done' || status == 'notListening') {
@@ -98,7 +107,10 @@ class VozService {
         },
       );
       // Se averigua ya, aparte, para que la primera escucha no lo espere.
-      if (_sttDisponible) _localeEspanol ??= _resolverLocaleEspanol();
+      if (_sttDisponible) {
+        _localeEspanol ??= _resolverLocaleEspanol();
+        unawaited(_prepararReconocimientoEnTelefono());
+      }
     } catch (e) {
       _sttDisponible = false;
     }
@@ -548,6 +560,160 @@ class VozService {
   // un error del motor, el aviso de "terminé" sin resultado, que alguien la
   // corte, o el timeout. Todo lo que llega después se ignora.
 
+  // ═══ CUÁNDO TERMINÓ DE HABLAR: LO DECIDE LA APP ═══
+  // Medido en el teléfono: para decir "casa", el texto llegaba 5,3 s después
+  // de abrirse el micrófono (la ruta, en 7 ms). El fin de lo dicho lo
+  // marcaba el plugin, que tiene una sola espera (pauseFor) para el silencio
+  // hasta que la persona EMPIEZA a hablar y para el silencio con el que se da
+  // por TERMINADO lo que dijo. Después de cortar, además, espera el texto
+  // final de Android, y si no llega, 2 s más antes de usar el último parcial.
+  //
+  // Ahora el plugin sólo se queda con la espera para empezar
+  // ([_esperaParaEmpezar]). El final lo marca la app: con un rato sin un
+  // texto parcial nuevo, se corta la escucha y vale el último parcial. El
+  // rato es corto si lo dicho ya se entiende ([_silencioAlTerminar]) y más
+  // largo si todavía no ([_silencioSinEntender]).
+  //
+  // El texto final de Android no se espera. Medido en un Pixel 9 Pro XL
+  // reconociendo por internet: llegaba 1,6 a 2 s después de cortar, siempre
+  // igual al último parcial. Y el primer parcial llega recién cuando la
+  // persona ya terminó de decir el nombre (2,3 a 2,9 s después de empezar a
+  // hablar), así que lo que se espera después de él puede ser corto.
+
+  /// Lo que tiene la persona para empezar a hablar después de la pregunta.
+  static const Duration _esperaParaEmpezar = Duration(seconds: 3);
+
+  /// Silencio (tiempo sin un texto parcial nuevo) con el que se da por
+  /// terminado lo que dijo, cuando lo dicho ya es algo que quien pregunta
+  /// entiende ("casa", "sí"; ver `entiende` en [escuchar]). Con 1,5 s sobraba
+  /// (ver arriba); menos que esto podría cortar a quien hace una pausa en el
+  /// medio de un nombre ("aula… doce").
+  static const Duration _silencioAlTerminar = Duration(milliseconds: 800);
+
+  /// El mismo silencio cuando lo dicho todavía no se entiende ("quiero ir
+  /// a…"): seguramente falta el nombre. Medido: antes del nombre del lugar,
+  /// el reconocedor tardó 0,68 s en un pedido y más de 0,8 s en otro, que
+  /// con [_silencioAlTerminar] se cortó en "quiero ir a".
+  static const Duration _silencioSinEntender = Duration(milliseconds: 1500);
+
+  // ═══ RECONOCER EN EL TELÉFONO, SIN INTERNET ═══
+  // El reconocedor de Google, por internet, manda el audio a sus servidores:
+  // sin conexión no entiende el destino. Medido en un Pixel 9 Pro XL, además,
+  // el primer texto parcial llegaba 1,5 a 2,9 s después de que la persona
+  // empezaba a hablar. Con el español descargado en el teléfono, se
+  // reconoce ahí mismo.
+  //
+  // Al inicializar se averigua, SIN abrir el micrófono, si está descargado
+  // (ver reconocimiento_telefono.dart). Si lo está, se escucha en el
+  // teléfono. Si se puede descargar, se pide la descarga una vez por
+  // ejecución y se avisa; mientras tanto, por internet. Antes se probaba
+  // abriendo el micrófono en el teléfono y esperando el error: en ese Pixel
+  // daba error_language_unavailable, y el cambio a internet dejaba el
+  // micrófono cerrado ~0,4 s, en los que se perdía la palabra de quien
+  // contestaba enseguida. Ese paso a internet ([escuchar]) queda como
+  // resguardo, por si el teléfono dice que lo tiene y después no arranca.
+  //
+  // Sin el español descargado y sin conexión, no se escucha: se avisa
+  // ([avisoSinConexion]) y se puede elegir el destino de la lista.
+
+  /// Cómo está el español para reconocer en el teléfono, y con qué idioma.
+  ConsultaIdioma _idioma = const ConsultaIdioma(EstadoIdioma.noDisponible);
+
+  /// Ya se pidió la descarga en esta ejecución de la app.
+  bool _descargaPedida = false;
+
+  /// El reconocimiento en el teléfono no arrancó aunque estaba descargado:
+  /// por lo que queda de esta ejecución, por internet.
+  bool _fallaEnTelefono = false;
+
+  /// Si la próxima escucha va en el teléfono.
+  bool get _reconocerEnTelefono =>
+      _idioma.estado == EstadoIdioma.descargado && !_fallaEnTelefono;
+
+  /// Atiende un error del motor durante la escucha en curso. true si lo
+  /// atendió (la escucha sigue por internet) y no hay que cerrarla.
+  bool Function(String error)? _atenderErrorDelMotor;
+
+  /// Motivo con el que termina (por onError) una escucha que no pudo
+  /// entender por falta de conexión. Quien escucha dice [avisoSinConexion].
+  static const String errorSinConexion = 'sin conexión';
+
+  /// Errores del motor que quieren decir que no hay conexión.
+  static const Set<String> _erroresDeRed = {
+    'error_network',
+    'error_network_timeout',
+    'error_server',
+    'error_server_disconnected',
+  };
+
+  /// Averigua cómo está el español para reconocer en el teléfono.
+  Future<void> _actualizarIdioma() async {
+    final local = await (_localeEspanol ?? Future<String?>.value());
+    final preferido = (local ?? 'es-AR').replaceAll('_', '-');
+    _idioma = await ReconocimientoEnTelefono.consultar(preferido);
+    debugPrint('[Voz] Español para reconocer en el teléfono: $_idioma.');
+  }
+
+  /// Averigua si el español está descargado en el teléfono y, si falta y se
+  /// puede, pide la descarga (una vez por ejecución) y lo avisa.
+  Future<void> _prepararReconocimientoEnTelefono() async {
+    await _actualizarIdioma();
+    final idioma = _idioma.idioma;
+    if (_idioma.estado != EstadoIdioma.sinDescargar ||
+        idioma == null ||
+        _descargaPedida) {
+      return;
+    }
+    _descargaPedida = true;
+    ReconocimientoEnTelefono.escucharDescarga(
+      alTerminar: (lista) async {
+        await _actualizarIdioma();
+        if (lista && _idioma.estado == EstadoIdioma.descargado) {
+          unawaited(hablar('Listo: ya se puede entender la voz sin internet.'));
+        }
+      },
+    );
+    final pedida = await ReconocimientoEnTelefono.pedirDescarga(idioma);
+    debugPrint('[Voz] Descarga de $idioma ${pedida ? 'pedida' : 'rechazada'}.');
+    if (!pedida) return;
+    _idioma = ConsultaIdioma(EstadoIdioma.descargando, idioma);
+    unawaited(hablar(
+      'Se está descargando el español para entender la voz sin internet. '
+      'Hasta que termine, para entender la voz hace falta conexión.',
+    ));
+  }
+
+  /// Si ahora se puede entender la voz: con el español descargado en el
+  /// teléfono, siempre; si no, sólo con conexión a internet. Si no, quien
+  /// pregunta dice [avisoSinConexion] en lugar de abrir el micrófono.
+  Future<bool> puedeEntenderVoz() async {
+    // Sin reconocedor, el aviso lo da escuchar().
+    if (!_sttDisponible) return true;
+    // La descarga pudo haber terminado (con Android 13 no avisa).
+    if (_idioma.estado == EstadoIdioma.descargando) await _actualizarIdioma();
+    if (_reconocerEnTelefono) return true;
+    return ReconocimientoEnTelefono.hayConexion();
+  }
+
+  /// Lo que se dice cuando no se puede entender la voz por falta de
+  /// conexión: por qué, y qué se puede hacer.
+  String get avisoSinConexion => switch (_idioma.estado) {
+    EstadoIdioma.descargando =>
+      'No hay conexión a internet, y el español para entender la voz sin '
+          'internet todavía se está descargando. Podés elegir el destino de '
+          'la lista.',
+    EstadoIdioma.sinDescargar =>
+      'No hay conexión a internet, y falta descargar el español para '
+          'entender la voz sin internet. Podés elegir el destino de la lista.',
+    EstadoIdioma.descargado || EstadoIdioma.noDisponible =>
+      'No hay conexión a internet, y sin ella este teléfono no puede '
+          'entender la voz. Podés elegir el destino de la lista.',
+  };
+
+  /// Diagnóstico: cuánto tiene que subir el nivel de sonido sobre el más
+  /// bajo de la escucha para registrar que se empieza a oír voz.
+  static const double _subidaDeVozDb = 4.0;
+
   /// Motivo con el que termina (por onError) una escucha que se cortó a
   /// propósito: [detenerEscucha], otra llamada a [escuchar] o [limpiar]. El
   /// que escucha lo distingue para no decir "no te escuché" cuando en
@@ -617,13 +783,19 @@ class VozService {
     // termina sin resultado final pero con esto cargado (pasa en algunos
     // equipos), se entrega: es mejor que descartar lo que el usuario dijo.
     String parcial = '';
+    // Las interpretaciones de ese parcial, por si hay que cerrar con él.
+    List<String> opcionesParcial = const [];
+    // Corre desde el último parcial nuevo: si se cumple, terminó de hablar.
+    Timer? finDeFrase;
 
     void cerrar({String? texto, String motivo = 'sin texto'}) {
       if (cerrada) return;
       cerrada = true;
+      finDeFrase?.cancel();
       if (sesion == _sesionEscucha) {
         _escuchando = false;
         _cerrarSesion = null;
+        _atenderErrorDelMotor = null;
       }
       onEscuchando?.call(false);
       final dicho = texto ?? (motivo == errorCancelado ? '' : parcial);
@@ -636,59 +808,178 @@ class VozService {
 
     _cerrarSesion = (motivo) => cerrar(motivo: motivo);
 
-    // Pequeña pausa para que el altavoz se silencie antes de abrir el micrófono
-    await Future.delayed(const Duration(milliseconds: 200));
-    if (cerrada) return;
-
+    // El micrófono se abre YA, sin pausa: quien pregunta esperó a que el
+    // motor de voz avisara que terminó la frase (ver [hablar]), y ese aviso
+    // llega con el audio ya reproducido. Antes había acá 200 ms "para que se
+    // apague el altavoz": sumados a lo que tarda el reconocedor en arrancar,
+    // quien contestaba enseguida hablaba con el micrófono todavía cerrado y
+    // la palabra se perdía.
     _escuchando = true;
     onEscuchando?.call(true);
+    final reloj = Stopwatch()..start();
+    bool microfonoAbierto = false;
+
+    /// De las interpretaciones del motor, la primera que [entiende] da por
+    /// buena; si ninguna, [texto] (la más probable).
+    String elegir(List<String> opciones, String texto) => entiende == null
+        ? texto
+        : opciones.firstWhere((t) => entiende(t.toLowerCase()),
+            orElse: () => texto);
+
+    // Pasó [_silencioAlTerminar] sin un parcial nuevo: terminó de hablar.
+    // Vale el último parcial, y el micrófono se suelta sin esperar el texto
+    // final (ver "CUÁNDO TERMINÓ DE HABLAR").
+    void terminoDeHablar() {
+      if (cerrada) return;
+      final elegido = elegir(opcionesParcial, parcial);
+      debugPrint('[Voz] ${reloj.elapsedMilliseconds} ms: silencio, vale el '
+          'parcial "$elegido".');
+      unawaited(_stt.cancel().catchError((Object _) {}));
+      cerrar(texto: elegido);
+    }
 
     // Locale de español del dispositivo: ya averiguado (ver _localeEspanol).
-    final localeId = await (_localeEspanol ??= _resolverLocaleEspanol());
+    final localeInternet = await (_localeEspanol ??= _resolverLocaleEspanol());
     if (cerrada) return;
 
-    try {
+    // En el teléfono si el español está descargado (ver "RECONOCER EN EL
+    // TELÉFONO"), con el idioma descargado ("es-AR", o el español que haya).
+    var enTelefono = _reconocerEnTelefono;
+    final localeTelefono = _idioma.idioma;
+    // Ya llegó texto: un error del motor desde acá no quiere decir que el
+    // reconocimiento en el teléfono no ande.
+    var huboTexto = false;
+    var nivelMinimo = double.infinity;
+    var vozOida = false;
+
+    Future<void> arrancar() async {
       _motorPedido = true;
+      _escuchando = true;
       await _stt.listen(
-        localeId: localeId,
-        listenFor: timeout,
-        // pauseFor: tiempo de silencio antes de considerar que terminó de hablar.
-        // 3 segundos da margen suficiente sin hacer esperar demasiado.
-        pauseFor: const Duration(seconds: 3),
-        // Los parciales mantienen "vivo" al motor; el pedido se resuelve con
-        // el resultado FINAL (el usuario terminó de hablar).
-        listenOptions: stt.SpeechListenOptions(partialResults: true),
+        listenOptions: stt.SpeechListenOptions(
+          localeId: enTelefono ? localeTelefono : localeInternet,
+          listenFor: timeout,
+          // Lo que tiene la persona para empezar a hablar. El final lo
+          // marca la app (ver "CUÁNDO TERMINÓ DE HABLAR").
+          pauseFor: _esperaParaEmpezar,
+          // Con los parciales se sabe que sigue hablando, y cuándo paró.
+          partialResults: true,
+          onDevice: enTelefono,
+        ),
+        onSoundLevelChange: (nivel) {
+          // El nivel de sonido llega recién con el micrófono grabando: el
+          // primero dice cuánto tardó en abrirse de verdad.
+          if (!microfonoAbierto) {
+            microfonoAbierto = true;
+            debugPrint(
+              '[Voz] Micrófono abierto a los '
+              '${reloj.elapsedMilliseconds} ms de pedirlo '
+              '(${enTelefono ? 'en el teléfono' : 'por internet'}).',
+            );
+          }
+          // Diagnóstico: cuándo se empieza a oír voz, para medir cuánto
+          // tarda el primer texto parcial.
+          if (nivel < nivelMinimo) nivelMinimo = nivel;
+          if (!vozOida && nivel >= nivelMinimo + _subidaDeVozDb) {
+            vozOida = true;
+            debugPrint('[Voz] ${reloj.elapsedMilliseconds} ms: se oye voz '
+                '(nivel ${nivel.toStringAsFixed(1)} dB).');
+          }
+        },
         onResult: (result) {
           if (cerrada) return;
+          huboTexto = true;
           final texto = result.recognizedWords.trim();
+          final opciones = [
+            for (final a in result.alternates)
+              if (a.recognizedWords.trim().isNotEmpty) a.recognizedWords.trim(),
+          ];
           if (!result.finalResult) {
-            if (texto.isNotEmpty) parcial = texto;
+            if (texto.isEmpty) return;
+            final nuevo = texto.toLowerCase() != parcial.toLowerCase();
+            parcial = texto;
+            opcionesParcial = opciones;
+            // Sólo un texto distinto cuenta como que sigue hablando: el
+            // motor a veces repite el mismo parcial.
+            if (nuevo) {
+              // ¿Ya dijo algo que se entiende? Entonces el silencio que
+              // falta para cerrar es corto (ver "CUÁNDO TERMINÓ DE HABLAR").
+              final entendido = entiende != null &&
+                  (opciones.isEmpty ? [texto] : opciones)
+                      .any((t) => entiende(t.toLowerCase()));
+              debugPrint('[Voz] ${reloj.elapsedMilliseconds} ms: parcial '
+                  '"$texto"${entendido ? ' (se entiende)' : ''}.');
+              finDeFrase?.cancel();
+              finDeFrase = Timer(
+                entendido ? _silencioAlTerminar : _silencioSinEntender,
+                terminoDeHablar,
+              );
+            }
             return;
           }
           if (texto.isEmpty) {
             cerrar(); // final vacío: vale el parcial si hubo, si no 'sin texto'
             return;
           }
-          final opciones = [
-            for (final a in result.alternates)
-              if (a.recognizedWords.trim().isNotEmpty) a.recognizedWords.trim(),
-          ];
-          final elegido = entiende == null
-              ? texto
-              : opciones.firstWhere((t) => entiende(t.toLowerCase()),
-                  orElse: () => texto);
-          debugPrint('[Voz] Entendido: "$elegido" '
-              '(interpretaciones: ${opciones.join(' | ')})');
+          final elegido = elegir(opciones, texto);
+          debugPrint('[Voz] Entendido a los ${reloj.elapsedMilliseconds} ms: '
+              '"$elegido" (interpretaciones: ${opciones.join(' | ')})');
           cerrar(texto: elegido);
         },
       );
-
-      // Timeout de seguridad, por si el motor no avisa nada de nada. Cierra
-      // SU sesión (si ya se cerró, no hace nada).
-      Future.delayed(timeout + const Duration(seconds: 3), () => cerrar());
-    } catch (e) {
-      cerrar(motivo: 'Error: $e');
     }
+
+    // El reconocimiento en el teléfono no arrancó aunque el español estaba
+    // descargado: esta escucha sigue por internet, y las que vengan en esta
+    // ejecución, también. Sin conexión, se avisa (errorSinConexion).
+    void pasarAInternet(String motivo) {
+      enTelefono = false;
+      _fallaEnTelefono = true;
+      microfonoAbierto = false;
+      // Lo que quede de la escucha fallida ("done", otro error) no tiene que
+      // cerrar esta sesión (ver _cerrarSesionTrasGracia).
+      _motorPedido = false;
+      debugPrint('[Voz] ${reloj.elapsedMilliseconds} ms: el reconocimiento '
+          'en el teléfono no anduvo ($motivo); sigue por internet.');
+      Future.delayed(const Duration(milliseconds: 150), () async {
+        if (cerrada || sesion != _sesionEscucha) return;
+        if (!await ReconocimientoEnTelefono.hayConexion()) {
+          cerrar(motivo: errorSinConexion);
+          return;
+        }
+        if (cerrada || sesion != _sesionEscucha) return;
+        try {
+          await arrancar();
+        } catch (e) {
+          cerrar(motivo: 'Error: $e');
+        }
+      });
+    }
+
+    _atenderErrorDelMotor = (error) {
+      if (!enTelefono || huboTexto || cerrada || sesion != _sesionEscucha) {
+        return false;
+      }
+      // No dijo nada o no se le entendió: el reconocedor anduvo.
+      if (error == 'error_speech_timeout' || error == 'error_no_match') {
+        return false;
+      }
+      pasarAInternet(error);
+      return true;
+    };
+
+    try {
+      await arrancar();
+    } catch (e) {
+      if (enTelefono) {
+        pasarAInternet('$e');
+      } else {
+        cerrar(motivo: 'Error: $e');
+      }
+    }
+    // Timeout de seguridad, por si el motor no avisa nada de nada. Cierra
+    // SU sesión (si ya se cerró, no hace nada).
+    Future.delayed(timeout + const Duration(seconds: 3), () => cerrar());
   }
 
   /// Corta la escucha en curso. Quien la había pedido recibe
