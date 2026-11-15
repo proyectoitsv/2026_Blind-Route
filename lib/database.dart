@@ -352,9 +352,51 @@ class DatabaseHelper {
   }
 
   // --- Edificios ---
+  //
+  // ═══ UN NOMBRE, UN EDIFICIO ═══
+  // Los edificios se identifican por su NOMBRE: en la nube (los pisos de un
+  // edificio son las filas publicadas con ese nombre) y en el teléfono del
+  // usuario (los pisos descargados se agrupan por él). Dos edificios con el
+  // mismo nombre se mezclan: sus pisos, sus lugares y sus ajustes. Por eso
+  // no se puede cargar un edificio con un nombre que ya existe.
+
+  /// Con qué se compara el nombre de dos edificios para saber si es el
+  /// mismo: sin espacios de más y sin distinguir mayúsculas.
+  static String claveNombreEdificio(String nombre) =>
+      nombre.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+
+  /// Si en este teléfono ya hay un edificio con ese nombre (ver
+  /// [claveNombreEdificio]). [salvoId]: el edificio que se está renombrando,
+  /// que no cuenta como repetido de sí mismo.
+  Future<bool> existeEdificioConNombre(String nombre, {int? salvoId}) async {
+    final db = await instance.database;
+    final clave = claveNombreEdificio(nombre);
+    final filas = await db.query('edificios', columns: ['id', 'nombre']);
+    return filas.any(
+      (f) =>
+          f['id'] != salvoId &&
+          claveNombreEdificio('${f['nombre'] ?? ''}') == clave,
+    );
+  }
+
+  /// Cambia el nombre de un edificio de este teléfono. Sus pisos no cambian:
+  /// lo que viaja a la nube con el nombre lo cambia quien llama (ver
+  /// SupabaseService.renombrarEdificioPublicado).
+  Future<void> renombrarEdificio(int id, String nombre) async {
+    final db = await instance.database;
+    await db.update(
+      'edificios',
+      {'nombre': nombre.trim()},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<int> crearEdificio(String nombre) async {
     final db = await instance.database;
-    return await db.insert('edificios', {'nombre': nombre});
+    // Sin espacios a los costados: "Escuela " y "Escuela" serían dos
+    // edificios distintos para la nube.
+    return await db.insert('edificios', {'nombre': nombre.trim()});
   }
 
   Future<List<Map<String, dynamic>>> obtenerEdificios() async {
@@ -482,20 +524,6 @@ class DatabaseHelper {
     return r.map((row) => row['remote_id'] as String).toList();
   }
 
-  /// Busca un piso local por su id remoto. Devuelve su `id` local o null.
-  /// Se usa para saber si un mapa del catálogo ya está descargado.
-  Future<int?> buscarPisoPorRemoteId(String remoteId) async {
-    final db = await instance.database;
-    final r = await db.query(
-      'pisos',
-      columns: ['id'],
-      where: 'remote_id = ?',
-      whereArgs: [remoteId],
-      limit: 1,
-    );
-    return r.isNotEmpty ? r.first['id'] as int : null;
-  }
-
   /// Desinstala un mapa descargado: borra el piso local (con sus beacons, zonas,
   /// lugares y calibraciones) y el archivo de imagen del teléfono. Sólo afecta
   /// este dispositivo; el mapa sigue en la nube. No-op si no está descargado.
@@ -512,13 +540,18 @@ class DatabaseHelper {
     final pisoId = r.first['id'] as int;
     final ruta = r.first['ruta_imagen'] as String?;
 
-    await db.delete('beacons', where: 'piso_id = ?', whereArgs: [pisoId]);
-    await db.delete('zonas_no_transitables',
-        where: 'piso_id = ?', whereArgs: [pisoId]);
-    await db.delete('lugares_interes',
-        where: 'piso_id = ?', whereArgs: [pisoId]);
-    await db.delete('calibraciones', where: 'piso_id = ?', whereArgs: [pisoId]);
-    await db.delete('pisos', where: 'id = ?', whereArgs: [pisoId]);
+    // Todo o nada: un mapa a medio quitar no se puede navegar ni volver a
+    // quitar bien.
+    await db.transaction((txn) async {
+      await txn.delete('beacons', where: 'piso_id = ?', whereArgs: [pisoId]);
+      await txn.delete('zonas_no_transitables',
+          where: 'piso_id = ?', whereArgs: [pisoId]);
+      await txn.delete('lugares_interes',
+          where: 'piso_id = ?', whereArgs: [pisoId]);
+      await txn.delete('calibraciones',
+          where: 'piso_id = ?', whereArgs: [pisoId]);
+      await txn.delete('pisos', where: 'id = ?', whereArgs: [pisoId]);
+    });
 
     // Borrar el archivo de imagen local (si quedó y existe).
     if (ruta != null && ruta.isNotEmpty) {
@@ -529,18 +562,6 @@ class DatabaseHelper {
         // Si no se pudo borrar el archivo, no es crítico.
       }
     }
-  }
-
-  /// Set de remote_ids ya descargados/publicados en este equipo. Permite al
-  /// catálogo marcar en una sola consulta qué mapas ya están en el teléfono.
-  Future<Set<String>> obtenerRemoteIdsLocales() async {
-    final db = await instance.database;
-    final r = await db.query(
-      'pisos',
-      columns: ['remote_id'],
-      where: 'remote_id IS NOT NULL',
-    );
-    return r.map((row) => row['remote_id'] as String).toSet();
   }
 
   /// Mapa de remote_id → fecha de la versión descargada (parseada). Sirve para
@@ -715,13 +736,33 @@ class DatabaseHelper {
         });
       }
 
-      // Calibraciones: el mapa crudo ya tiene la forma exacta de la fila
-      // (lecturas_ble / tx_power_ajustado como strings). Sólo se fija piso_id.
+      // Calibraciones. Cada una pasa por CalibracionRegistro: de lo que vino
+      // de la nube se guardan sólo los campos conocidos, con su tipo.
+      //
+      // Antes el mapa crudo se insertaba tal cual, con sus claves como
+      // nombres de columna. Un campo que esta versión no conoce (un mapa
+      // publicado con una app más nueva) hacía fallar la descarga ENTERA; y
+      // como sqflite arma el INSERT con esos nombres sin escaparlos, quien
+      // pudiera publicar un mapa podía alterar la sentencia. Una calibración
+      // mal formada ahora se saltea: el resto del mapa se instala igual.
       for (final raw in calibraciones) {
-        final c = Map<String, dynamic>.from(raw as Map);
-        c.remove('id');
-        c['piso_id'] = pisoId;
-        await txn.insert('calibraciones', c);
+        final CalibracionRegistro registro;
+        try {
+          final c = Map<String, dynamic>.from(raw as Map);
+          c.remove('id');
+          c['piso_id'] = pisoId;
+          // Los dos campos JSON viajan como texto; si llegaran ya
+          // decodificados (lista o mapa) se aceptan igual.
+          for (final clave in const ['lecturas_ble', 'tx_power_ajustado']) {
+            final v = c[clave];
+            if (v is List || v is Map) c[clave] = jsonEncode(v);
+          }
+          registro = CalibracionRegistro.fromJson(c);
+        } catch (e) {
+          debugPrint('[Mapa] Calibración descartada (mal formada): $e');
+          continue;
+        }
+        await txn.insert('calibraciones', registro.toJson());
       }
 
       return pisoId;
@@ -764,18 +805,24 @@ class DatabaseHelper {
   }
 
   // --- Beacons ---
+  /// Reemplaza los beacons del piso por [beacons], en UNA transacción: se
+  /// llama cada vez que se mueve un beacon y antes de publicar, y sin ella
+  /// un cierre de la app entre el borrado y las inserciones dejaba el piso
+  /// sin parte de sus beacons.
   Future<void> guardarBeacons(int pisoId, List<BeaconMarcado> beacons) async {
     final db = await instance.database;
-    await db.delete('beacons', where: 'piso_id = ?', whereArgs: [pisoId]);
-    for (var b in beacons) {
-      await db.insert('beacons', {
-        'piso_id': pisoId,
-        'mac': b.mac,
-        'x': b.posicion.dx,
-        'y': b.posicion.dy,
-        'nombre_beacon': b.nombre,
-      });
-    }
+    await db.transaction((txn) async {
+      await txn.delete('beacons', where: 'piso_id = ?', whereArgs: [pisoId]);
+      for (var b in beacons) {
+        await txn.insert('beacons', {
+          'piso_id': pisoId,
+          'mac': b.mac,
+          'x': b.posicion.dx,
+          'y': b.posicion.dy,
+          'nombre_beacon': b.nombre,
+        });
+      }
+    });
   }
 
   Future<List<BeaconMarcado>> obtenerBeaconsPorPiso(int pisoId) async {
@@ -786,24 +833,6 @@ class DatabaseHelper {
       nombre: json['nombre_beacon'] as String,
       mac: json['mac'] as String,
     )).toList();
-  }
-
-  Future<Map<String, dynamic>?> obtenerInfoPorBeacon(String mac) async {
-    final db = await instance.database;
-    final result = await db.rawQuery('''
-      SELECT pisos.id, pisos.edificio_id, pisos.numero_piso,
-             pisos.ruta_imagen, pisos.escala_metros, pisos.escala_metros_alto,
-             pisos.tam_celda_metros, pisos.rotacion_mapa,
-             pisos.remote_id, pisos.remote_actualizado,
-             edificios.nombre as edificio_nombre, pisos.nombre_piso
-      FROM beacons
-      INNER JOIN pisos ON beacons.piso_id = pisos.id
-      INNER JOIN edificios ON pisos.edificio_id = edificios.id
-      WHERE beacons.mac = ?
-      LIMIT 1
-    ''', [mac]);
-    if (result.isNotEmpty) return result.first;
-    return null;
   }
 
   /// Índice completo "MAC → piso" de todos los mapas guardados, en UNA sola
@@ -1060,31 +1089,17 @@ class DatabaseHelper {
     });
   }
 
+  /// Borra el piso con todo lo suyo, en una transacción (todo o nada).
   Future<int> eliminarPiso(int id) async {
     final db = await instance.database;
-    await db.delete('beacons', where: 'piso_id = ?', whereArgs: [id]);
-    await db.delete('zonas_no_transitables', where: 'piso_id = ?', whereArgs: [id]);
-    await db.delete('lugares_interes', where: 'piso_id = ?', whereArgs: [id]);
-    await db.delete('calibraciones', where: 'piso_id = ?', whereArgs: [id]);
-    return await db.delete('pisos', where: 'id = ?', whereArgs: [id]);
-  }
-
-  /// Desinstala del teléfono un mapa descargado (por su remote_id): borra el
-  /// piso y todos sus datos. Devuelve la ruta de la imagen local para que el
-  /// llamador borre también el archivo. Devuelve null si no estaba descargado.
-  Future<String?> eliminarMapaDescargado(String remoteId) async {
-    final db = await instance.database;
-    final rows = await db.query(
-      'pisos',
-      columns: ['id', 'ruta_imagen'],
-      where: 'remote_id = ?',
-      whereArgs: [remoteId],
-      limit: 1,
-    );
-    if (rows.isEmpty) return null;
-    final pisoId = rows.first['id'] as int;
-    final ruta = rows.first['ruta_imagen'] as String?;
-    await eliminarPiso(pisoId);
-    return ruta;
+    return db.transaction<int>((txn) async {
+      await txn.delete('beacons', where: 'piso_id = ?', whereArgs: [id]);
+      await txn.delete('zonas_no_transitables',
+          where: 'piso_id = ?', whereArgs: [id]);
+      await txn.delete('lugares_interes',
+          where: 'piso_id = ?', whereArgs: [id]);
+      await txn.delete('calibraciones', where: 'piso_id = ?', whereArgs: [id]);
+      return txn.delete('pisos', where: 'id = ?', whereArgs: [id]);
+    });
   }
 }

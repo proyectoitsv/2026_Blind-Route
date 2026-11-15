@@ -120,8 +120,8 @@ enum OrigenAjuste {
 /// Las capas viven en la nube (tabla `ajustes_navegacion`; la lectura y la
 /// subida las hace `SupabaseService`) y en el teléfono, para navegar sin
 /// conexión. Los edificios se identifican por su nombre, igual que los pisos
-/// publicados: si se renombra un edificio, sus ajustes quedan con el nombre
-/// viejo.
+/// publicados: al renombrar un edificio, sus ajustes pasan al nombre nuevo
+/// (ver [renombrarEdificio]).
 ///
 /// Antes había "preselecciones" con nombre y calificación, guardadas en el
 /// teléfono. Se eliminaron: lo que quedó guardado de ellas
@@ -233,7 +233,7 @@ class AjustesNavegacion {
   /// Las ventanas eran en LECTURAS y pasaron a SEGUNDOS: el atraso depende
   /// del tiempo, y cuánto duran N lecturas depende de cada cuánto emite el
   /// beacon. Por eso cambiaron también las claves: un valor guardado en
-  /// lecturas no se lee como segundos (ver [_migrarVentanas]).
+  /// lecturas, con la clave vieja, no se lee como segundos (se ignora).
   final ParametroAjuste ventanaSenalQuieto = ParametroAjuste(
     clave: 'nav_ventana_senal_quieto_seg',
     nombre: 'Ventana de señal, parado',
@@ -537,6 +537,32 @@ class AjustesNavegacion {
     _edificioActual = nombre;
     _aplicar();
     debugPrint('[Ajustes] ${nombre ?? "Sin edificio"}: $resumen');
+  }
+
+  /// El edificio [viejo] pasó a llamarse [nuevo]: lo que este teléfono tiene
+  /// cambiado para él va con el nombre nuevo (los edificios se identifican
+  /// por su nombre).
+  ///
+  /// [copiadoEnNube]: si la nube ya tiene esos ajustes con el nombre nuevo.
+  /// Si no (sin conexión), o si había cambios de este teléfono sin subir,
+  /// quedan pendientes de subir con el nombre nuevo: si no, la próxima vez
+  /// que se bajaran los ajustes llegarían vacíos y se perderían.
+  Future<void> renombrarEdificio(
+    String viejo,
+    String nuevo, {
+    required bool copiadoEnNube,
+  }) async {
+    await cargar();
+    if (viejo == nuevo) return;
+    final valores = _edificios.remove(viejo);
+    final sinSubir = _pendientes.remove(idEdificio(viejo));
+    if (valores != null) {
+      _edificios[nuevo] = valores;
+      if (sinSubir || !copiadoEnNube) _pendientes.add(idEdificio(nuevo));
+    }
+    if (_edificioActual == viejo) _edificioActual = nuevo;
+    _aplicar();
+    await _guardar();
   }
 
   // ── Edición (app del administrador) ───────────────────────────────────────

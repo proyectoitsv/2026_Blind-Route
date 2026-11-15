@@ -144,7 +144,14 @@ class _ListaPisosState extends State<ListaPisos> {
     if (imagen == null) return;
 
     final directory = await getApplicationDocumentsDirectory();
-    final nombreArchivo = p.basename(imagen.path);
+    // Nombre único para la copia. Antes se guardaba con el nombre original
+    // del archivo: si otro piso ya había usado una imagen con ese nombre
+    // ("planta_baja.png" en dos edificios), la copia nueva pisaba la
+    // anterior y los dos pisos mostraban el mismo plano. Se conserva la
+    // extensión: de ella sale el tipo de imagen al publicar.
+    final nombreArchivo =
+        'plano_${DateTime.now().microsecondsSinceEpoch}'
+        '${p.extension(imagen.path).toLowerCase()}';
     final rutaPermanente = p.join(directory.path, nombreArchivo);
     await File(imagen.path).copy(rutaPermanente);
 

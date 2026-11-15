@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'ajustes_navegacion.dart';
 import 'database.dart';
 import 'design/design.dart';
 import 'lista_pisos.dart';
@@ -25,6 +26,10 @@ import 'supabase_service.dart';
 /// es una hoja con el nombre (CampoTexto): si se guarda vacío, lo dice
 /// debajo del campo (antes no pasaba nada). Los avisos son los del sistema de
 /// diseño (mostrarAviso).
+///
+/// Cada tarjeta tiene un lápiz ("Cambiar nombre de…", con el nombre del
+/// edificio), que abre la misma hoja con el nombre puesto. Ni al cargar ni al cambiar se acepta un
+/// nombre repetido (ver "UN NOMBRE, UN EDIFICIO" en DatabaseHelper).
 ///
 /// Hasta que se lee la base no se muestra nada: si no, "No hay edificios
 /// registrados" se vería (y TalkBack lo anunciaría) mientras se lee.
@@ -120,13 +125,126 @@ class _ListaEdificiosState extends State<ListaEdificios> {
     titulo: 'Nuevo edificio',
     // Lo cierra "Cancelar" (o volver, o tocar afuera).
     botonCerrar: false,
-    contenido: (context) => _NuevoEdificio(
-      alGuardar: (nombre) async {
-        await DatabaseHelper.instance.crearEdificio(nombre);
-        _refrescarEdificios();
-      },
-    ),
+    contenido: (context) => _NuevoEdificio(alGuardar: _crearEdificio),
   );
+
+  /// Guarda el edificio, si su nombre no está repetido. Devuelve null si lo
+  /// guardó, o lo que hay que decir debajo del campo si no.
+  ///
+  /// Dos edificios con el mismo nombre se mezclan (ver "UN NOMBRE, UN
+  /// EDIFICIO" en DatabaseHelper): no se acepta uno que ya esté en este
+  /// teléfono ni uno que ya haya publicado otro administrador. Lo segundo
+  /// sólo se puede saber con conexión; sin ella se guarda igual y se vuelve
+  /// a revisar al publicar el primer piso.
+  Future<String?> _crearEdificio(String nombre) async {
+    if (await DatabaseHelper.instance.existeEdificioConNombre(nombre)) {
+      return 'Ya hay un edificio con ese nombre.';
+    }
+    if (SupabaseService.instance.configurado) {
+      try {
+        if (await SupabaseService.instance.nombreDeEdificioDeOtroAdmin(
+          nombre,
+        )) {
+          return 'Otro administrador ya publicó un edificio con ese nombre. '
+              'Elegí otro.';
+        }
+      } catch (e) {
+        debugPrint('[Edificios] No se pudo revisar el nombre en la nube: $e');
+      }
+    }
+    await DatabaseHelper.instance.crearEdificio(nombre);
+    _refrescarEdificios();
+    return null;
+  }
+
+  // ── CAMBIAR EL NOMBRE DE UN EDIFICIO ──────────────────────────────────────
+  //
+  // Hace falta porque el nombre no se puede repetir: si otro administrador
+  // ya publicó un edificio con el mismo, la publicación se rechaza, y sin
+  // esto la única salida era cargar el edificio de nuevo.
+  //
+  // El nombre es lo que identifica al edificio en la nube, así que no
+  // alcanza con cambiarlo en el teléfono: también se cambia en sus pisos ya
+  // publicados (todos juntos) y en sus ajustes de navegación. Si el edificio
+  // tiene pisos publicados y la nube no contesta, no se cambia nada: con el
+  // nombre cambiado a medias, el usuario vería dos edificios.
+
+  Future<void> _cambiarNombre(Map<String, dynamic> edificio) =>
+      mostrarHoja<void>(
+        context,
+        titulo: 'Cambiar nombre',
+        // Lo cierra "Cancelar" (o volver, o tocar afuera).
+        botonCerrar: false,
+        contenido: (context) => _NuevoEdificio(
+          nombreInicial: edificio['nombre'] as String,
+          alGuardar: (nombre) => _renombrarEdificio(edificio, nombre),
+        ),
+      );
+
+  /// Cambia el nombre de [edificio] a [nuevo]. Devuelve null si quedó
+  /// cambiado (o era el mismo), o lo que hay que decir debajo del campo.
+  Future<String?> _renombrarEdificio(
+    Map<String, dynamic> edificio,
+    String nuevo,
+  ) async {
+    final id = edificio['id'] as int;
+    final viejo = edificio['nombre'] as String;
+    if (nuevo == viejo) return null;
+    final base = DatabaseHelper.instance;
+    if (await base.existeEdificioConNombre(nuevo, salvoId: id)) {
+      return 'Ya hay un edificio con ese nombre.';
+    }
+
+    final publicados = await base.obtenerRemoteIdsDeEdificio(id);
+    final nube = SupabaseService.instance;
+    var enNube = false;
+    if (nube.configurado) {
+      try {
+        if (await nube.nombreDeEdificioDeOtroAdmin(nuevo)) {
+          return 'Otro administrador ya publicó un edificio con ese nombre. '
+              'Elegí otro.';
+        }
+        await nube.renombrarEdificioPublicado(
+          nuevo: nuevo,
+          remoteIds: publicados,
+        );
+        enNube = true;
+      } catch (e) {
+        debugPrint('[Edificios] No se pudo cambiar el nombre en la nube: $e');
+        if (publicados.isNotEmpty) {
+          return 'No se pudo cambiar el nombre en los mapas publicados. '
+              'Revisá la conexión y probá de nuevo.';
+        }
+        // Sin pisos publicados no hay nada que cambiar en la nube: el nombre
+        // se vuelve a revisar al publicar el primero.
+      }
+    }
+
+    // Los ajustes de navegación del edificio, que la nube guarda con su
+    // nombre. Si no se pueden copiar, quedan pendientes en el teléfono.
+    var ajustesEnNube = false;
+    if (enNube) {
+      try {
+        ajustesEnNube = await nube.copiarAjustesDeEdificio(viejo, nuevo);
+      } catch (e) {
+        debugPrint('[Edificios] No se pudieron copiar los ajustes: $e');
+      }
+    }
+
+    await base.renombrarEdificio(id, nuevo);
+    await AjustesNavegacion.instancia.renombrarEdificio(
+      viejo,
+      nuevo,
+      copiadoEnNube: ajustesEnNube,
+    );
+    _refrescarEdificios();
+    _avisar(
+      publicados.isEmpty
+          ? 'Nombre cambiado.'
+          : 'Nombre cambiado, también en los mapas publicados.',
+    );
+    return null;
+  }
 
   void _abrirPisos(Map<String, dynamic> edificio) {
     Navigator.push(
@@ -233,6 +351,13 @@ class _ListaEdificiosState extends State<ListaEdificios> {
           subtitulo: 'Deslizá para eliminar',
           // Con TalkBack no se desliza: está la acción "Eliminar".
           etiquetaSemantica: nombre,
+          acciones: [
+            BotonRedondo(
+              icono: Icons.edit_rounded,
+              etiqueta: 'Cambiar nombre de $nombre',
+              alPresionar: () => _cambiarNombre(edificio),
+            ),
+          ],
           alTocar: () => _abrirPisos(edificio),
           alEliminar: () => _eliminarEdificio(edificio),
           alEliminada: () => _sacarDeLaLista(edificio),
@@ -276,21 +401,28 @@ class _BarraAgregar extends StatelessWidget {
   }
 }
 
-/// Lo que va en la hoja "Nuevo edificio": el nombre, "Cancelar" y
-/// "Guardar". Si se guarda vacío, lo dice debajo del campo. Mientras guarda,
-/// el campo y "Guardar" se deshabilitan: dos toques no cargan dos edificios.
+/// Lo que va en las hojas "Nuevo edificio" y "Cambiar nombre": el nombre,
+/// "Cancelar" y "Guardar". Si se guarda vacío, o con un nombre que ya
+/// existe, lo dice debajo del campo. Mientras guarda, el campo y "Guardar"
+/// se deshabilitan: dos toques no cargan dos edificios.
 class _NuevoEdificio extends StatefulWidget {
-  const _NuevoEdificio({required this.alGuardar});
+  const _NuevoEdificio({required this.alGuardar, this.nombreInicial});
 
-  /// Guarda el edificio y vuelve a leer la lista.
-  final Future<void> Function(String nombre) alGuardar;
+  /// El nombre que tiene el edificio, al cambiarlo. null: un edificio nuevo.
+  final String? nombreInicial;
+
+  /// Guarda el edificio y vuelve a leer la lista. Devuelve null si lo
+  /// guardó, o por qué no (va debajo del campo).
+  final Future<String?> Function(String nombre) alGuardar;
 
   @override
   State<_NuevoEdificio> createState() => _NuevoEdificioState();
 }
 
 class _NuevoEdificioState extends State<_NuevoEdificio> {
-  final TextEditingController _nombre = TextEditingController();
+  late final TextEditingController _nombre = TextEditingController(
+    text: widget.nombreInicial,
+  );
   String? _error;
   bool _guardando = false;
 
@@ -301,13 +433,25 @@ class _NuevoEdificioState extends State<_NuevoEdificio> {
   }
 
   Future<void> _guardar() async {
-    if (_nombre.text.isEmpty) {
+    // Sin espacios a los costados (un nombre sólo de espacios es vacío).
+    final nombre = _nombre.text.trim();
+    if (nombre.isEmpty) {
       setState(() => _error = 'Escribí el nombre del edificio.');
       return;
     }
     setState(() => _guardando = true);
-    await widget.alGuardar(_nombre.text);
-    if (mounted) Navigator.of(context).pop();
+    final error = await widget.alGuardar(nombre);
+    if (!mounted) return;
+    if (error != null) {
+      // No se guardó (el nombre ya existe): la hoja queda abierta para
+      // corregirlo.
+      setState(() {
+        _guardando = false;
+        _error = error;
+      });
+      return;
+    }
+    Navigator.of(context).pop();
   }
 
   @override

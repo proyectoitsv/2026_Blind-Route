@@ -1,6 +1,6 @@
 import 'dart:collection';
 import 'dart:math';
-import 'package:flutter/material.dart';
+import 'dart:ui' show Offset;
 
 /// Servicio de orientacion basado en la brujula del dispositivo.
 ///
@@ -109,12 +109,6 @@ class OrientacionService {
     return (media, sqrt(sumSin * sumSin + sumCos * sumCos));
   }
 
-  /// Media circular de una lista de angulos en grados.
-  static double mediaCircular(List<double> angulos) {
-    if (angulos.isEmpty) return 0;
-    return _mediaYResultante(angulos).$1;
-  }
-
   // ── Getters ─────────────────────────────────────────────────────────────────
 
   double? get heading => _headingActual;
@@ -174,19 +168,6 @@ class OrientacionService {
     if (h < 247.5)                return 'Suroeste';
     if (h < 292.5)                return 'Oeste';
     return 'Noroeste';
-  }
-
-  static IconData iconoDireccion(double heading) {
-    double h = heading % 360;
-    if (h < 0) h += 360;
-    if (h >= 337.5 || h < 22.5)  return Icons.arrow_upward;
-    if (h < 67.5)                 return Icons.north_east;
-    if (h < 112.5)                return Icons.arrow_forward;
-    if (h < 157.5)                return Icons.south_east;
-    if (h < 202.5)                return Icons.arrow_downward;
-    if (h < 247.5)                return Icons.south_west;
-    if (h < 292.5)                return Icons.arrow_back;
-    return Icons.north_west;
   }
 
   /// Rumbo real (grados, 0 = Norte, sentido horario) de [desde] hacia
@@ -252,40 +233,6 @@ class OrientacionService {
       instruccion: instruccion,
       direccionDestino: direccionCardinal(anguloDestino),
     );
-  }
-
-  /// Devuelve el próximo punto objetivo siguiendo el camino de la grilla: la
-  /// próxima "esquina" (donde el camino cambia de dirección) o el destino final.
-  ///
-  /// Las instrucciones de voz/giro deben apuntar a este punto en lugar de
-  /// directamente al destino, para que el usuario avance a lo largo del camino
-  /// pintado (que sigue las cuadrículas) y no en línea recta cruzando paredes.
-  static Offset proximoObjetivo(List<Offset> ruta, Offset posicionUsuario) {
-    if (ruta.isEmpty) return posicionUsuario;
-    if (ruta.length == 1) return ruta.first;
-
-    // Celda del camino más cercana a la posición actual.
-    int idx = 0;
-    double mejor = double.infinity;
-    for (int i = 0; i < ruta.length; i++) {
-      final d = (ruta[i] - posicionUsuario).distanceSquared;
-      if (d < mejor) {
-        mejor = d;
-        idx = i;
-      }
-    }
-    if (idx >= ruta.length - 1) return ruta.last;
-
-    Offset signo(Offset v) => Offset(v.dx.sign, v.dy.sign);
-    final dirInicial = signo(ruta[idx + 1] - ruta[idx]);
-
-    // Avanzar mientras la dirección no cambie: el punto donde cambia es la
-    // próxima esquina del camino.
-    int j = idx;
-    while (j < ruta.length - 1 && signo(ruta[j + 1] - ruta[j]) == dirInicial) {
-      j++;
-    }
-    return ruta[j];
   }
 
   void limpiar() {

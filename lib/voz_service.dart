@@ -212,10 +212,19 @@ class VozService {
     _ultimaVezHablado = DateTime.now();
     _ultimaInstruccion = texto;
 
-    // Timeout de seguridad: ~150ms por caracter a velocidad 0.48, mínimo 1500ms,
-    // más 600ms de margen para que el altavoz se apague físicamente antes de
-    // abrir el micrófono.
-    final timeoutMs = (texto.length * 150).clamp(1500, 12000) + 600;
+    // Timeout de seguridad, por si el motor no avisa que terminó: ~150 ms por
+    // carácter con la voz al 100 % (el doble de lo que tarda de verdad),
+    // mínimo 1500 ms, más 600 ms de margen para que el altavoz se apague
+    // físicamente antes de abrir el micrófono.
+    //
+    // Se escala con la velocidad elegida y el tope es largo a propósito:
+    // antes eran 12 s fijos, y una frase larga (la lista de opciones) o
+    // cualquiera de más de ~95 caracteres con la voz al 60 % se daba por
+    // terminada mientras todavía sonaba. El micrófono se abría con la app
+    // hablando y la frase siguiente la pisaba.
+    final msPorCaracter = 150 * 100 / _ajustes.velocidad.valor;
+    final timeoutMs =
+        (texto.length * msPorCaracter).round().clamp(1500, 40000) + 600;
     await completer.future
         .timeout(Duration(milliseconds: timeoutMs), onTimeout: completar);
   }
@@ -440,9 +449,11 @@ class VozService {
       // Una frase secundaria se corta siempre, le falte lo que le falte.
       if (!_sonandoSecundaria) {
         final desde = _ultimaVezHablado;
+        // Con la velocidad elegida: con la voz lenta, a la frase le falta
+        // más de lo que diría la cuenta al 100 %.
         final restanteMs = desde == null
             ? 0
-            : _ultimaInstruccion.length * _msPorCaracterEstimado -
+            : duracionEstimada(_ultimaInstruccion).inMilliseconds -
                 DateTime.now().difference(desde).inMilliseconds;
         if (restanteMs <= _esperaMaxUrgenteMs) return false;
       }
@@ -456,8 +467,8 @@ class VozService {
     return true;
   }
 
-  /// Duración estimada del habla, para saber cuánto le falta a la frase en
-  /// curso (a velocidad 0.48 el motor anda por los 70-90 ms por carácter).
+  /// Duración estimada del habla con la voz al 100 % (a velocidad 0.48 el
+  /// motor anda por los 70-90 ms por carácter). Ver [duracionEstimada].
   static const int _msPorCaracterEstimado = 80;
 
   /// Si a la frase en curso le falta menos que esto, un aviso urgente la
@@ -508,6 +519,64 @@ class VozService {
  
   bool get sttDisponible => _sttDisponible;
   bool get escuchando => _escuchando;
+
+  // ═══ SIN MICRÓFONO ═══
+  // Si el reconocedor no se pudo inicializar (permiso de micrófono negado, o
+  // el teléfono no tiene servicio de reconocimiento), escuchar() avisaba un
+  // error genérico y la pantalla contestaba "No te escuché. Intentá de
+  // nuevo." a cada toque, para siempre: nunca decía que el problema era el
+  // micrófono, ni volvía a probar si el permiso se daba después.
+
+  /// Motivo con el que termina (por onError) una escucha que no pudo ni
+  /// empezar porque no hay reconocedor. Quien escucha dice
+  /// [avisoSinMicrofono].
+  static const String errorNoDisponible = 'no disponible';
+
+  // El micrófono también puede estar desactivado en el teléfono (el botón
+  // "Acceso al micrófono" del panel rápido, Android 12 o más). Ahí el
+  // permiso sigue dado y el reconocedor arranca, pero recibe silencio: la
+  // app decía "No te escuché" y nunca que el micrófono estaba desactivado,
+  // ni Android preguntaba si activarlo (ver MainActivity.kt).
+
+  /// El micrófono está desactivado en el teléfono, según la última vez que
+  /// se miró ([microfonoDisponible]).
+  bool _microfonoBloqueado = false;
+  bool get microfonoBloqueado => _microfonoBloqueado;
+
+  /// Lo que se dice cuando no se puede usar el micrófono: por qué, y qué se
+  /// puede hacer.
+  String get avisoSinMicrofono => _microfonoBloqueado
+      ? 'El micrófono del teléfono está desactivado. Activalo y tocá de '
+          'nuevo para hablar, o elegí el destino de la lista.'
+      : 'No puedo usar el micrófono. Revisá el permiso en los ajustes del '
+          'teléfono, o elegí el destino de la lista.';
+
+  /// Dice [avisoSinMicrofono] y, si el micrófono está desactivado en el
+  /// teléfono, hace que Android pregunte si se lo activa. Después de la
+  /// frase, para que no se pise con TalkBack leyendo el aviso del sistema.
+  Future<void> avisarSinMicrofono() async {
+    await hablar(avisoSinMicrofono);
+    if (_microfonoBloqueado) {
+      await ReconocimientoEnTelefono.pedirDesbloquearMicrofono();
+    }
+  }
+
+  /// Si se puede escuchar. Si el reconocedor no estaba disponible lo vuelve
+  /// a inicializar: el permiso pudo haberse dado después (y si todavía se
+  /// puede pedir, Android lo vuelve a preguntar). Con el reconocedor listo,
+  /// mira si el micrófono está desactivado en el teléfono.
+  Future<bool> microfonoDisponible() async {
+    if (!_sttDisponible) await _inicializarSTT();
+    if (!_sttDisponible) {
+      _microfonoBloqueado = false;
+      return false;
+    }
+    _microfonoBloqueado = await ReconocimientoEnTelefono.microfonoBloqueado();
+    if (_microfonoBloqueado) {
+      debugPrint('[Voz] El micrófono está desactivado en el teléfono.');
+    }
+    return !_microfonoBloqueado;
+  }
  
   /// Locale de español del reconocedor, averiguado UNA vez.
   ///
@@ -529,12 +598,13 @@ class VozService {
       for (final id in candidatos) {
         if (locales.any((l) => l.localeId == id)) return id;
       }
-      // Cualquier locale que empiece con "es"
-      final cualquierEs = locales.firstWhere(
-        (l) => l.localeId.startsWith('es'),
-        orElse: () => locales.first,
-      );
-      return cualquierEs.localeId;
+      // Cualquier locale que empiece con "es". Si no hay ninguno, null: el
+      // reconocedor usa el idioma del sistema. (Antes se devolvía el primero
+      // de la lista, fuera el idioma que fuera.)
+      for (final l in locales) {
+        if (l.localeId.startsWith('es')) return l.localeId;
+      }
+      return null;
     } catch (_) {
       return null; // Deja que el sistema elija
     }
@@ -687,7 +757,8 @@ class VozService {
   /// teléfono, siempre; si no, sólo con conexión a internet. Si no, quien
   /// pregunta dice [avisoSinConexion] en lugar de abrir el micrófono.
   Future<bool> puedeEntenderVoz() async {
-    // Sin reconocedor, el aviso lo da escuchar().
+    // Sin reconocedor no es un problema de conexión: eso lo dice
+    // [microfonoDisponible] (y, si no, escuchar() con [errorNoDisponible]).
     if (!_sttDisponible) return true;
     // La descarga pudo haber terminado (con Android 13 no avisa).
     if (_idioma.estado == EstadoIdioma.descargando) await _actualizarIdioma();
@@ -747,7 +818,9 @@ class VozService {
 
   /// Escucha una frase del usuario. Termina SIEMPRE con un aviso, y uno solo:
   /// [onResultado] con lo que dijo, u [onError] con el motivo ('sin texto' si
-  /// no dijo nada o no se entendió, [errorCancelado] si se la cortó).
+  /// no dijo nada o no se entendió, [errorCancelado] si se la cortó,
+  /// [errorSinConexion] si no hay cómo entender la voz sin internet,
+  /// [errorNoDisponible] si no se puede usar el micrófono).
   ///
   /// Si ya había una escucha abierta, se la corta (su dueño recibe
   /// [errorCancelado]) y arranca esta.
@@ -764,8 +837,8 @@ class VozService {
     bool Function(String texto)? entiende,
     Duration timeout = const Duration(seconds: 12),
   }) async {
-    if (!_sttDisponible) {
-      onError?.call('Reconocimiento de voz no disponible');
+    if (!await microfonoDisponible()) {
+      onError?.call(errorNoDisponible);
       return;
     }
     final anterior = _cerrarSesion;

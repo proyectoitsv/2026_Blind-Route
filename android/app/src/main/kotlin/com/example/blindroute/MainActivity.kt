@@ -1,14 +1,23 @@
 package com.example.blindroute
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.AppOpsManager
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
+import android.os.Process
 import android.speech.ModelDownloadListener
 import android.speech.RecognitionSupport
 import android.speech.RecognitionSupportCallback
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -22,7 +31,8 @@ import io.flutter.plugin.common.MethodChannel
 // esperando el error. Acá se consulta sin abrirlo y se pide la descarga
 // (Android 13 o más: SpeechRecognizer.checkRecognitionSupport y
 // triggerModelDownload). También se mira si hay conexión, para avisar
-// cuando sin el idioma descargado no se puede entender la voz.
+// cuando sin el idioma descargado no se puede entender la voz, y si el
+// micrófono está desactivado en el teléfono (ver "MICRÓFONO DESACTIVADO").
 class MainActivity : FlutterActivity() {
     private var canal: MethodChannel? = null
 
@@ -39,6 +49,11 @@ class MainActivity : FlutterActivity() {
                 "consultarIdiomas" -> consultarIdiomas(idioma, resultado)
                 "pedirDescarga" -> resultado.success(pedirDescarga(idioma))
                 "hayConexion" -> resultado.success(hayConexion())
+                "microfonoBloqueado" -> resultado.success(microfonoBloqueado())
+                "pedirDesbloquearMicrofono" -> {
+                    pedirDesbloquearMicrofono()
+                    resultado.success(null)
+                }
                 else -> resultado.notImplemented()
             }
         }
@@ -157,7 +172,66 @@ class MainActivity : FlutterActivity() {
             capacidades.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
+    // ═══ MICRÓFONO DESACTIVADO ═══
+    // Desde Android 12 el micrófono se puede desactivar para todas las apps
+    // (el botón "Acceso al micrófono" del panel rápido). El permiso de la app
+    // sigue dado: el reconocedor arranca, pero recibe silencio, y la app
+    // decía "No te escuché". El aviso del sistema para volver a activarlo
+    // sale sólo cuando la app que está en pantalla usa el micrófono, y acá
+    // lo usa el reconocedor de voz (otra app), así que nunca salía.
+
+    private fun permisoMicrofono() =
+        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    /// Si el micrófono está desactivado en el teléfono. Desactivado, Android
+    /// les restringe a todas las apps la operación de grabar audio, aunque
+    /// tengan el permiso: se mira eso, sin abrir el micrófono. Con el permiso
+    /// negado responde false (eso lo atiende Dart por su lado).
+    private fun microfonoBloqueado(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || !permisoMicrofono()) return false
+        val operaciones = getSystemService(AppOpsManager::class.java) ?: return false
+        // "Raw": el modo tal cual, sin evaluar si la app está en primer plano
+        // (en segundo plano daría "ignorado" aunque el micrófono esté activo).
+        val modo = operaciones.unsafeCheckOpRawNoThrow(
+            AppOpsManager.OPSTR_RECORD_AUDIO,
+            Process.myUid(),
+            packageName,
+        )
+        Log.d(ETIQUETA, "Operación de grabar audio: modo $modo")
+        return modo == AppOpsManager.MODE_IGNORED
+    }
+
+    /// Abre el micrófono un instante desde la app, que está en pantalla: con
+    /// el micrófono desactivado, Android muestra su aviso para activarlo.
+    /// Lo grabado es silencio y se descarta.
+    @SuppressLint("MissingPermission") // permisoMicrofono() lo comprueba
+    private fun pedirDesbloquearMicrofono() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || !permisoMicrofono()) return
+        Thread {
+            try {
+                val muestreo = 16000
+                val canalAudio = AudioFormat.CHANNEL_IN_MONO
+                val formato = AudioFormat.ENCODING_PCM_16BIT
+                val tam = AudioRecord.getMinBufferSize(muestreo, canalAudio, formato)
+                if (tam <= 0) return@Thread
+                val grabador =
+                    AudioRecord(MediaRecorder.AudioSource.MIC, muestreo, canalAudio, formato, tam)
+                try {
+                    if (grabador.state != AudioRecord.STATE_INITIALIZED) return@Thread
+                    grabador.startRecording()
+                    grabador.read(ByteArray(tam), 0, tam)
+                    grabador.stop()
+                } finally {
+                    grabador.release()
+                }
+            } catch (e: Exception) {
+                Log.w(ETIQUETA, "No se pudo abrir el micrófono para pedir activarlo: $e")
+            }
+        }.start()
+    }
+
     companion object {
         private const val CANAL = "blindroute/reconocimiento"
+        private const val ETIQUETA = "BlindRoute"
     }
 }

@@ -1,19 +1,32 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
 
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
-        android:usesPermissionFlags="neverForLocation" />
+    <!-- Escaneo de balizas (Android 12 o más). SIN la marca neverForLocation:
+         la app calcula una posición con las balizas, y con esa marca Android
+         le oculta los avisos con formato iBeacon y Eddystone (el de las
+         balizas comerciales, como las Holy-IOT). Por eso hace falta también
+         la ubicación precisa. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!-- El plugin de Bluetooth lo pide para escanear y para encender el
+         Bluetooth (Android 12 o más). -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Bluetooth en Android 11 o menos: sin estos dos no se puede escanear. -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <!-- Android sólo entrega las balizas con la ubicación precisa concedida.
+         La aproximada va porque Android 12 o más exige pedirlas juntas. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Sin permisos de fotos ni de vibración: la imagen del plano se elige
+         con el selector del sistema y las vibraciones son las del sistema
+         (HapticFeedback); ninguno de los dos necesita permiso. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Saber si hay conexión antes de pedir el destino por voz, cuando el
          español no está descargado para reconocer sin internet. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
         android:label="@string/app_name"

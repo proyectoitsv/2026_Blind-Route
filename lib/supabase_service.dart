@@ -172,6 +172,94 @@ class SupabaseService {
     return id;
   }
 
+  /// Si OTRO administrador ya publicó un edificio con ese nombre (comparado
+  /// con [DatabaseHelper.claveNombreEdificio]).
+  ///
+  /// Los edificios se identifican por su nombre: si dos administradores
+  /// publican uno con el mismo, en el teléfono del usuario se mezclan sus
+  /// pisos y sus ajustes (ver "UN NOMBRE, UN EDIFICIO" en DatabaseHelper).
+  /// Los mapas propios no cuentan: un administrador puede cargar su mismo
+  /// edificio en otro teléfono.
+  ///
+  /// Sin sesión no se puede saber quién es el dueño: false. Sin conexión
+  /// (o si la nube no contesta dentro de [limite]) lanza la excepción.
+  Future<bool> nombreDeEdificioDeOtroAdmin(
+    String nombre, {
+    Duration limite = const Duration(seconds: 5),
+  }) async {
+    final uid = usuarioActualId;
+    if (!configurado || uid == null) return false;
+    final data = await _client
+        .from(_tabla)
+        .select('edificio_nombre, publicado_por')
+        .timeout(limite);
+    final clave = DatabaseHelper.claveNombreEdificio(nombre);
+    for (final raw in data as List) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      if (row['publicado_por'] == uid) continue;
+      final otro = (row['edificio_nombre'] as String?) ?? '';
+      if (DatabaseHelper.claveNombreEdificio(otro) == clave) return true;
+    }
+    return false;
+  }
+
+  // ── RENOMBRAR UN EDIFICIO (admin) ─────────────────────────────────────────
+  //
+  // El nombre del edificio viaja en cada piso publicado y es por lo que la
+  // app del usuario agrupa los pisos. Si al renombrar un edificio sólo
+  // cambiara en el teléfono del administrador, los pisos ya publicados
+  // seguirían con el nombre viejo y los que se publicaran después irían con
+  // el nuevo: para el usuario serían dos edificios, cada uno con una parte.
+
+  /// Cambia el nombre del edificio en los pisos ya publicados ([remoteIds]),
+  /// todos juntos, y les sube la versión para que los teléfonos que ya los
+  /// tienen los vuelvan a bajar con el nombre nuevo.
+  ///
+  /// Sin conexión, o si la nube lo rechaza, lanza la excepción y no cambia
+  /// nada: quien llama no tiene que cambiar el nombre en el teléfono.
+  Future<void> renombrarEdificioPublicado({
+    required String nuevo,
+    required List<String> remoteIds,
+    Duration limite = const Duration(seconds: 8),
+  }) async {
+    if (remoteIds.isEmpty) return;
+    await _client
+        .from(_tabla)
+        .update({
+          'edificio_nombre': nuevo,
+          'actualizado_en': DateTime.now().toUtc().toIso8601String(),
+        })
+        .inFilter('id', remoteIds)
+        .timeout(limite);
+  }
+
+  /// Copia a [nuevo] los ajustes de navegación que la nube tiene para el
+  /// edificio [viejo] (ver [AjustesNavegacion]): la capa de un edificio se
+  /// guarda con su nombre. Devuelve true si la nube quedó con los ajustes en
+  /// el nombre nuevo (o no tenía ninguno).
+  Future<bool> copiarAjustesDeEdificio(
+    String viejo,
+    String nuevo, {
+    Duration limite = const Duration(seconds: 8),
+  }) async {
+    final fila = await _client
+        .from(_tablaAjustes)
+        .select('valores')
+        .eq('id', AjustesNavegacion.idEdificio(viejo))
+        .maybeSingle()
+        .timeout(limite);
+    if (fila == null) return true;
+    await _client
+        .from(_tablaAjustes)
+        .upsert({
+          'id': AjustesNavegacion.idEdificio(nuevo),
+          'valores': fila['valores'],
+          'actualizado_en': DateTime.now().toUtc().toIso8601String(),
+        })
+        .timeout(limite);
+    return true;
+  }
+
   // ── CATÁLOGO (usuario) ────────────────────────────────────────────────────
 
   /// Lista los mapas publicados con columnas livianas (sin los JSONB pesados).
@@ -301,28 +389,6 @@ class SupabaseService {
     return (pendientes: pendientes, eliminados: eliminados);
   }
 
-  // ── NOVEDADES ───────────────────────────────────────────────────────────────
-
-  /// Cuenta cuántos mapas del catálogo son nuevos (no descargados) y cuántos
-  /// están descargados pero tienen una versión más nueva en la nube. Se usa
-  /// para el aviso del botón de inicio.
-  Future<({int nuevos, int actualizados})> contarNovedades() async {
-    final mapas = await listarMapas();
-    final descargadas =
-        await DatabaseHelper.instance.obtenerMapasDescargados();
-    int nuevos = 0;
-    int actualizados = 0;
-    for (final m in mapas) {
-      if (!descargadas.containsKey(m.id)) {
-        nuevos++;
-      } else {
-        final v = descargadas[m.id];
-        if (v != null && m.actualizadoEn.isAfter(v)) actualizados++;
-      }
-    }
-    return (nuevos: nuevos, actualizados: actualizados);
-  }
-
   // ── CATÁLOGO ADMIN ────────────────────────────────────────────────────────
 
   /// id del admin logueado (para saber cuáles mapas son propios). Null si no
@@ -387,12 +453,26 @@ class SupabaseService {
     );
 
     // 2) Imagen → archivo local permanente.
+    //
+    // El nombre lleva la versión del mapa. Antes era siempre
+    // "mapa_<id>.png": al actualizar un mapa cuyo plano había cambiado, el
+    // archivo se pisaba con el mismo nombre, y Flutter (que recuerda las
+    // imágenes ya abiertas por su ruta) podía seguir mostrando el plano
+    // viejo hasta reiniciar la app. Con un nombre por versión el plano nuevo
+    // se ve enseguida.
     final imagenPath = row['imagen_path'] as String;
     final Uint8List bytes =
         await _client.storage.from(_bucket).download(imagenPath);
     final dir = await getApplicationDocumentsDirectory();
     final ext = p.extension(imagenPath);
-    final rutaLocal = p.join(dir.path, 'mapa_$remoteId$ext');
+    final version =
+        DateTime.tryParse('${row['actualizado_en']}')?.millisecondsSinceEpoch ??
+        DateTime.now().millisecondsSinceEpoch;
+    final rutaLocal = p.join(dir.path, 'mapa_${remoteId}_$version$ext');
+    // El plano de la versión que ya estaba en el teléfono, si es una
+    // actualización (se borra más abajo, con la nueva ya instalada).
+    final rutaAnterior =
+        (await DatabaseHelper.instance.obtenerImagenesDescargadas())[remoteId];
     await File(rutaLocal).writeAsBytes(bytes, flush: true);
 
     // 3) Insertar/actualizar en la base local en una sola transacción.
@@ -412,6 +492,21 @@ class SupabaseService {
       calibraciones: (row['calibraciones'] as List?) ?? const [],
       remoteActualizado: row['actualizado_en'] as String?,
     );
+
+    // El plano de la versión anterior de ESTE mapa ya no lo usa nadie: se
+    // borra su archivo. Sólo ése: los demás mapas y sus imágenes no se
+    // tocan (y si por lo que fuera otro mapa lo usara, se deja).
+    if (rutaAnterior != null && rutaAnterior != rutaLocal) {
+      try {
+        final enUso = await DatabaseHelper.instance.obtenerImagenesDescargadas();
+        final viejo = File(rutaAnterior);
+        if (!enUso.containsValue(rutaAnterior) && await viejo.exists()) {
+          await viejo.delete();
+        }
+      } catch (e) {
+        debugPrint('[Mapa] No se pudo borrar el plano anterior: $e');
+      }
+    }
 
     // 4) Ajustes de navegación del edificio. Ahora hay conexión; en el
     //    edificio puede no haberla. Si fallan, el mapa igual queda: se

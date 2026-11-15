@@ -12,6 +12,10 @@ import 'package:flutter/services.dart';
 // los responde el código de Android (MainActivity.kt). Necesita Android 13
 // o más; con uno anterior, [ReconocimientoEnTelefono.consultar] dice
 // [EstadoIdioma.noDisponible] y la voz sigue por internet.
+//
+// El mismo código de Android dice también si el micrófono está desactivado
+// en el teléfono (Android 12 o más) y hace que el sistema pregunte si se lo
+// activa (ver [ReconocimientoEnTelefono.microfonoBloqueado]).
 
 /// Cómo está el español para reconocer la voz en el teléfono.
 enum EstadoIdioma {
@@ -138,6 +142,32 @@ class ReconocimientoEnTelefono {
       return true;
     } on PlatformException {
       return true;
+    }
+  }
+
+  /// Si el micrófono está desactivado en el teléfono (el botón "Acceso al
+  /// micrófono" del panel rápido, Android 12 o más). Con el permiso de la
+  /// app negado, o si no se puede saber, false.
+  static Future<bool> microfonoBloqueado() async {
+    try {
+      return await _canal.invokeMethod<bool>('microfonoBloqueado') ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException catch (e) {
+      debugPrint('[Voz] No se pudo saber si el micrófono está activado: $e');
+      return false;
+    }
+  }
+
+  /// Con el micrófono desactivado en el teléfono, hace que Android muestre
+  /// su aviso para activarlo (ver MainActivity.kt).
+  static Future<void> pedirDesbloquearMicrofono() async {
+    try {
+      await _canal.invokeMethod<void>('pedirDesbloquearMicrofono');
+    } on MissingPluginException {
+      return;
+    } on PlatformException catch (e) {
+      debugPrint('[Voz] No se pudo pedir activar el micrófono: $e');
     }
   }
 

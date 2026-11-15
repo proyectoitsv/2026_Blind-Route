@@ -172,12 +172,12 @@ Las capturas se generaron en la computadora con datos y planos de ejemplo.
 | Permiso | Uso |
 |---|---|
 | Bluetooth | Detectar las balizas |
-| Ubicación | Requerido por Android para buscar dispositivos Bluetooth |
+| Ubicación precisa | Requerida por Android para detectar las balizas. La ubicación del teléfono debe estar encendida |
 | Micrófono | Indicar el destino por voz |
-| Fotos | Seleccionar la imagen del plano (solo administración) |
 | Internet | Descargar y publicar mapas, descargar el idioma de la voz y entender la voz mientras el idioma no esté descargado |
 | Estado de la red | Avisar cuando no hay conexión para entender la voz |
-| Vibración | Avisos al girar y al llegar |
+
+La imagen del plano se elige con el selector del sistema y las vibraciones son las del sistema: ninguna de las dos cosas requiere un permiso.
 
 ## Estado del proyecto
 

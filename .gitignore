@@ -8,7 +8,8 @@
 .flutter-plugins-dependencies
 .packages
 build/
-pubspec.lock
+# pubspec.lock SÍ se versiona: es una aplicación, y con él todos compilan
+# con las mismas versiones de las dependencias.
 
 # ============================================
 # ANDROID

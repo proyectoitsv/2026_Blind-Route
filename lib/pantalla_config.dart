@@ -568,9 +568,28 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         widget.pisoId,
       );
       if (info == null) throw Exception('No se encontró el piso.');
+      final edificioNombre = (info['edificio_nombre'] as String?) ?? 'Edificio';
+
+      // Un piso que se publica por primera vez no puede entrar a un edificio
+      // con el nombre de uno que ya publicó OTRO administrador: en el
+      // teléfono del usuario los dos edificios se mezclarían (ver "UN
+      // NOMBRE, UN EDIFICIO" en DatabaseHelper). Al crear el edificio ya se
+      // revisa, pero sólo si había conexión. Un piso ya publicado se puede
+      // seguir actualizando.
+      if (info['remote_id'] == null &&
+          await SupabaseService.instance.nombreDeEdificioDeOtroAdmin(
+            edificioNombre,
+          )) {
+        _avisar(
+          'No se publicó: otro administrador ya tiene publicado un edificio '
+          'llamado "$edificioNombre". Cargá este edificio con otro nombre.',
+          error: true,
+        );
+        return;
+      }
 
       final remoteId = await SupabaseService.instance.publicarPiso(
-        edificioNombre: (info['edificio_nombre'] as String?) ?? 'Edificio',
+        edificioNombre: edificioNombre,
         pisoNombre: (info['nombre_piso'] as String?) ?? 'Piso',
         rutaImagen: widget.rutaImagen,
         escalaX: _escalaX,
@@ -785,9 +804,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       return;
     }
 
-    final ok = await BluetoothHelper.verificarPrecondiciones(context);
-    if (!ok) {
-      _avisar('Bluetooth o permisos no disponibles', error: true);
+    // Si falta algo se dice qué: el Bluetooth, un permiso o la ubicación
+    // del teléfono.
+    final falla = await BluetoothHelper.diagnosticar();
+    if (falla != null) {
+      _avisar(falla.aviso, error: true);
       return;
     }
 
@@ -1509,9 +1530,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// tiempo real al calibrar). No-op si ya está escaneando.
   Future<void> _asegurarEscaneando() async {
     if (_escaneando) return;
-    final ok = await BluetoothHelper.verificarPrecondiciones(context);
-    if (!ok) {
-      _avisar('Bluetooth o permisos no disponibles', error: true);
+    // Si falta algo se dice qué: el Bluetooth, un permiso o la ubicación
+    // del teléfono.
+    final falla = await BluetoothHelper.diagnosticar();
+    if (falla != null) {
+      _avisar(falla.aviso, error: true);
       return;
     }
     if (mounted) setState(() => _escaneando = true);
@@ -2085,6 +2108,17 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       escalaX = anchoMetros / comp(anchoSeg.dx);
     }
 
+    // Otra escala es otra grilla: las calibraciones guardadas quedarían
+    // corridas (ver [_confirmarCambioDeGrilla]).
+    if ((escalaX != _escalaX || escalaY != _escalaY) &&
+        !await _confirmarCambioDeGrilla('¿Cambiar la escala?')) {
+      // No se cambió nada: la medida del ancho queda sin poner, para que el
+      // botón no diga "Escala lista" con la escala anterior.
+      if (mounted) setState(() => _anchoMetros = null);
+      _avisar('La escala no se cambió.');
+      return;
+    }
+
     try {
       await DatabaseHelper.instance.actualizarEscalaPiso(
         widget.pisoId,
@@ -2115,6 +2149,58 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
+  // ── CAMBIAR LA GRILLA CON CALIBRACIONES CARGADAS ──────────────────────────
+  //
+  // La escala y el tamaño de celda definen la grilla, y cada calibración
+  // guarda la CELDA donde se tomó (columna y fila), no el punto del plano.
+  // Con otra grilla, esa misma columna y fila cae en otro lugar: con celdas
+  // de 1 m la celda (10, 4) está a 10,5 m del borde, y con celdas de 0,5 m,
+  // a 5,25 m. Antes el cambio se hacía sin avisar y todas las calibraciones
+  // y puntos clave quedaban corridos: el ajuste de distancias de cada beacon
+  // y la corrección por punto clave pasaban a trabajar con datos falsos.
+  // Ahora, si hay calibraciones, se pide confirmar y se borran: hay que
+  // volver a tomarlas con la grilla nueva.
+
+  /// true mientras se está preguntando: el deslizador avisa cada paso, y no
+  /// hay que abrir una hoja por cada uno.
+  bool _confirmandoCambioDeGrilla = false;
+
+  /// Si se puede cambiar la grilla. Con calibraciones cargadas pide
+  /// confirmar ([titulo]) y, si se acepta, las borra.
+  Future<bool> _confirmarCambioDeGrilla(String titulo) async {
+    if (_calibraciones.isEmpty) return true;
+    if (_confirmandoCambioDeGrilla) return false;
+    _confirmandoCambioDeGrilla = true;
+    try {
+      final puntosClave = _calibraciones.where((c) => c.esFingerprint).length;
+      final comunes = _calibraciones.length - puntosClave;
+      final confirmar = await mostrarConfirmacion(
+        context,
+        titulo: titulo,
+        mensaje:
+            'Este piso tiene $comunes '
+            '${comunes == 1 ? "calibración" : "calibraciones"} y $puntosClave '
+            '${puntosClave == 1 ? "punto clave" : "puntos clave"} tomados con '
+            'la grilla actual. Con la grilla nueva quedarían corridos de '
+            'lugar, así que se van a borrar y hay que volver a tomarlos. No '
+            'se puede deshacer.'
+            '${_remoteIdPublicado != null ? '\n\nLa copia publicada no cambia hasta que vuelvas a publicar el piso.' : ''}',
+        confirmar: 'Cambiar y borrar',
+        destructiva: true,
+        iconoConfirmar: Icons.delete_sweep_rounded,
+      );
+      if (!confirmar) return false;
+      await DatabaseHelper.instance.eliminarCalibracionesDelPiso(widget.pisoId);
+      if (mounted) setState(() => _calibraciones = []);
+      return true;
+    } catch (e) {
+      _avisar('Error borrando calibraciones: $e', error: true);
+      return false;
+    } finally {
+      _confirmandoCambioDeGrilla = false;
+    }
+  }
+
   /// Un número con un decimal y coma ("12,5"), para lo que se lee en la
   /// pantalla.
   static String _decimal(double v) => v.toStringAsFixed(1).replaceAll('.', ',');
@@ -2125,6 +2211,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     // Redondear al paso de 0.1 m para evitar ruido de coma flotante del Slider.
     final v = (valor * 10).round() / 10;
     if (v == _tamCelda) return;
+    // Otro tamaño de celda es otra grilla: las calibraciones guardadas
+    // quedarían corridas (ver [_confirmarCambioDeGrilla]).
+    if (!await _confirmarCambioDeGrilla('¿Cambiar el tamaño de celda?')) return;
     if (mounted) {
       setState(() {
         _tamCelda = v;

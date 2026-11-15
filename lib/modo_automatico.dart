@@ -9,6 +9,7 @@ import 'supabase_service.dart';
 import 'voz_service.dart';
 import 'design/design.dart';
 import 'piso_util.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 class ModoAutomatico extends StatefulWidget {
   const ModoAutomatico({super.key});
@@ -65,6 +66,30 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
 
   Timer? _timeoutTimer;
   Timer? _mapaTimer;
+
+  // ── FALLAS DEL BLUETOOTH: SE DICEN Y SE REINTENTA ──────────────────────────
+  //
+  // Antes, si el Bluetooth estaba apagado, faltaba un permiso o el escaneo no
+  // arrancaba, la pantalla lo escribía y nada más: quien no ve se quedaba
+  // esperando en silencio. Y si el escaneo no arrancaba (Android deja 5
+  // arranques cada 30 s; ver BluetoothHelper), no se volvía a probar.
+  //
+  // Ahora cada falla se dice por voz, una vez, con lo que se puede hacer
+  // ([_avisarFalla]), y el arranque del escaneo se reintenta solo
+  // ([_arrancarScan]).
+
+  /// Vuelve a probar el arranque del escaneo cuando no arrancó.
+  Timer? _reintentoScanTimer;
+
+  /// Espera mínima entre dos intentos de arrancar el escaneo que falló.
+  static const Duration _esperaReintentoScan = Duration(seconds: 5);
+
+  /// La última falla que se dijo, para no repetirla en cada reintento.
+  String? _fallaAvisada;
+
+  /// El escaneo está esperando a que Android deje arrancarlo (la pantalla
+  /// dice "Preparando el Bluetooth...").
+  bool _esperandoCupo = false;
 
   // ── ELECCIÓN DEL PISO DE LLEGADA ───────────────────────────────────────────
   //
@@ -160,6 +185,10 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
   @override
   void initState() {
     super.initState();
+    // La pantalla no se apaga mientras se busca: con la pantalla apagada
+    // Android deja de entregar el escaneo (no lleva filtro) y la búsqueda se
+    // moría sin avisar. Quien no ve no la toca para mantenerla encendida.
+    WakelockPlus.enable();
     _iniciarBusqueda();
   }
 
@@ -167,10 +196,14 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
   void dispose() {
     _timeoutTimer?.cancel();
     _mapaTimer?.cancel();
+    _reintentoScanTimer?.cancel();
     // NO detenemos el scan aqui - PantallaNavegacion lo necesita activo
     // Solo cancelamos si no navegamos
     if (!_navegando) {
       BluetoothHelper.detenerScanSeguro(dueno: this);
+      // Si se pasó a la navegación, la pantalla nueva ya la dejó encendida
+      // (se crea antes de que se destruya esta): ahí no se apaga.
+      WakelockPlus.disable();
     }
     super.dispose();
   }
@@ -213,14 +246,22 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     });
   }
 
+  /// Deja una falla escrita en la pantalla y la dice por voz (ver "FALLAS
+  /// DEL BLUETOOTH"). La misma falla no se repite en cada reintento.
+  void _avisarFalla(String texto) {
+    if (!mounted || _navegando || texto == _fallaAvisada) return;
+    _fallaAvisada = texto;
+    _ultimoEstadoEscrito = texto;
+    setState(() => _estado = texto);
+    _voz.hablar(texto);
+  }
+
   Future<void> _iniciarBusqueda() async {
     await _cargarIndiceBeacons();
     if (!mounted) return;
-    final ok = await BluetoothHelper.verificarPrecondiciones(context);
-    if (!ok) {
-      if (mounted) {
-        setState(() => _estado = 'Bluetooth o permisos no disponibles.');
-      }
+    final falla = await BluetoothHelper.diagnosticar();
+    if (falla != null) {
+      _avisarFalla(falla.aviso);
       return;
     }
 
@@ -229,22 +270,53 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
     }
 
     _inicioBusqueda = DateTime.now();
+    await _arrancarScan();
+  }
+
+  /// Arranca el escaneo. Si no arranca (sin cupo de arranques, o el plugin
+  /// lo rechazó), lo dice y vuelve a probar solo.
+  Future<void> _arrancarScan() async {
+    if (!mounted || _navegando) return;
     final scanOk = await BluetoothHelper.iniciarScanSeguro(
       dueno: this,
       onResultados: (resultados) => _procesarResultados(resultados),
       onError: (e) {
-        if (mounted) {
-          setState(() => _estado = 'Error en scan: $e');
-        }
+        debugPrint('[Modo automático] Error del escaneo: $e');
+        _avisarFalla(
+          BluetoothHelper.fallaDeError(e)?.aviso ??
+              'No se pudo iniciar la búsqueda por Bluetooth. Reintentando.',
+        );
       },
       removeIfGone: const Duration(seconds: 3),
     );
+    if (!mounted || _navegando) return;
 
-    if (!scanOk && mounted) {
-      setState(() => _estado = 'No se pudo iniciar el escaneo');
+    if (!scanOk) {
+      // Sin cupo no falló nada: hay que esperar a que Android deje arrancar.
+      // Si lo rechazó el plugin, ya lo avisó onError.
+      final espera = BluetoothHelper.esperaParaArrancar();
+      if (espera > Duration.zero && _fallaAvisada == null) {
+        _esperandoCupo = true;
+        _mostrarEstado('Preparando el Bluetooth...');
+      }
+      _reintentoScanTimer?.cancel();
+      _reintentoScanTimer = Timer(
+        espera > _esperaReintentoScan
+            ? espera + const Duration(milliseconds: 300)
+            : _esperaReintentoScan,
+        _arrancarScan,
+      );
       return;
     }
 
+    // Arrancó: si antes se había avisado una falla o se estaba esperando el
+    // cupo, ya pasó (y si la falla vuelve, se avisa de nuevo).
+    if (_fallaAvisada != null || _esperandoCupo) {
+      _fallaAvisada = null;
+      _esperandoCupo = false;
+      _mostrarEstado('Buscando beacons de BlindRoute...');
+    }
+    _timeoutTimer?.cancel();
     _timeoutTimer = Timer(const Duration(seconds: 15), () {
       if (mounted && !_navegando && _beaconsDetectados == 0) {
         setState(() => _estado = 'No se encontraron mapas.');
@@ -674,7 +746,7 @@ class _Lectura {
 
 /// Señal acumulada de un piso durante la ventana de elección.
 class _EvidenciaPiso {
-  /// Fila del piso (la que devuelve obtenerInfoPorBeacon).
+  /// Fila del piso (de obtenerIndiceBeaconsLocales).
   final Map<String, dynamic> info;
 
   /// RSSI filtrado (dBm) de cada beacon de ESTE piso que se está viendo.

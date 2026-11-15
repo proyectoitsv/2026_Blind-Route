@@ -1090,12 +1090,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       }
 
       if (!mounted) return;
-      final ok = await BluetoothHelper.verificarPrecondiciones(context);
-      if (!ok) {
-        if (mounted) {
-          setState(() => _estadoScan = 'Bluetooth o permisos no disponibles');
-        }
-        await _voz.hablar('Bluetooth no disponible.');
+      // Si falta algo se dice qué: el Bluetooth, un permiso o la ubicación
+      // del teléfono (antes era siempre "Bluetooth no disponible.").
+      final falla = await BluetoothHelper.diagnosticar();
+      if (falla != null) {
+        if (mounted) setState(() => _estadoScan = falla.aviso);
+        await _voz.hablar(falla.aviso);
         return;
       }
 
@@ -1223,24 +1223,21 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     final scanOk = await BluetoothHelper.iniciarScanSeguro(
       dueno: this,
       onResultados: (resultados) => _actualizarSenales(resultados),
-      onError: (e) {
-        if (mounted) {
-          setState(() => _estadoScan = 'Error en scan: $e');
-        }
-      },
+      onError: _avisarFallaScan,
       removeIfGone: const Duration(seconds: 4),
     );
 
     if (!scanOk && !reutilizandoScan) {
       // Puede ser un fallo real o simplemente falta de cupo de arranques. El
       // watchdog de abajo se instala igual y va a reintentar cuando haya cupo,
-      // asi que esto es informativo, no terminal.
+      // asi que esto es informativo, no terminal. Si fue un fallo real,
+      // _avisarFallaScan ya lo dijo y lo dejó escrito: no se pisa.
       final espera = BluetoothHelper.esperaParaArrancar();
       if (mounted) {
         setState(
           () => _estadoScan = espera > Duration.zero
               ? 'Reintentando escaneo en ${espera.inSeconds} s...'
-              : 'No se pudo iniciar el escaneo',
+              : (_fallaScanAvisada ?? 'No se pudo iniciar el escaneo'),
         );
       }
     } else if (mounted) {
@@ -1258,6 +1255,36 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     });
 
     _instalarWatchdogScan();
+  }
+
+  // ── ERRORES DEL ESCANEO: TAMBIÉN POR VOZ ─────────────────────────────────
+  //
+  // Antes un error del escaneo (no arrancó, o se cortó) sólo quedaba escrito
+  // en la pantalla ("Error en scan: …", con el texto en inglés del plugin).
+  // Quien no ve se quedaba sin guía y sin saber por qué. Ahora se dice por
+  // voz, igual que la pérdida de señal: qué pasa y, si se puede resolver
+  // (Bluetooth apagado, falta un permiso, ubicación apagada), qué hacer.
+
+  /// El último error del escaneo que se dijo por voz, para no repetirlo en
+  /// cada reintento del watchdog. Vuelve a null cuando llegan resultados.
+  String? _fallaScanAvisada;
+
+  void _avisarFallaScan(Object error) {
+    debugPrint('[BLE] Error del escaneo: $error');
+    if (!mounted) return;
+    final texto =
+        BluetoothHelper.fallaDeError(error)?.aviso ??
+        'Hay un problema con el Bluetooth. Estoy reintentando.';
+    if (texto != _estadoScan) setState(() => _estadoScan = texto);
+    if (texto == _fallaScanAvisada) return;
+    // Con un pedido de destino en curso no: caería encima de las preguntas
+    // o con el micrófono abierto. Se dice con el próximo error (el watchdog
+    // reintenta cada pocos segundos).
+    if (_pedidoEnCurso || _escuchando) return;
+    _fallaScanAvisada = texto;
+    // hablar() y no hablarSinEsperar(): corta lo que esté sonando. Sin
+    // escaneo no hay posición, y una indicación a medio decir ya no vale.
+    _voz.hablar(texto);
   }
 
   /// ── WATCHDOG DEL SCAN BLE ────────────────────────────────────────────────
@@ -1335,7 +1362,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // la app simplemente deja de guiarlo sin decir nada.
         if (_reiniciosSinDatos == 3) {
           _voz.hablarSinEsperar(
-            'Perdi la senal de los beacons. Estoy reintentando.',
+            'Perdí la señal de los beacons. Estoy reintentando.',
           );
         }
       }
@@ -1345,6 +1372,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   void _actualizarSenales(List<ScanResult> resultados) {
     if (!mounted) return;
     _contadorLecturas++;
+    // Llegan resultados: el escaneo anda. Si vuelve a fallar, se avisa de
+    // nuevo (ver _avisarFallaScan).
+    _fallaScanAvisada = null;
 
     // ── SÓLO LECTURAS NUEVAS ───────────────────────────────────────────────
     // flutter_blue_plus entrega en cada callback la lista ACUMULADA de
@@ -2950,6 +2980,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// indicaciones vuelven solas pasado este tiempo.
   static const Duration _maxDuracionPedido = Duration(seconds: 60);
 
+  /// Pedido ([_turnoVoz]) en el que ya se avisó que no se puede usar el
+  /// micrófono, para no repetirlo en cada pregunta (ver
+  /// [_preguntarYEscuchar]).
+  int? _turnoSinMicrofono;
+
   bool get _pedidoEnCurso {
     final desde = _pedidoDesde;
     return desde != null &&
@@ -3109,6 +3144,22 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     bool Function(String norm)? entiende,
   }) async {
     final turno = _turnoVoz;
+    // Sin micrófono no hay cómo contestar: no se pregunta. Se avisa una vez
+    // por pedido y se devuelve "no se entendió", con lo que quien pregunta
+    // sigue como cuando no entiende (por ejemplo, al más cercano). Pasa al
+    // elegir de la lista un lugar que necesita una aclaración ("Baño").
+    if (!await _voz.microfonoDisponible()) {
+      if (!mounted || turno != _turnoVoz) return null;
+      if (_turnoSinMicrofono != turno) {
+        _turnoSinMicrofono = turno;
+        await _voz.hablar(_voz.microfonoBloqueado
+            ? 'El micrófono del teléfono está desactivado.'
+            : 'No puedo usar el micrófono.');
+        if (!mounted || turno != _turnoVoz) return null;
+      }
+      return '';
+    }
+    if (!mounted || turno != _turnoVoz) return null;
     await _voz.hablar(frase);
     if (!mounted || turno != _turnoVoz) return null;
     setState(() => _escuchando = true);
@@ -3840,6 +3891,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       return;
     }
 
+    // Sin micrófono (permiso negado, micrófono desactivado en el teléfono, o
+    // el teléfono no tiene reconocedor) no tiene sentido preguntar: se dice
+    // por qué y qué hacer, y si está desactivado Android pregunta si se lo
+    // activa (ver "SIN MICRÓFONO" en VozService).
+    if (!await _voz.microfonoDisponible()) {
+      if (mounted) await _voz.avisarSinMicrofono();
+      return;
+    }
+    if (!mounted) return;
+
     // Sin el español descargado en el teléfono y sin conexión, la voz no se
     // puede entender: se dice por qué y qué hacer, sin abrir el micrófono
     // (ver "RECONOCER EN EL TELÉFONO" en VozService).
@@ -3922,6 +3983,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // Se cortó la conexión: repetir no va a servir.
         if (error == VozService.errorSinConexion) {
           await _voz.hablar(_voz.avisoSinConexion);
+          return;
+        }
+        // El micrófono dejó de estar disponible: insistir no va a servir.
+        if (error == VozService.errorNoDisponible) {
+          await _voz.avisarSinMicrofono();
           return;
         }
         await _voz.hablar('No te escuché. Intentá de nuevo.');

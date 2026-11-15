@@ -1,8 +1,31 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+
+/// Por qué no se puede escanear (ver [BluetoothHelper.diagnosticar] y
+/// [BluetoothHelper.fallaDeError]).
+enum FallaBluetooth {
+  sinSoporte,
+  bluetoothApagado,
+  sinPermisos,
+  ubicacionApagada;
+
+  /// Lo que se le dice a la persona, por voz y en la pantalla: qué pasa y
+  /// qué puede hacer. Quien no ve no tiene otra forma de enterarse.
+  String get aviso => switch (this) {
+    FallaBluetooth.sinSoporte =>
+      'Este teléfono no tiene el Bluetooth que hace falta para ubicarte.',
+    FallaBluetooth.bluetoothApagado =>
+      'El Bluetooth está apagado. Encendelo y volvé a intentar.',
+    FallaBluetooth.sinPermisos =>
+      'Faltan los permisos de Bluetooth y de ubicación precisa. Dalos en '
+          'los ajustes del teléfono y volvé a intentar.',
+    FallaBluetooth.ubicacionApagada =>
+      'La ubicación del teléfono está apagada. Encendela y volvé a '
+          'intentar.',
+  };
+}
 
 /// Helper robusto para manejar el ciclo de vida del escaneo Bluetooth.
 ///
@@ -147,15 +170,18 @@ class BluetoothHelper {
 
   // ─── PRECONDICIONES ───────────────────────────────────────────────────────
 
-  static Future<bool> verificarPrecondiciones(BuildContext context) async {
-    if (!await FlutterBluePlus.isSupported) return false;
+  /// Revisa lo que hace falta para escanear y, si hace falta, lo pide
+  /// (encender el Bluetooth, los permisos). Devuelve QUÉ falta, para poder
+  /// avisarlo, o null si está todo.
+  static Future<FallaBluetooth?> diagnosticar() async {
+    if (!await FlutterBluePlus.isSupported) return FallaBluetooth.sinSoporte;
 
     var state = await FlutterBluePlus.adapterState.first;
     if (state == BluetoothAdapterState.off) {
       try {
         await FlutterBluePlus.turnOn();
       } catch (e) {
-        return false;
+        return FallaBluetooth.bluetoothApagado;
       }
     }
 
@@ -165,14 +191,45 @@ class BluetoothHelper {
           .first
           .timeout(const Duration(seconds: 5));
     } catch (e) {
-      return false;
+      return FallaBluetooth.bluetoothApagado;
     }
 
     var permisos = await [
       Permission.bluetoothScan,
       Permission.location,
     ].request();
-    return permisos.values.every((s) => s.isGranted);
+    if (!permisos.values.every((s) => s.isGranted)) {
+      return FallaBluetooth.sinPermisos;
+    }
+
+    // Con la ubicación del teléfono apagada Android no entrega ninguna
+    // baliza, y con Android 12 o más ni siquiera da un error: el escaneo
+    // arranca y no llega nada. Si no se puede saber, se sigue.
+    try {
+      if ((await Permission.location.serviceStatus).isDisabled) {
+        return FallaBluetooth.ubicacionApagada;
+      }
+    } catch (e) {
+      debugPrint('[BLE] No se pudo saber si la ubicación está encendida: $e');
+    }
+    return null;
+  }
+
+  /// Qué falta, según el error con el que el plugin rechazó el escaneo
+  /// (llega por `onError` de [iniciarScanSeguro]). Null si el error no dice
+  /// nada que la persona pueda resolver.
+  ///
+  /// El plugin avisa con un texto en inglés: que hace falta la ubicación del
+  /// teléfono encendida, que falta un permiso (por ejemplo, si se dio la
+  /// ubicación aproximada y no la precisa) o que el Bluetooth está apagado.
+  static FallaBluetooth? fallaDeError(Object error) {
+    final texto = '$error'.toLowerCase();
+    if (texto.contains('location services')) {
+      return FallaBluetooth.ubicacionApagada;
+    }
+    if (texto.contains('permission')) return FallaBluetooth.sinPermisos;
+    if (texto.contains('turned on')) return FallaBluetooth.bluetoothApagado;
+    return null;
   }
 
   // ─── CUOTA DE ARRANQUES ───────────────────────────────────────────────────
@@ -276,6 +333,10 @@ class BluetoothHelper {
         continuousUpdates: true,
         androidScanMode: AndroidScanMode.lowLatency,
         removeIfGone: _removeIfGoneActual,
+        // La app ubica con las balizas: escanea con la ubicación precisa
+        // (ver el AndroidManifest). Sin esto el plugin no la exige y, sin
+        // ella, Android 12 o más no entrega las balizas.
+        androidUsesFineLocation: true,
       ).timeout(const Duration(seconds: 5));
       _arranques.add(DateTime.now());
       _inicioScanFisico = DateTime.now();
@@ -432,11 +493,5 @@ class BluetoothHelper {
     } catch (_) {
       // Ignorar errores al detener
     }
-  }
-
-  // ─── UTILIDAD ─────────────────────────────────────────────────────────────
-
-  static void setStateSeguro(VoidCallback setStateFn, bool mounted) {
-    if (mounted) setStateFn();
   }
 }
