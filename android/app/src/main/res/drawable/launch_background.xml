@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Modify this file to customize your launch splash screen -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@android:color/white" />
+    <!-- El fondo de la marca (#0B1020) en lugar del blanco de fábrica: con la
+         app oscura, un arranque blanco es un fogonazo. -->
+    <item>
+        <color android:color="#FF0B1020" />
+    </item>
 
     <!-- You can insert your own image assets here -->
     <!-- <item>
