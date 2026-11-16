@@ -204,8 +204,11 @@ void main() {
         'Mapas publicados en la nube',
         'Cerrar sesión',
         'Facultad de Ingeniería',
+        // El lápiz para cambiar el nombre (4057f16), antes del tacho.
+        'Cambiar nombre de Facultad de Ingeniería',
         'Eliminar Facultad de Ingeniería',
         'Hospital Central',
+        'Cambiar nombre de Hospital Central',
         'Eliminar Hospital Central',
         'Agregar edificio',
       ]);

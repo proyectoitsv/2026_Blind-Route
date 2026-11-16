@@ -15,6 +15,7 @@ import 'package:blindroute/pantalla_naveg.dart';
 import 'package:blindroute/poi_model.dart';
 import 'package:blindroute/seguimiento_recorrido.dart';
 import 'package:blindroute/vista_navegacion.dart';
+import 'package:blindroute/voz_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -1414,8 +1415,12 @@ void main() {
       await _armarPantallaReal(tester);
     }
 
-    testWidgets('arma la vista con el piso de la base y un toque en la '
-        'pantalla pregunta el destino por voz', (tester) async {
+    // La plataforma simulada no tiene reconocedor de voz (como un teléfono
+    // con el permiso del micrófono negado): un toque avisa eso y no pregunta
+    // el destino, porque no habría cómo contestarle. Con micrófono, el
+    // último test de este grupo.
+    testWidgets('arma la vista con el piso de la base; sin micrófono, un toque '
+        'avisa que no se puede usar y no pregunta el destino', (tester) async {
       await arrancar(tester);
       expect(find.byType(VistaNavegacion), findsOneWidget);
       expect(find.text('Planta baja'), findsOneWidget);
@@ -1424,7 +1429,12 @@ void main() {
       await tester.tapAt(_estadoSenalCentro(tester));
       await tester.pump(const Duration(seconds: 1));
       await tester.pump(const Duration(seconds: 1));
-      expect(_dichas, contains('¿A dónde vas?'));
+      expect(_dichas, contains(VozService().avisoSinMicrofono));
+      expect(
+        VozService().avisoSinMicrofono,
+        contains('elegí el destino de la lista'),
+      );
+      expect(_dichas, isNot(contains('¿A dónde vas?')));
       await _desarmar(tester);
     });
 
@@ -1455,6 +1465,35 @@ void main() {
     testWidgets('el panel de ajustes sólo en la app del admin', (tester) async {
       await arrancar(tester);
       expect(find.byTooltip('Ajustes de navegación'), findsNothing);
+      await _desarmar(tester);
+    });
+
+    // Al final del grupo: VozService es uno solo para toda la app, y una vez
+    // que el reconocedor arrancó queda disponible para los tests que siguen
+    // (los de abajo no escuchan).
+    testWidgets('con micrófono, un toque en la pantalla pregunta el destino '
+        'por voz', (tester) async {
+      await arrancar(tester);
+      _mensajero.setMockMethodCallHandler(_canalEscucha, (llamada) async {
+        return llamada.method == 'initialize' ? true : null;
+      });
+      // En la app el reconocedor arranca al abrir el inicio. Se arranca con
+      // el reloj de verdad: con el falso del test no termina.
+      expect(
+        await tester.runAsync(() => VozService().microfonoDisponible()),
+        isTrue,
+      );
+      _dichas.clear();
+      await tester.tapAt(_estadoSenalCentro(tester));
+      // Lo que contesta el reconocedor simulado llega con el reloj de verdad.
+      for (var i = 0; i < 3; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 200)),
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+      }
+      expect(_dichas, contains('¿A dónde vas?'));
+      expect(_dichas, isNot(contains(VozService().avisoSinMicrofono)));
       await _desarmar(tester);
     });
   });

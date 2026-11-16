@@ -607,6 +607,18 @@ void main() {
       expect(find.text('1,0 m'), findsOneWidget);
       tester.semantics.decrease(find.semantics.byLabel('Tamaño de celda'));
       await tester.pumpAndSettle();
+      // Con calibraciones cargadas, otra grilla las dejaría corridas: pide
+      // confirmar y las borra (4057f16). Hasta confirmar, no cambia nada.
+      expect(find.text('¿Cambiar el tamaño de celda?'), findsOneWidget);
+      expect(
+        find.textContaining('1 calibración y 2 puntos clave'),
+        findsOneWidget,
+      );
+      expect(baseFalsa.filas('pisos').single['tam_celda_metros'], 1.0);
+      expect(baseFalsa.filas('calibraciones'), hasLength(3));
+      await tester.tap(find.text('Cambiar y borrar'));
+      await tester.pumpAndSettle();
+      expect(baseFalsa.filas('calibraciones'), isEmpty);
       expect(baseFalsa.filas('pisos').single['tam_celda_metros'], 0.9);
       expect(find.text('0,9 m'), findsOneWidget);
       semantica.dispose();
