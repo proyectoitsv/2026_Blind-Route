@@ -23,10 +23,10 @@ import 'movimiento_cabezal.dart';
 //
 // ─── Sin depender del color ───
 // Cada tramo lleva su número arriba, y el estado se ve también por la forma:
-//   hecho      verde, fino            (11,70 sobre lo hundido)
-//   actual     acento, más grueso     (9,79)
-//   siguiente  violeta, punteado      (7,24)
-// Las marcas llevan su ícono en texto principal (15,50).
+//   hecho      verde, fino            (13,42 sobre lo hundido)
+//   actual     acento, más grueso     (11,23)
+//   siguiente  violeta, punteado      (8,30)
+// Las marcas llevan su ícono en texto principal (17,77).
 //
 // ─── Cabezal ───
 // Un botón redondo levantado con un anillo de acento de 2 dp, adentro de la

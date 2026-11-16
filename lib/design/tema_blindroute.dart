@@ -96,7 +96,7 @@ abstract final class TemaBlindRoute {
     // y FilledButton.tonal: el secundario (superficie con borde y texto
     // principal). OutlinedButton: sólo el borde. TextButton: texto en acento
     // (las acciones de un diálogo). Deshabilitados, el texto sigue legible
-    // (9,10 sobre la superficie): con baja visión importa poder leer qué está
+    // (10,41 sobre la superficie): con baja visión importa poder leer qué está
     // apagado.
     const formaBoton = RoundedRectangleBorder(
       borderRadius: FormasApp.bordeBoton,
@@ -246,7 +246,7 @@ abstract final class TemaBlindRoute {
         ),
       ),
 
-      // Sin elegir: superficie con borde y texto principal (13,85). Elegido:
+      // Sin elegir: superficie con borde y texto principal (15,84). Elegido:
       // acento con texto oscuro (11,47) y tilde.
       chipTheme: ChipThemeData(
         backgroundColor: e.superficie,
@@ -397,7 +397,7 @@ abstract final class TemaBlindRoute {
         textStyle: TipografiaApp.nota.copyWith(color: e.textoSobreAcento),
       ),
 
-      // Pestaña activa en acento, las demás en gris (9,10 sobre la
+      // Pestaña activa en acento, las demás en gris (10,41 sobre la
       // superficie).
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: e.superficie,
@@ -425,8 +425,8 @@ abstract final class TemaBlindRoute {
       ),
 
       // ── Interruptores, deslizadores y progreso ──
-      // Apagado: pista hundida con borde (4,41 sobre el fondo) y el pulgar
-      // gris (10,18). Prendido: pulgar oscuro sobre acento (11,47). La pista
+      // Apagado: pista hundida con borde (5,05 sobre el fondo) y el pulgar
+      // gris (11,68). Prendido: pulgar oscuro sobre acento (11,47). La pista
       // del deslizador va en borde para que se vea entero el recorrido.
       switchTheme: SwitchThemeData(
         thumbColor: WidgetStateProperty.resolveWith((estados) {

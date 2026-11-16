@@ -103,7 +103,7 @@ Widget _botonMaterial({
 //
 // La acción principal de una pantalla: acento plano (sin degradado), texto
 // oscuro en peso medio (11,47), 52 de alto y radio 14. Uno solo por
-// pantalla. El acento ya pasa 3:1 contra el fondo (9,79): no necesita el
+// pantalla. El acento ya pasa 3:1 contra el fondo (11,23): no necesita el
 // borde gris de los demás controles.
 //
 // Presionado, hundido sólo con la sombra oscura: la luz del relieve es más
@@ -219,7 +219,7 @@ class BotonPrincipal extends StatelessWidget {
 // teléfono de 360 dp, ninguna palabra se parte ("Comenzar", en 34, ya no
 // entraría en un renglón).
 //
-// Contraste: título 13,85 y descripción 9,10 sobre la superficie; texto de la
+// Contraste: título 15,84 y descripción 10,41 sobre la superficie; texto de la
 // franja 11,47 sobre el acento.
 //
 // TalkBack lee el título (o etiquetaSemantica) y "botón". La descripción y el
@@ -366,10 +366,10 @@ class BotonPrincipalGrande extends StatelessWidget {
 // ─── BOTÓN SECUNDARIO ───────────────────────────────────────────────────────
 
 /// Botón para las acciones que no son la principal: levantado, con el borde
-/// de 1 px (3,94 sobre la superficie) y el texto principal (13,85).
+/// de 1 px (4,50 sobre la superficie) y el texto principal (15,84).
 ///
-/// [destructivo] (borrar, quitar) pinta el texto en el color de error: 5,31
-/// sobre la superficie y 5,94 hundido, al presionar. [compacto] mide 48 de
+/// [destructivo] (borrar, quitar) pinta el texto en el color de error: 6,08
+/// sobre la superficie y 6,82 hundido, al presionar. [compacto] mide 48 de
 /// alto en vez de 52, para una acción al lado de un título ("Ver todos").
 class BotonSecundario extends StatelessWidget {
   const BotonSecundario({
@@ -643,8 +643,8 @@ BorderSide _bordeControl(EstiloApp e, Set<WidgetState> estados) {
 
 /// Botón redondo de ícono: 36 dp de dibujo, levantado (el relieve chico) y
 /// con borde, adentro de un área tocable de 48. Es el de las barras (volver,
-/// acciones, cerrar una hoja). El ícono va en texto principal (13,85) o, si
-/// es [destructivo] (eliminar), en rojo (5,31 sobre la superficie, 5,94
+/// acciones, cerrar una hoja). El ícono va en texto principal (15,84) o, si
+/// es [destructivo] (eliminar), en rojo (6,08 sobre la superficie, 6,82
 /// hundido al presionar). [resaltado] lo rellena de acento, con el ícono
 /// oscuro (11,47), para cuando conviene usarlo ya: "Centrar el mapa", cuando
 /// el mapa dejó de seguir al usuario.

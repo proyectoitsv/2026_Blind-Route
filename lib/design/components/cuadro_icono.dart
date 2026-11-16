@@ -13,8 +13,8 @@ import '../relieve.dart';
 // tarjeta de dato, de una fila y de una tarjeta de destino. Decorativo: el
 // texto de al lado dice lo mismo, así que TalkBack lo saltea.
 //
-// Contraste del ícono sobre el relleno hundido: acento 9,79 · error 5,94 ·
-// texto principal 15,50. El ícono queda a 10 dp del borde, lejos de la
+// Contraste del ícono sobre el relleno hundido: acento 11,23 · error 6,82 ·
+// texto principal 17,77. El ícono queda a 10 dp del borde, lejos de la
 // sombra interior (llega a 6).
 
 /// Cuadro hundido con un ícono adentro.

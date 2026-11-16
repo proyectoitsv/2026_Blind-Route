@@ -36,7 +36,7 @@ import 'tarjeta_dato.dart' show TonoDato;
 // demás (debajo del texto, en la otra punta): "Eliminar Planta baja". Pide
 // la confirmación (alEliminar) y, si se confirma, la tarjeta se va. También
 // se elimina deslizándola hacia la izquierda: detrás aparece un recuadro
-// hundido con el tacho y "Eliminar" en rojo (5,94 sobre lo hundido); soltada
+// hundido con el tacho y "Eliminar" en rojo (6,82 sobre lo hundido); soltada
 // pasado el 40 % de su ancho, pide la misma confirmación y, si no se
 // confirma, vuelve a su lugar. Con TalkBack, además del botón, la tarjeta
 // tiene la acción "Eliminar" (en el menú de acciones). Con movimiento
@@ -80,7 +80,7 @@ class TarjetaLista extends StatelessWidget {
   /// Debajo del título, en [tonoSubtitulo].
   final String? subtitulo;
 
-  /// Gris (9,10 sobre la superficie) o, algo para mirar, ámbar (9,59).
+  /// Gris (10,41 sobre la superficie) o, algo para mirar, ámbar (10,97).
   final TonoDato tonoSubtitulo;
 
   /// Botones redondos (BotonRedondo), aparte de la tarjeta: a la derecha,

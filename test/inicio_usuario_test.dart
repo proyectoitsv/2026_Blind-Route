@@ -89,6 +89,15 @@ void main() {
     expect(find.byTooltip('Volver'), findsNothing);
   });
 
+  testWidgets('el botón dice sólo «Comenzar a navegar», sin la aclaración de '
+      'abajo; la frase de arriba sigue', (tester) async {
+    await _armar(tester);
+    expect(find.text('Comenzar a navegar'), findsOneWidget);
+    expect(find.text('Navegación interior para todos'), findsOneWidget);
+    expect(find.textContaining('Primero te ubico'), findsNothing);
+    expect(tester.widget<BotonPulso>(find.byType(BotonPulso)).detalle, isNull);
+  });
+
   testWidgets('las ondas se mueven sólo sin «Reducir movimiento» y se '
       'frenan con otra pantalla encima', (tester) async {
     // Lo guardado se escribe con el reloj de verdad: con el falso del test

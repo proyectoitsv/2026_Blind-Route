@@ -1442,8 +1442,8 @@ class _ArrastreUnDedoState extends State<_ArrastreUnDedo> {
 }
 
 /// El nombre de un lugar sobre el plano: una etiqueta oscura que se lee sobre
-/// cualquier plano (texto 13,85 sobre la superficie; la superficie da 14,75
-/// contra un plano blanco y el borde, 3,94 contra ella en uno oscuro). No
+/// cualquier plano (texto 15,84 sobre la superficie; la superficie da 16,88
+/// contra un plano blanco y el borde, 4,50 contra ella en uno oscuro). No
 /// crece con la letra más allá de [_escalaMaximaEtiqueta].
 class _EtiquetaPlano extends StatelessWidget {
   final String texto;
@@ -1553,7 +1553,7 @@ class _EscaleraPainter extends CustomPainter {
     final lado = min(size.width, size.height);
     final radio = Radius.circular(lado * 0.12);
 
-    // Fondo oscuro (14,75 contra un plano blanco) y borde, que lo separa de
+    // Fondo oscuro (16,88 contra un plano blanco) y borde, que lo separa de
     // un plano oscuro.
     canvas.drawRRect(
       RRect.fromRectAndRadius(rect, radio),

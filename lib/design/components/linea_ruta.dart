@@ -16,9 +16,9 @@ import 'movimiento_cabezal.dart';
 // La ruta dibujada sobre el plano hundido, como grabada: una ranura oscura
 // (ColoresApp.rutaRanura) debajo del trazo y, encima, cada tramo según su
 // estado:
-//   hecho      verde, trazo fino                 (13,31 sobre la ranura)
-//   actual     acento, el más grueso (5 dp)      (11,14)
-//   siguiente  violeta, fino y punteado          (8,23)
+//   hecho      verde, trazo fino                 (14,88 sobre la ranura)
+//   actual     acento, el más grueso (5 dp)      (12,46)
+//   siguiente  violeta, fino y punteado          (9,21)
 // El estado no depende sólo del color: el actual es más grueso y el
 // siguiente va punteado. El destino va en un cuadro con borde verde; las
 // escaleras y los ascensores, en un cuadro con el borde gris de los
@@ -578,8 +578,8 @@ class _PintorRuta extends CustomPainter {
   }
 
   /// El cuadro de una marca: el del destino con borde verde (2 dp), el de
-  /// una escalera o un ascensor con el borde gris. Ícono en verde (10,78
-  /// sobre la habitación) o en texto principal (14,28).
+  /// una escalera o un ascensor con el borde gris. Ícono en verde (12,36
+  /// sobre la habitación) o en texto principal (16,37).
   void _pintarMarca(Canvas canvas, MarcaTramo marca, Offset centro) {
     final destino = marca == MarcaTramo.destino;
     final cuadro = RRect.fromRectAndRadius(

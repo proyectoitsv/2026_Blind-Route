@@ -18,20 +18,20 @@ En la Tabla 1 se resumen los colores principales. Los contrastes se calcularon c
 
 | Uso | Color | Contraste sobre el fondo |
 |---|---|---|
-| Fondo de las pantallas | `#1A1F29` | |
-| Superficie levantada | `#222835` | 1,11 |
-| Borde de lo que se toca | `#7A8594` | 4,41 |
-| Texto principal | `#F5F8FC` | 15,50 |
-| Texto secundario | `#C3CCD9` | 10,18 |
-| Acento | `#29D9FF` | 9,79 |
-| Tramo recorrido | `#3DF5B0` | 11,70 |
-| Tramo siguiente | `#B79CFF` | 7,24 |
-| Advertencia | `#FFC857` | 10,73 |
-| Error | `#FF6B6B` | 5,94 |
+| Fondo de las pantallas | `#0B1020` | |
+| Superficie levantada | `#151C32` | 1,12 |
+| Borde de lo que se toca | `#7A8594` | 5,05 |
+| Texto principal | `#F5F8FC` | 17,77 |
+| Texto secundario | `#C3CCD9` | 11,68 |
+| Acento | `#29D9FF` | 11,23 |
+| Tramo recorrido | `#3DF5B0` | 13,42 |
+| Tramo siguiente | `#B79CFF` | 8,30 |
+| Advertencia | `#FFC857` | 12,30 |
+| Error | `#FF6B6B` | 6,82 |
 
 *Tabla 1. Colores principales y su contraste contra el fondo de las pantallas.*
 
-El relieve se arma con dos sombras, una oscura abajo a la derecha y otra clara arriba a la izquierda, que en lo levantado tienen 6 dp de desplazamiento y 12 dp de desenfoque, y en lo hundido van por dentro con 4 y 8 dp. Los botones y las tarjetas van levantados, mientras que el plano, los campos y las pistas van hundidos. Como la superficie da 1,11:1 contra el fondo, el relieve solo no alcanza para distinguir un control, por lo que todo lo que se toca lleva un borde de 1 px, salvo los rellenos de acento, que ya pasan el mínimo.
+El relieve se arma con dos sombras, una oscura abajo a la derecha y otra clara arriba a la izquierda, que en lo levantado tienen 6 dp de desplazamiento y 12 dp de desenfoque, y en lo hundido van por dentro con 4 y 8 dp. Los botones y las tarjetas van levantados, mientras que el plano, los campos y las pistas van hundidos. Como la superficie da 1,12:1 contra el fondo, el relieve solo no alcanza para distinguir un control, por lo que todo lo que se toca lleva un borde de 1 px, salvo los rellenos de acento, que ya pasan el mínimo.
 
 La tipografía es Inter 4.1, empaquetada en la app con pesos de 400 a 700 y con la escala de la Tabla 2, donde los números llevan cifras tabulares para que no se muevan al cambiar. Cuando la letra del teléfono llega a 1,2 veces la normal, los componentes se reacomodan, pasando la grilla de tarjetas a una columna o bajando los botones debajo del texto, para que ninguna palabra quede partida.
 

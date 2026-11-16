@@ -14,8 +14,8 @@ import 'presion.dart';
 // Campo de texto y buscador
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Hundido (el relieve común), con el borde de 1 px de los controles (4,41
-// sobre el fondo) y el texto de ayuda en texto secundario (10,18 sobre lo
+// Hundido (el relieve común), con el borde de 1 px de los controles (5,05
+// sobre el fondo) y el texto de ayuda en texto secundario (11,68 sobre lo
 // hundido). Enfocado, el borde pasa a 2 px de acento en 150 ms (con
 // movimiento reducido, de golpe).
 //
@@ -47,12 +47,12 @@ import 'presion.dart';
 // ─── Deshabilitado ───
 // Mientras se envía un formulario. Sigue hundido, como una pista
 // deshabilitada, con el borde del separador (decorativo) y el texto y la
-// etiqueta en texto secundario (10,18): lo escrito se sigue leyendo. TalkBack
+// etiqueta en texto secundario (11,68): lo escrito se sigue leyendo. TalkBack
 // dice que está desactivado.
 //
 // ─── Error ───
 // Debajo del campo va qué está mal ("Completá el email."), con un ícono y en
-// rojo (5,94 sobre el fondo), y el borde del campo pasa al rojo (2 px con el
+// rojo (6,82 sobre el fondo), y el borde del campo pasa al rojo (2 px con el
 // foco): el estado no depende sólo del color, lo dicen el ícono y el texto.
 // TalkBack lo anuncia al aparecer (región en vivo) y, recorriendo la
 // pantalla, lo lee justo después del campo. Quien usa el campo decide cuándo
@@ -400,8 +400,8 @@ class _CampoTextoState extends State<CampoTexto> {
   }
 }
 
-/// El error de un campo, debajo de él: un ícono y el texto, en rojo (5,94
-/// sobre el fondo, 5,31 sobre la superficie). Una región en vivo: TalkBack lo
+/// El error de un campo, debajo de él: un ícono y el texto, en rojo (6,82
+/// sobre el fondo, 6,08 sobre la superficie). Una región en vivo: TalkBack lo
 /// dice al aparecer y cuando cambia.
 class _ErrorDelCampo extends StatelessWidget {
   const _ErrorDelCampo({required this.texto});

@@ -18,7 +18,7 @@ import 'botones.dart';
 //
 // Para cargas rápidas (un nombre, una opción) sin cambiar de pantalla: una
 // superficie levantada, con las esquinas de arriba de radio 24, la manija
-// hundida (con borde, 3,94 sobre la superficie), un título y el botón
+// hundida (con borde, 4,50 sobre la superficie), un título y el botón
 // redondo para cerrar.
 //
 // ─── Movimiento ───

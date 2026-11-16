@@ -18,7 +18,7 @@ import 'hoja_inferior.dart';
 //
 // ─── Botones ───
 // Una acción destructiva va en un botón secundario con el texto en rojo
-// (5,31 sobre la superficie), nunca en cian; una que no lo es, en el botón
+// (6,08 sobre la superficie), nunca en cian; una que no lo es, en el botón
 // principal. El de cancelar va primero (a la izquierda o arriba) y la acción
 // después, uno al lado del otro o apilados si con letra grande no entran
 // (FilaBotones). Sin el botón redondo de cerrar: el de cancelar ya lo es, y

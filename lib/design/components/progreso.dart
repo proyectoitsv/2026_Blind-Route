@@ -16,7 +16,7 @@ import '../tipografia.dart';
 //
 // ─── Relieve y contraste ───
 // La pista va hundida (el relieve chico) y el avance, en acento plano, sin
-// degradado: 9,79 contra lo hundido. La pista en sí es decorativa: el dato
+// degradado: 11,23 contra lo hundido. La pista en sí es decorativa: el dato
 // lo dan el avance y el número.
 //
 // ─── TalkBack ───

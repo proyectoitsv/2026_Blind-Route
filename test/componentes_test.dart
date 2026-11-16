@@ -91,11 +91,11 @@ void main() {
 
   group('paleta y relieve', () {
     test('los valores son los de la tabla del prompt', () {
-      expect(ColoresApp.fondo, const Color(0xFF1A1F29));
-      expect(ColoresApp.superficie, const Color(0xFF222835));
+      expect(ColoresApp.fondo, const Color(0xFF0B1020));
+      expect(ColoresApp.superficie, const Color(0xFF151C32));
       expect(ColoresApp.hundido, ColoresApp.fondo);
-      expect(ColoresApp.sombraOscura, const Color(0xFF12161E));
-      expect(ColoresApp.sombraClara, const Color(0xFF262D3B));
+      expect(ColoresApp.sombraOscura, const Color(0xFF010205));
+      expect(ColoresApp.sombraClara, const Color(0xFF19213B));
       expect(ColoresApp.borde, const Color(0xFF7A8594));
       expect(ColoresApp.textoPrincipal, const Color(0xFFF5F8FC));
       expect(ColoresApp.textoSecundario, const Color(0xFFC3CCD9));
@@ -105,11 +105,11 @@ void main() {
       expect(ColoresApp.siguiente, const Color(0xFFB79CFF));
       expect(ColoresApp.advertencia, const Color(0xFFFFC857));
       expect(ColoresApp.error, const Color(0xFFFF6B6B));
-      expect(ColoresApp.planoCorredor, const Color(0xFF161B24));
-      expect(ColoresApp.planoHabitacion, const Color(0xFF1F2631));
+      expect(ColoresApp.planoCorredor, const Color(0xFF060916));
+      expect(ColoresApp.planoHabitacion, const Color(0xFF12192E));
       expect(ColoresApp.planoMuro, const Color(0xFF6E7A8C));
       expect(ColoresApp.planoTexto, const Color(0xFFA7B1BF));
-      expect(ColoresApp.rutaRanura, const Color(0xFF0E1218));
+      expect(ColoresApp.rutaRanura, const Color(0xFF000000));
     });
 
     test('la paleta pasa los mínimos', () {
@@ -3401,7 +3401,7 @@ void main() {
         final lista = find.byType(Scrollable).first;
         for (var i = 0; i < 50; i++) {
           // Un control cortado debajo de la barra deja ver sólo su borde, y la
-          // guía lo toma por el color del texto (3,94). Si falla, se corre un
+          // guía lo toma por el color del texto (4,50). Si falla, se corre un
           // poco y se vuelve a mirar: un contraste malo de verdad sigue
           // fallando.
           if (!(await textContrastGuideline.evaluate(tester)).passed) {

@@ -29,24 +29,24 @@ import 'package:flutter/painting.dart';
 //   · texto normal ≥ 4,5:1
 //   · texto importante (títulos, números clave) ≥ 7:1
 //   · íconos, bordes de controles y gráficos ≥ 3:1
-// El relieve solo no llega a 3:1 (la superficie da 1,11 contra el fondo): por
+// El relieve solo no llega a 3:1 (la superficie da 1,12 contra el fondo): por
 // eso todo control interactivo lleva además el borde de 1 px. Antes de
 // cambiar o agregar un color, recalcular el contraste y anotarlo.
 abstract final class ColoresApp {
   // ── Fondos ──────────────────────────────────────────────────────────────
 
-  /// Fondo de todas las pantallas. Siempre sólido. Texto principal encima:
-  /// 15,50.
-  static const Color fondo = Color(0xFF1A1F29);
+  /// Fondo de todas las pantallas: un azul muy oscuro, del lado del logo.
+  /// Siempre sólido. Texto principal encima: 17,77.
+  static const Color fondo = Color(0xFF0B1020);
 
   /// Superficie elevada: tarjetas, botones, barras, hojas y diálogos. Va
-  /// levantada (con las dos sombras). Texto principal encima: 13,85.
-  static const Color superficie = Color(0xFF222835);
+  /// levantada (con las dos sombras). Texto principal encima: 15,84.
+  static const Color superficie = Color(0xFF151C32);
 
   /// Relleno de lo hundido: el plano, los campos, las pistas (control
   /// segmentado, línea de tiempo, progreso) y el cuadro de los íconos. Es el
   /// color del fondo; lo hunde la sombra interior. Texto principal encima:
-  /// 15,50.
+  /// 17,77.
   static const Color hundido = fondo;
 
   // ── Relieve ─────────────────────────────────────────────────────────────
@@ -55,29 +55,29 @@ abstract final class ColoresApp {
 
   /// Sombra del relieve, abajo a la derecha de lo levantado y arriba a la
   /// izquierda (por dentro) de lo hundido. 1,09 contra el fondo.
-  static const Color sombraOscura = Color(0xFF12161E);
+  static const Color sombraOscura = Color(0xFF010205);
 
   /// Luz del relieve, arriba a la izquierda de lo levantado y abajo a la
   /// derecha (por dentro) de lo hundido. 1,19 contra el fondo.
-  static const Color sombraClara = Color(0xFF262D3B);
+  static const Color sombraClara = Color(0xFF19213B);
 
   // ── Líneas ──────────────────────────────────────────────────────────────
 
-  /// Divisores entre las filas de un grupo. Decorativo (1,12 sobre la
+  /// Divisores entre las filas de un grupo. Decorativo (1,11 sobre la
   /// superficie): no transmite información, así que no necesita 3:1.
-  static const Color separador = Color(0xFF2A313C);
+  static const Color separador = Color(0xFF1D2541);
 
   /// Borde de 1 px de todo control interactivo: botones, chips, campos,
-  /// pistas, tarjetas que se tocan, barras. Superficie 3,94 · fondo 4,41 ·
-  /// corredor del plano 4,61.
+  /// pistas, tarjetas que se tocan, barras. Superficie 4,50 · fondo 5,05 ·
+  /// corredor del plano 5,30.
   static const Color borde = Color(0xFF7A8594);
 
   // ── Texto ───────────────────────────────────────────────────────────────
 
-  /// Títulos y texto. Fondo 15,50 · superficie 13,85.
+  /// Títulos y texto. Fondo 17,77 · superficie 15,84.
   static const Color textoPrincipal = Color(0xFFF5F8FC);
 
-  /// Subtítulos y datos secundarios. Fondo 10,18 · superficie 9,10: pasa
+  /// Subtítulos y datos secundarios. Fondo 11,68 · superficie 10,41: pasa
   /// 7:1 en los dos, también para texto importante.
   static const Color textoSecundario = Color(0xFFC3CCD9);
 
@@ -88,8 +88,8 @@ abstract final class ColoresApp {
   // ── Acento (cian) ───────────────────────────────────────────────────────
 
   /// El único acento: tramo actual, botón principal, cabezal y lo elegido.
-  /// Como texto o ícono: fondo 9,79 · superficie 8,75 · corredor del plano
-  /// 10,24 · ranura de la ruta 11,14.
+  /// Como texto o ícono: fondo 11,23 · superficie 10,01 · corredor del plano
+  /// 11,77 · ranura de la ruta 12,46.
   static const Color acento = Color(0xFF29D9FF);
 
   // ── Ruta ────────────────────────────────────────────────────────────────
@@ -97,20 +97,20 @@ abstract final class ColoresApp {
   // tiempo. El estado nunca depende sólo del color: el tramo siguiente va
   // punteado, el actual más grueso, y cada tramo lleva su número.
 
-  /// Hecho: el tramo recorrido y el destino. Habitación del plano 10,78 ·
-  /// corredor 12,23 · ranura 13,31 · fondo 11,70.
+  /// Hecho: el tramo recorrido y el destino. Habitación del plano 12,36 ·
+  /// corredor 14,06 · ranura 14,88 · fondo 13,42.
   static const Color hecho = Color(0xFF3DF5B0);
 
-  /// Siguiente: el tramo que falta. Habitación del plano 6,67 · corredor
-  /// 7,57 · ranura 8,23 · fondo 7,24.
+  /// Siguiente: el tramo que falta. Habitación del plano 7,65 · corredor
+  /// 8,70 · ranura 9,21 · fondo 8,30.
   static const Color siguiente = Color(0xFFB79CFF);
 
   // ── Avisos ──────────────────────────────────────────────────────────────
 
-  /// Avisos que no son críticos. Fondo 10,73 · superficie 9,59.
+  /// Avisos que no son críticos. Fondo 12,30 · superficie 10,97.
   static const Color advertencia = Color(0xFFFFC857);
 
-  /// Errores y lo destructivo. Fondo 5,94 · superficie 5,31: pasa como texto
+  /// Errores y lo destructivo. Fondo 6,82 · superficie 6,08: pasa como texto
   /// en los dos.
   static const Color error = Color(0xFFFF6B6B);
 
@@ -119,28 +119,28 @@ abstract final class ColoresApp {
   // sobre los tres fondos que tienen alrededor.
 
   /// Corredor: el fondo del plano.
-  static const Color planoCorredor = Color(0xFF161B24);
+  static const Color planoCorredor = Color(0xFF060916);
 
   /// Habitación: las salas dentro del plano.
-  static const Color planoHabitacion = Color(0xFF1F2631);
+  static const Color planoHabitacion = Color(0xFF12192E);
 
-  /// Muros: paredes y contorno del edificio. Corredor 3,96 · habitación
-  /// 3,49 · fondo 3,79.
+  /// Muros: paredes y contorno del edificio. Corredor 4,55 · habitación
+  /// 4,00 · fondo 4,35.
   static const Color planoMuro = Color(0xFF6E7A8C);
 
-  /// Nombres de las salas. Habitación 7,01 · corredor 7,96.
+  /// Nombres de las salas. Habitación 8,04 · corredor 9,14.
   static const Color planoTexto = Color(0xFFA7B1BF);
 
   /// Ranura de la ruta: la sombra debajo del trazo, que la hace ver grabada
   /// en el plano.
-  static const Color rutaRanura = Color(0xFF0E1218);
+  static const Color rutaRanura = Color(0xFF000000);
 
   // ── Capa de foco ────────────────────────────────────────────────────────
   // Los componentes responden al toque con el relieve (levantado → hundido),
   // sin capa ni onda. Los widgets de Material sueltos (los de un diálogo, por
   // ejemplo) toman del tema una capa tenue de acento al presionar o enfocar,
   // que no baja ningún texto del mínimo: sobre la superficie, texto
-  // secundario 8,20 · acento 7,89 · error 4,79; sobre el fondo, error 5,40.
+  // secundario 9,50 · acento 9,13 · error 5,54; sobre el fondo, error 6,31.
   static const double opacidadPresion = 0.05;
 
   // ── Velo ────────────────────────────────────────────────────────────────
@@ -157,23 +157,23 @@ abstract final class ColoresApp {
   // que se dibuja encima lleva un contorno oscuro, o un fondo oscuro.
 
   /// Contorno oscuro de lo que se dibuja sobre el plano: las miras, las
-  /// líneas de medición y de zona y los íconos. Blanco 18,77 · acento 11,14 ·
-  /// advertencia 12,20.
+  /// líneas de medición y de zona y los íconos. Blanco 21 · acento 12,46 ·
+  /// advertencia 13,65.
   static const Color mapaContorno = rutaRanura;
 
   /// Grilla sobre el plano: negro al 30 %. Decorativa, sin contraste mínimo.
   static const Color mapaGrilla = Color(0x4D000000);
 
   /// Relleno de zona no transitable. Sólo relleno, con borde o patrón: sobre
-  /// el fondo da 2,51, así que nunca va como texto ni ícono (para eso está
+  /// el fondo da 2,88, así que nunca va como texto ni ícono (para eso está
   /// [error]).
   static const Color mapaZonaRelleno = Color(0xFFB71C1C);
 
-  /// Borde de zona no transitable. Fondo 4,73 · blanco 3,48.
+  /// Borde de zona no transitable. Fondo 5,43 · blanco 3,48.
   static const Color mapaZonaBorde = Color(0xFFEF5350);
 
   /// Guías del asistente de trazo. Magenta saturado: es el convencionalismo
   /// de las herramientas de diseño y contrasta sobre planos claros y sobre el
-  /// naranja de los vértices en curso. Fondo 4,76 · blanco 3,46.
+  /// naranja de los vértices en curso. Fondo 5,46 · blanco 3,46.
   static const Color mapaGuia = Color(0xFFFF2D95);
 }

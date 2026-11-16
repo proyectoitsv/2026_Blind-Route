@@ -22,8 +22,8 @@ import 'presion.dart';
 // el borde de la pieza es gris.
 //
 // ─── Texto ───
-// La opción elegida va en texto principal sobre la pieza (13,85) y las demás
-// en texto secundario sobre la pista hundida (10,18). Para que el color
+// La opción elegida va en texto principal sobre la pieza (15,84) y las demás
+// en texto secundario sobre la pista hundida (11,68). Para que el color
 // cambie justo donde está la pieza mientras viaja, las opciones se dibujan
 // dos veces: en gris sobre la pista y, encima, una copia clara recortada a la
 // forma de la pieza, que viaja con ella. La copia no se toca ni la lee
@@ -200,7 +200,7 @@ class _ControlSegmentadoState<T> extends State<ControlSegmentado<T>>
         ),
     ];
     // La copia de encima, sobre la pieza: texto principal (deshabilitado,
-    // secundario, 9,10 sobre la superficie).
+    // secundario, 10,41 sobre la superficie).
     final encima = <Widget>[
       for (final o in widget.opciones)
         contenido(o, habilitado ? e.textoPrincipal : e.textoSecundario),

@@ -2848,7 +2848,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     sliver: SliverList.list(children: hijos),
   );
 
-  /// La ayuda del modo, con un ícono; en el modo borrar, en rojo (5,94 sobre
+  /// La ayuda del modo, con un ícono; en el modo borrar, en rojo (6,82 sobre
   /// el fondo) y con el tacho.
   Widget _ayuda(BuildContext context, EstiloApp e) {
     final borrando = _borrando;
@@ -3714,7 +3714,7 @@ class _FilaCalibracion extends StatelessWidget {
 
 // ─── FLECHA DE LA BRÚJULA ───────────────────────────────────────────────────
 
-/// La flecha de la brújula en un círculo hundido, en acento (9,79 sobre lo
+/// La flecha de la brújula en un círculo hundido, en acento (11,23 sobre lo
 /// hundido). Sin brújula todavía, un reloj de arena quieto (nada gira). Es
 /// decorativa: lo que dice va escrito debajo.
 class _FlechaBrujula extends StatefulWidget {
@@ -4473,7 +4473,7 @@ class _ListaRubros extends StatelessWidget {
   }
 }
 
-/// Lo que falta para poder guardar, en ámbar (9,59 sobre la superficie) y
+/// Lo que falta para poder guardar, en ámbar (10,97 sobre la superficie) y
 /// con un ícono.
 class _Falta extends StatelessWidget {
   const _Falta({required this.texto});

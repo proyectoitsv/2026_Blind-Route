@@ -14,9 +14,9 @@ import '../tipografia.dart';
 //
 // Para elegir un valor de un rango (el tamaño de la celda, la potencia mínima,
 // el ajuste fino de la brújula). Arriba van el nombre y el valor escrito, en
-// acento (9,79 sobre el fondo, 8,75 sobre la superficie); debajo, la pista
+// acento (11,23 sobre el fondo, 10,01 sobre la superficie); debajo, la pista
 // hundida (el relieve chico, como la barra de progreso) con el borde de 1 px
-// de los controles (4,41 sobre el fondo, 3,94 sobre la superficie), lo
+// de los controles (5,05 sobre el fondo, 4,50 sobre la superficie), lo
 // elegido en acento y la perilla levantada con el anillo de acento, como el
 // cabezal de la línea de tiempo. Mientras se arrastra, la perilla se hunde.
 // Deshabilitado, lo elegido y el anillo pasan al gris de los bordes.

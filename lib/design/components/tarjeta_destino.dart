@@ -15,11 +15,11 @@ import 'presion.dart';
 //
 // Un lugar para elegir de una lista (al elegir el destino): una tarjeta
 // levantada (radio 20) con el ícono en un cuadro hundido, el nombre en texto
-// principal (13,85) y, debajo, el piso y la distancia en texto secundario
-// (9,10). Se elige una sola de la lista.
+// principal (15,84) y, debajo, el piso y la distancia en texto secundario
+// (10,41). Se elige una sola de la lista.
 //
 // ─── Elegida ───
-// El borde pasa del gris de los controles al acento (8,75 sobre la
+// El borde pasa del gris de los controles al acento (10,01 sobre la
 // superficie) y a la derecha aparece la tilde en acento; sin elegir, un
 // círculo vacío en gris. Así el estado no depende sólo del color del borde.
 // Al elegirla, el borde cambia y la tilde aparece con un fundido, en 150 ms.

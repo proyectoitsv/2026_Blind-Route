@@ -29,7 +29,7 @@ import 'presion.dart';
 // ─── Barra superior ───
 // Fondo liso (el de la pantalla), sin vidrio ni línea: botones redondos de
 // 36 dp, levantados y con borde (BotonRedondo), y el título centrado, chico
-// (14), en texto principal (15,50). Para un título largo, conviene repetirlo
+// (14), en texto principal (17,77). Para un título largo, conviene repetirlo
 // grande al principio del contenido.
 //
 // ─── Barras flotantes ───
@@ -253,8 +253,8 @@ class PestanaBarra {
 
 /// Barra inferior flotante con pestañas.
 ///
-/// La activa va en acento (8,75 sobre la superficie) con el ícono relleno y
-/// el nombre en negrita; las demás, en texto secundario (9,10) con el ícono
+/// La activa va en acento (10,01 sobre la superficie) con el ícono relleno y
+/// el nombre en negrita; las demás, en texto secundario (10,41) con el ícono
 /// de contorno: el estado no depende sólo del color. Al cambiar, el ícono
 /// pasa a relleno con un fundido y el color a acento, en 150 ms (con
 /// movimiento reducido, de golpe). TalkBack lee el nombre, si está
@@ -397,7 +397,7 @@ class AccionPildora {
   /// null: deshabilitada.
   final VoidCallback? alPresionar;
 
-  /// La acción principal: en acento (8,75 sobre la superficie). Una sola.
+  /// La acción principal: en acento (10,01 sobre la superficie). Una sola.
   final bool principal;
 
   /// Lo que dice TalkBack en lugar de [texto], si hace falta más contexto.
@@ -405,7 +405,7 @@ class AccionPildora {
 }
 
 /// Barra flotante con botones, como la de la navegación ("Repetir" en
-/// acento). Las demás acciones van en texto principal (13,85); una
+/// acento). Las demás acciones van en texto principal (15,84); una
 /// deshabilitada, en texto secundario. Presionada, la acción se hunde y se
 /// achica apenas (presion.dart).
 class BarraAcciones extends StatelessWidget {

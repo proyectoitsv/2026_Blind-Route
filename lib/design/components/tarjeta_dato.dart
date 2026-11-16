@@ -13,14 +13,14 @@ import 'presion.dart';
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // Una tarjeta levantada (radio 20). Arriba, el ícono en su cuadro hundido;
-// debajo, la etiqueta en texto secundario (9,10 sobre la superficie) con todo
-// el ancho, el número grande en texto principal (13,85) con la unidad en
+// debajo, la etiqueta en texto secundario (10,41 sobre la superficie) con todo
+// el ancho, el número grande en texto principal (15,84) con la unidad en
 // texto secundario y, abajo, un texto, un minigráfico o un anillo. Tres
 // tamaños de letra, no más: 15 (etiqueta y texto de abajo), 40 (el número) y
 // 17 (la unidad).
 //
 // ─── Tocable ───
-// La que se toca lleva el borde de 1 px (3,94 sobre la superficie) y una
+// La que se toca lleva el borde de 1 px (4,50 sobre la superficie) y una
 // flecha gris arriba a la derecha: así se ve qué se puede tocar sin depender
 // del color. Se toca entera y, presionada, se hunde y se achica apenas
 // (presion.dart).
@@ -39,13 +39,13 @@ import 'presion.dart';
 /// TarjetaLista). El verde no está: es sólo de la ruta. Lo bueno se dice con
 /// palabras, en gris.
 enum TonoDato {
-  /// Gris (9,10 sobre la superficie).
+  /// Gris (10,41 sobre la superficie).
   neutro,
 
-  /// Ámbar, algo para mirar (9,59).
+  /// Ámbar, algo para mirar (10,97).
   advertencia,
 
-  /// Rojo, algo que anda mal (5,31).
+  /// Rojo, algo que anda mal (6,08).
   error,
 }
 

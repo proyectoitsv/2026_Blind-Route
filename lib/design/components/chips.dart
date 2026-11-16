@@ -13,9 +13,9 @@ import 'presion.dart';
 //
 //   · ChipApp: un dato o una etiqueta ("Descargado", "Piso 2"). No se toca,
 //     así que no va levantado: va hundido (el relieve chico), como grabado,
-//     sin borde y con el texto secundario (10,18 sobre lo hundido).
+//     sin borde y con el texto secundario (11,68 sobre lo hundido).
 //   · ChipFiltro: se prende y se apaga. Sin elegir, levantado (el relieve
-//     chico) con el borde de 1 px y el texto principal (13,85); elegido, en
+//     chico) con el borde de 1 px y el texto principal (15,84); elegido, en
 //     acento con el texto oscuro (11,47) y una tilde, así el estado no
 //     depende sólo del color. Presionado, se hunde y se achica apenas; al
 //     elegirlo, el color y el borde cambian en 150 ms (presion.dart).

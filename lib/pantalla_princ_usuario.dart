@@ -162,7 +162,6 @@ class _Portada extends StatelessWidget {
               child: BotonPulso(
                 icono: Icons.navigation_rounded,
                 texto: 'Comenzar a navegar',
-                detalle: 'Primero te ubico. Después decís a dónde ir.',
                 alPresionar: alComenzar,
                 llenar: true,
               ),

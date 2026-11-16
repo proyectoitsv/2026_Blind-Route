@@ -161,8 +161,8 @@ class GrupoFilas extends StatelessWidget {
 /// la derecha, un accesorio (un interruptor) y la flecha si navega.
 ///
 /// El ícono va en un cuadro hundido ([CuadroIcono]: el acento encima da
-/// 9,79). Una fila [destructiva] ("Borrar todas") va con el título en el
-/// color de error (5,31 sobre la superficie, 5,94 hundida) y el ícono
+/// 11,23). Una fila [destructiva] ("Borrar todas") va con el título en el
+/// color de error (6,08 sobre la superficie, 6,82 hundida) y el ícono
 /// también.
 class FilaGrupo extends StatelessWidget {
   const FilaGrupo({
@@ -363,8 +363,8 @@ class FilaGrupo extends StatelessWidget {
 
 /// Interruptor de una fila, con las medidas del de Material 3 (pista de
 /// 52 × 32, pulgar de 16 apagado y de 24 prendido) y los colores del sistema
-/// de diseño: apagado, pista hundida con borde (4,41 sobre el fondo) y el
-/// pulgar gris (10,18); prendido, pulgar oscuro sobre el acento (11,47). El
+/// de diseño: apagado, pista hundida con borde (5,05 sobre el fondo) y el
+/// pulgar gris (11,68); prendido, pulgar oscuro sobre el acento (11,47). El
 /// estado no depende sólo del color: el pulgar cambia de lado y de tamaño.
 ///
 /// No se toca solo: lo prende y lo apaga la fila entera (FilaGrupo

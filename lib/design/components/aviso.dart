@@ -14,8 +14,8 @@ import 'panel_relieve.dart';
 // descargado", "Error al quitar: …"). Va en lugar del SnackBar de Material,
 // con el estilo del editor con relieve: levantado en la superficie, con el
 // borde de 1 px (lo separa de lo que pasa por detrás) y radio 20, a 16 dp de
-// los costados. Un error lleva el ícono y el borde en rojo (5,31 sobre la
-// superficie); el texto va siempre en el principal (13,85).
+// los costados. Un error lleva el ícono y el borde en rojo (6,08 sobre la
+// superficie); el texto va siempre en el principal (15,84).
 //
 // ─── Cómo funciona ───
 // Por dentro es un SnackBar transparente del ScaffoldMessenger, así se
