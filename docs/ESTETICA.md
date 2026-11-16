@@ -202,11 +202,23 @@ El fondo pasó del gris azulado `#1A1F29` a un azul muy oscuro, `#0B1020`, más 
 En el inicio se sacó la aclaración que iba debajo de "Comenzar a navegar", de modo que el círculo queda con el título solo. TalkBack no la leía, así que para quien navega sin mirar no cambió nada. La Figura 12 muestra el inicio, la navegación y la configuración del piso con el fondo nuevo, y son las mismas capturas que usa el README.
 
 <p align="center">
-  <img src="estetica/actual-inicio.jpg" width="170" alt="Inicio con el fondo azul oscuro y el círculo cian, sin la aclaración debajo del título.">
+  <img src="estetica/actual-inicio.jpg" width="170" alt="Inicio con el fondo azul oscuro, el logotipo arriba y el círculo cian.">
   <img src="estetica/actual-guiando.jpg" width="170" alt="Navegación guiando con el fondo azul oscuro.">
   <img src="estetica/actual-zonas.jpg" width="170" alt="Configuración del piso en el modo Zonas con el fondo azul oscuro.">
 </p>
 <p align="center"><em>Figura 12. Inicio, navegación y configuración del piso con el fondo azul oscuro.</em></p>
+
+### Logotipo en el inicio
+
+La barra del inicio dejó de decir "Blind Route" en letra chica y ahora muestra el logotipo del kit de marca (`docs/marca`), con las letras en blanco y el punto de la i en cian, centrado y fijo. Se dibuja con los mismos trazos del SVG del kit, copiados tal cual y leídos por un lector propio, sin paquetes ni imágenes, de modo que se ve nítido con cualquier densidad de pantalla, y un test compara esos trazos con los del archivo del kit. El logotipo queda centrado en altura entre el borde de arriba de la pantalla y una línea fina y clara que separa la barra del resto, no crece con la letra del teléfono, y TalkBack lo sigue leyendo como el título de la pantalla, "Blind Route".
+
+En la misma pasada se sacó la frase "Navegación interior para todos", que iba arriba del círculo, y "Comenzar a navegar" bajó para no quedar pegado al anillo de las ondas, con una letra más liviana y una raya corta de cian debajo que lo une al círculo. TalkBack no lee la raya, y el orden en que recorre la pantalla queda en el título, el botón y las filas de abajo. La Figura 13 muestra el inicio con la letra al 115 % y al 200 %, y la captura de la izquierda es también la del README y la de la Figura 12.
+
+<p align="center">
+  <img src="estetica/actual-inicio.jpg" width="180" alt="Inicio con el logotipo BlindRoute centrado arriba, una línea fina debajo y el círculo cian con Comenzar a navegar.">
+  <img src="estetica/actual-inicio-200.jpg" width="180" alt="El mismo inicio con la letra al 200 %, con Comenzar a navegar en dos renglones.">
+</p>
+<p align="center"><em>Figura 13. El inicio con el logotipo, con la letra al 115 % y al 200 %.</em></p>
 
 ## 3. Pendientes
 

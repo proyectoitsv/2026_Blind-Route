@@ -18,7 +18,7 @@
 
 <table align="center">
   <tr>
-    <td align="center" width="33%"><img src="docs/estetica/actual-inicio.jpg" width="220" alt="Pantalla de inicio con un círculo celeste en el centro para comenzar a navegar."></td>
+    <td align="center" width="33%"><img src="docs/estetica/actual-inicio.jpg" width="220" alt="Pantalla de inicio con el logotipo arriba y un círculo celeste en el centro para comenzar a navegar."></td>
     <td align="center" width="33%"><img src="docs/estetica/actual-guiando.jpg" width="220" alt="Pantalla de navegación con la indicación para seguir derecho 11 metros, la ruta sobre el plano y la posición de la persona."></td>
     <td align="center" width="33%"><img src="docs/estetica/actual-llegaste.jpg" width="220" alt="Pantalla de navegación con el aviso de llegada y los tramos recorridos en verde."></td>
   </tr>
