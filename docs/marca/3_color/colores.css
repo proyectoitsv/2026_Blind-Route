@@ -1,0 +1,24 @@
+:root {
+  --br-fondo: #0B1020; /* Fondo de todas las pantallas; relleno de lo hundido */
+  --br-superficie: #151C32; /* Tarjetas, botones y barras levantados */
+  --br-sombra-oscura: #010205; /* Relieve, abajo a la derecha. Decorativa */
+  --br-sombra-clara: #19213B; /* Relieve, arriba a la izquierda. Decorativa */
+  --br-separador: #1D2541; /* Divisor entre filas. Decorativo */
+  --br-borde: #7A8594; /* 1 px en todo lo que se toca */
+  --br-texto-principal: #F5F8FC; /* Títulos y texto */
+  --br-texto-secundario: #C3CCD9; /* Subtítulos y datos */
+  --br-texto-sobre-acento: #0B0E13; /* Texto e ícono sobre relleno de acento */
+  --br-acento: #29D9FF; /* El único acento: tramo actual y botón principal */
+  --br-hecho: #3DF5B0; /* Ruta: tramo recorrido y destino */
+  --br-siguiente: #B79CFF; /* Ruta: lo que falta, siempre punteado */
+  --br-advertencia: #FFC857; /* Avisos no críticos */
+  --br-error: #FF6B6B; /* Errores y lo destructivo */
+
+  /* Logo: sólo gráfico */
+  --logo-baldosa: #010317;
+  --logo-degradado: linear-gradient(90deg, #052BF2 0%, #083AFB 18%, #0A68FF 40%, #05B9FE 62%, #2EF8CF 86%, #1FFACE 100%);
+  --logo-punto-claro: #0A68FF;
+
+  --fuente-interfaz: "Inter", system-ui, sans-serif;
+  --fuente-logotipo: "Atkinson Hyperlegible", "Inter", sans-serif;
+}

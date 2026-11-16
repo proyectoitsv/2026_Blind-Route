@@ -1,0 +1,120 @@
+{
+  "_nota": "Colores de BlindRoute con el fondo azul oscuro. Contraste WCAG 2.x truncado a 2 decimales.",
+  "_minimos": {
+    "texto": 4.5,
+    "texto_importante": 7.0,
+    "iconos_bordes_graficos": 3.0
+  },
+  "interfaz": {
+    "fondo": {
+      "hex": "#0B1020",
+      "rol": "Fondo de todas las pantallas; relleno de lo hundido",
+      "contraste_sobre_fondo": 1.0,
+      "contraste_sobre_superficie": 1.12
+    },
+    "superficie": {
+      "hex": "#151C32",
+      "rol": "Tarjetas, botones y barras levantados",
+      "contraste_sobre_fondo": 1.12,
+      "contraste_sobre_superficie": 1.0
+    },
+    "sombra_oscura": {
+      "hex": "#010205",
+      "rol": "Relieve, abajo a la derecha. Decorativa",
+      "contraste_sobre_fondo": 1.09,
+      "contraste_sobre_superficie": 1.22
+    },
+    "sombra_clara": {
+      "hex": "#19213B",
+      "rol": "Relieve, arriba a la izquierda. Decorativa",
+      "contraste_sobre_fondo": 1.19,
+      "contraste_sobre_superficie": 1.06
+    },
+    "separador": {
+      "hex": "#1D2541",
+      "rol": "Divisor entre filas. Decorativo",
+      "contraste_sobre_fondo": 1.25,
+      "contraste_sobre_superficie": 1.11
+    },
+    "borde": {
+      "hex": "#7A8594",
+      "rol": "1 px en todo lo que se toca",
+      "contraste_sobre_fondo": 5.05,
+      "contraste_sobre_superficie": 4.5
+    },
+    "texto_principal": {
+      "hex": "#F5F8FC",
+      "rol": "Títulos y texto",
+      "contraste_sobre_fondo": 17.77,
+      "contraste_sobre_superficie": 15.84
+    },
+    "texto_secundario": {
+      "hex": "#C3CCD9",
+      "rol": "Subtítulos y datos",
+      "contraste_sobre_fondo": 11.68,
+      "contraste_sobre_superficie": 10.41
+    },
+    "texto_sobre_acento": {
+      "hex": "#0B0E13",
+      "rol": "Texto e ícono sobre relleno de acento",
+      "contraste_sobre_fondo": 1.02,
+      "contraste_sobre_superficie": 1.14,
+      "contraste_sobre_acento": 11.47
+    },
+    "acento": {
+      "hex": "#29D9FF",
+      "rol": "El único acento: tramo actual y botón principal",
+      "contraste_sobre_fondo": 11.23,
+      "contraste_sobre_superficie": 10.01
+    },
+    "hecho": {
+      "hex": "#3DF5B0",
+      "rol": "Ruta: tramo recorrido y destino",
+      "contraste_sobre_fondo": 13.42,
+      "contraste_sobre_superficie": 11.96
+    },
+    "siguiente": {
+      "hex": "#B79CFF",
+      "rol": "Ruta: lo que falta, siempre punteado",
+      "contraste_sobre_fondo": 8.3,
+      "contraste_sobre_superficie": 7.4
+    },
+    "advertencia": {
+      "hex": "#FFC857",
+      "rol": "Avisos no críticos",
+      "contraste_sobre_fondo": 12.3,
+      "contraste_sobre_superficie": 10.97
+    },
+    "error": {
+      "hex": "#FF6B6B",
+      "rol": "Errores y lo destructivo",
+      "contraste_sobre_fondo": 6.82,
+      "contraste_sobre_superficie": 6.08
+    }
+  },
+  "logo": {
+    "_nota": "Sólo gráfico: nunca en la interfaz ni en texto.",
+    "degradado": [
+      "#052BF2",
+      "#083AFB",
+      "#0A68FF",
+      "#05B9FE",
+      "#2EF8CF",
+      "#1FFACE"
+    ],
+    "baldosa": "#010317",
+    "punto_de_la_i": {
+      "sobre_oscuro": "#29D9FF",
+      "sobre_claro": "#0A68FF"
+    },
+    "version_clara_azules": [
+      "#052BF2",
+      "#083AFB",
+      "#0A68FF"
+    ]
+  },
+  "tipografia": {
+    "interfaz": "Inter 400, 500, 600 y 700; cifras tabulares",
+    "logotipo": "Atkinson Hyperlegible Bold"
+  }
+}
