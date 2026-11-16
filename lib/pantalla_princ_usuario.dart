@@ -51,10 +51,7 @@ class _PantallaPrincipalUsuarioState extends State<PantallaPrincipalUsuario> {
           final e = EstiloApp.de(context);
           return Scaffold(
             backgroundColor: e.fondo,
-            appBar: const BarraSuperior(
-              titulo: 'Blind Route',
-              mostrarVolver: false,
-            ),
+            appBar: const BarraSuperior.logotipo(mostrarVolver: false),
             body: SafeArea(
               top: false,
               child: LayoutBuilder(
@@ -121,8 +118,8 @@ class _PantallaPrincipalUsuarioState extends State<PantallaPrincipalUsuario> {
   }
 }
 
-/// La primera vista del inicio: la frase arriba, el botón con pulso en el
-/// medio y, abajo, la pista de que hay más desplazando.
+/// La primera vista del inicio: el botón con pulso en el medio y, abajo, la
+/// pista de que hay más desplazando.
 class _Portada extends StatelessWidget {
   const _Portada({required this.alComenzar});
 
@@ -132,9 +129,9 @@ class _Portada extends StatelessWidget {
   Widget build(BuildContext context) {
     final e = EstiloApp.de(context);
     // Toda la primera vista lleva a navegar, no sólo el círculo: sin ver, es
-    // difícil acertarle justo. El botón ocupa todo el medio; la frase de
-    // arriba, la pista de abajo y los márgenes también responden al toque
-    // (TalkBack los sigue leyendo como texto: la acción es la del botón).
+    // difícil acertarle justo. El botón ocupa todo el medio; la pista de
+    // abajo y los márgenes también responden al toque (TalkBack lee la pista
+    // como texto: la acción es la del botón).
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       excludeFromSemantics: true,
@@ -149,11 +146,6 @@ class _Portada extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Navegación interior para todos',
-              textAlign: TextAlign.center,
-              style: TipografiaApp.cuerpo.copyWith(color: e.textoSecundario),
-            ),
             // Aire para las ondas, que llegan casi un radio más afuera.
             const SizedBox(
               height: BotonPulso.diametro / 2 * (BotonPulso.alcanceOnda - 1),

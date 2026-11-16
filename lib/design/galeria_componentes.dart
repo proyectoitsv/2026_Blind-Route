@@ -829,6 +829,23 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       'Con la unidad al final, y uno que crece hasta tres renglones con una '
       'aclaración debajo, que TalkBack dice con el campo.',
     ),
+    _entreSecciones,
+    const EncabezadoSeccion(titulo: 'Logotipo'),
+    _bajoEncabezado,
+    Align(
+      alignment: Alignment.centerLeft,
+      child: Semantics(
+        label: 'Blind Route',
+        child: ExcludeSemantics(child: LogotipoBlindRoute()),
+      ),
+    ),
+    _bajoEncabezado,
+    _parrafo(
+      e,
+      'El nombre como en el kit de marca: las letras en blanco y el punto '
+      'de la i en cian. Va centrado en la barra del inicio y no '
+      'crece con la letra.',
+    ),
   ];
 
   /// Un número con coma decimal ("0,8").

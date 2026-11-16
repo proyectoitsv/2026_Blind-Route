@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:blindroute/design/design.dart';
 import 'package:blindroute/design/galeria_componentes.dart';
 import 'package:blindroute/design/galeria_pantallas.dart';
@@ -1619,6 +1621,199 @@ void main() {
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
       semantica.dispose();
+    });
+  });
+
+  // ── Logotipo ────────────────────────────────────────────────────────────
+
+  group('logotipo', () {
+    testWidgets('las letras en texto principal y el punto de la i en acento, '
+        'en la proporción del kit', (tester) async {
+      await armar(
+        tester,
+        const Align(
+          alignment: Alignment.centerLeft,
+          child: LogotipoBlindRoute(),
+        ),
+      );
+      final logo = find.byType(LogotipoBlindRoute);
+      expect(tester.getSize(logo).height, LogotipoBlindRoute.altoBarra);
+      expect(
+        tester.getSize(logo).width,
+        moreOrLessEquals(26 * 5129 / 820.8, epsilon: 0.01),
+      );
+      final dibujo = tester.renderObject(
+        find.descendant(of: logo, matching: find.byType(CustomPaint)),
+      );
+      final patron = paints
+        ..save()
+        ..scale(x: 26 / 820.8, y: 26 / 820.8);
+      for (var i = 0; i < 10; i++) {
+        patron.path(color: ColoresApp.textoPrincipal);
+      }
+      patron
+        ..circle(
+          x: 1121,
+          y: 788.8 - 668,
+          radius: 100.8,
+          color: ColoresApp.acento,
+        )
+        ..restore();
+      expect(dibujo, patron);
+      expect(dibujo, paintsExactlyCountTimes(#drawPath, 10));
+      expect(dibujo, paintsExactlyCountTimes(#drawCircle, 1));
+    });
+
+    test('el trazo cae adentro del viewBox, dado vuelta como en el SVG', () {
+      var caja = LogotipoBlindRoute.letras.first.getBounds();
+      for (final letra in LogotipoBlindRoute.letras.skip(1)) {
+        caja = caja.expandToInclude(letra.getBounds());
+      }
+      // La B empieza en x 44; lo más alto de las letras (y 668 del SVG)
+      // queda arriba, y lo más bajo (y −12, la panza de la o) abajo.
+      expect(caja.left, moreOrLessEquals(44, epsilon: 1e-3));
+      expect(caja.top, moreOrLessEquals(788.8 - 668, epsilon: 1e-3));
+      expect(caja.bottom, moreOrLessEquals(788.8 + 12, epsilon: 1e-3));
+      expect(caja.right, inInclusiveRange(5100, 5129));
+      const vista = Rect.fromLTWH(0, 0, 5129, 820.8);
+      expect(vista.contains(caja.topLeft), isTrue);
+      expect(vista.contains(caja.bottomRight), isTrue);
+      // El punto de la i, arriba de la i y adentro de la caja.
+      const c = LogotipoBlindRoute.centroPunto;
+      expect(788.8 - c.dy - LogotipoBlindRoute.radioPunto, greaterThan(0));
+    });
+
+    test('el lector sólo entiende M, L, H, V, Q y Z', () {
+      expect(
+        LogotipoBlindRoute.leerTrazo('M0 0H10V10Z').getBounds(),
+        rectMoreOrLessEquals(
+          const Rect.fromLTRB(0, 778.8, 10, 788.8),
+          epsilon: 1e-3,
+        ),
+      );
+      expect(
+        () => LogotipoBlindRoute.leerTrazo('M0 0C1 1 2 2 3 3'),
+        throwsFormatException,
+      );
+      expect(
+        () => LogotipoBlindRoute.leerTrazo('m0 0l10 10'),
+        throwsFormatException,
+      );
+    });
+
+    test('los trazos y el punto son los del SVG del kit de marca', () {
+      final svg = File(
+        'docs/marca/1_logo/logotipo/logotipo_para_fondo_oscuro.svg',
+      ).readAsStringSync();
+      expect(svg, contains('viewBox="0 -788.8 5129.0 820.8"'));
+      expect(svg, contains('scale(1 -1)'));
+      final trazos = [
+        for (final m in RegExp(r'<path[^>]* d="([^"]+)"').allMatches(svg))
+          m.group(1),
+      ];
+      expect(trazos, LogotipoBlindRoute.trazos);
+      final circulo = RegExp(
+        r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"',
+      ).firstMatch(svg)!;
+      expect(
+        Offset(double.parse(circulo[1]!), double.parse(circulo[2]!)),
+        LogotipoBlindRoute.centroPunto,
+      );
+      expect(double.parse(circulo[3]!), LogotipoBlindRoute.radioPunto);
+    });
+
+    Future<void> barraDelInicio(
+      WidgetTester tester,
+      double escala, {
+      double barraDeEstado = 24,
+    }) async {
+      tester.view.padding = FakeViewPadding(top: barraDeEstado * 3);
+      addTearDown(tester.view.resetPadding);
+      await armar(tester, const SizedBox(), escala: escala);
+      final navegador = tester.state<NavigatorState>(find.byType(Navigator));
+      navegador.push(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(
+            appBar: BarraSuperior.logotipo(mostrarVolver: false),
+            body: SizedBox.expand(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('en la barra del inicio: centrado, y TalkBack dice «Blind '
+        'Route» como cabecera', (tester) async {
+      final semantica = tester.ensureSemantics();
+      await barraDelInicio(tester, 1);
+      final logo = find.byType(LogotipoBlindRoute);
+      expect(tester.getCenter(logo).dx, moreOrLessEquals(180, epsilon: 0.5));
+      final barra = find.byType(BarraSuperior);
+      expect(
+        tester.getSize(barra).height,
+        24 + FormasApp.altoBarraSuperior + EspaciadoApp.chico,
+      );
+      // La línea fina de abajo, clara y al 35 %.
+      final linea = tester
+          .widgetList<Container>(
+            find.descendant(of: barra, matching: find.byType(Container)),
+          )
+          .map((c) => c.decoration)
+          .whereType<BoxDecoration>()
+          .single
+          .border!
+          .bottom;
+      expect(
+        linea.color,
+        ColoresApp.borde.withValues(alpha: BarraSuperior.opacidadLinea),
+      );
+      expect(linea.width, FormasApp.grosorLinea);
+      // El logotipo, centrado entre el borde de arriba de la pantalla (con
+      // la barra de estado) y la línea.
+      expect(
+        tester.getTopLeft(logo).dy,
+        moreOrLessEquals(
+          tester.getBottomLeft(barra).dy -
+              FormasApp.grosorLinea -
+              tester.getBottomLeft(logo).dy,
+          epsilon: 0.01,
+        ),
+      );
+      expect(tester.getTopLeft(logo).dy, greaterThanOrEqualTo(24));
+      expect(
+        tester.getCenter(logo).dy,
+        moreOrLessEquals(tester.getCenter(barra).dy, epsilon: 0.5),
+      );
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Blind Route')),
+        isSemantics(label: 'Blind Route', isHeader: true, namesRoute: true),
+      );
+      // El dibujo no se lee aparte ni hay un texto escondido.
+      expect(find.bySemanticsLabel('Blind Route'), findsOneWidget);
+      expect(find.text('Blind Route'), findsNothing);
+      semantica.dispose();
+    });
+
+    testWidgets('con una barra de estado alta, el logotipo no se mete en '
+        'ella', (tester) async {
+      await barraDelInicio(tester, 1, barraDeEstado: 60);
+      expect(
+        tester.getTopLeft(find.byType(LogotipoBlindRoute)).dy,
+        moreOrLessEquals(60),
+      );
+    });
+
+    testWidgets('con letra grande no crece ni desborda', (tester) async {
+      await barraDelInicio(tester, 2);
+      expect(
+        tester.getSize(find.byType(LogotipoBlindRoute)).height,
+        LogotipoBlindRoute.altoBarra,
+      );
+      expect(
+        tester.getSize(find.byType(BarraSuperior)).height,
+        24 + FormasApp.altoBarraSuperior + EspaciadoApp.chico,
+      );
+      expect(tester.takeException(), isNull);
     });
   });
 

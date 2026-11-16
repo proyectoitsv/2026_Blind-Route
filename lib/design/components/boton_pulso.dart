@@ -53,6 +53,12 @@ class BotonPulso extends StatefulWidget {
   /// medio. Así se acierta aunque no se toque justo el círculo.
   final bool llenar;
 
+  /// La raya de acento debajo del título: ancho y alto.
+  static const double anchoRaya = 32;
+
+  /// Alto de la raya de acento.
+  static const double altoRaya = 3;
+
   /// Cuánto se mueve la flecha hacia cada costado al buscar el norte, como
   /// la aguja de una brújula, en radianes (12°).
   static const double vaivenFlecha = 12 * math.pi / 180;
@@ -223,15 +229,33 @@ class _BotonPulsoState extends State<BotonPulso>
                   ),
                 ],
               ),
-              // Lo que llega una onda más allá del círculo: el texto queda
-              // fuera de su alcance.
+              // Lo que llega una onda más allá del círculo y, además, el
+              // aire de una sección: el título no queda pegado al anillo.
               const SizedBox(
-                height: BotonPulso.diametro / 2 * (BotonPulso.alcanceOnda - 1),
+                height:
+                    BotonPulso.diametro / 2 * (BotonPulso.alcanceOnda - 1) +
+                    EspaciadoApp.entreSecciones,
               ),
               Text(
                 widget.texto,
                 textAlign: TextAlign.center,
-                style: TipografiaApp.titulo,
+                style: TipografiaApp.titulo.copyWith(
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0,
+                ),
+              ),
+              // Una raya corta de acento debajo del título, que lo ata al
+              // círculo. Decorativa.
+              const SizedBox(height: EspaciadoApp.medio),
+              ExcludeSemantics(
+                child: Container(
+                  width: BotonPulso.anchoRaya,
+                  height: BotonPulso.altoRaya,
+                  decoration: BoxDecoration(
+                    color: relleno,
+                    borderRadius: BorderRadius.circular(BotonPulso.altoRaya),
+                  ),
+                ),
               ),
               if (widget.detalle != null) ...[
                 const SizedBox(height: EspaciadoApp.chico),

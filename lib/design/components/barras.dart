@@ -11,6 +11,7 @@ import '../movimiento.dart';
 import '../relieve.dart';
 import '../tipografia.dart';
 import 'botones.dart';
+import 'logotipo.dart';
 import 'panel_relieve.dart';
 import 'presion.dart';
 
@@ -30,7 +31,8 @@ import 'presion.dart';
 // Fondo liso (el de la pantalla), sin vidrio ni línea: botones redondos de
 // 36 dp, levantados y con borde (BotonRedondo), y el título centrado, chico
 // (14), en texto principal (17,77). Para un título largo, conviene repetirlo
-// grande al principio del contenido.
+// grande al principio del contenido. La del inicio (BarraSuperior.logotipo)
+// lleva el logotipo centrado en lugar del título.
 //
 // ─── Barras flotantes ───
 // Una píldora levantada en la superficie, con borde de 1 px y radio 24,
@@ -58,9 +60,27 @@ class BarraSuperior extends StatelessWidget implements PreferredSizeWidget {
     this.acciones = const [],
     this.mostrarVolver,
     this.alVolver,
-  });
+  }) : _logotipo = false;
+
+  /// La barra del inicio: el logotipo centrado en lugar del título, como el
+  /// nombre de Instagram. TalkBack lo lee como
+  /// el título de siempre («Blind Route», cabecera que nombra la pantalla).
+  /// El logotipo no crece con la letra, así que la barra tampoco. Abajo,
+  /// una línea fina la separa del resto.
+  const BarraSuperior.logotipo({
+    super.key,
+    this.acciones = const [],
+    this.mostrarVolver,
+    this.alVolver,
+  }) : titulo = 'Blind Route',
+       _logotipo = true;
 
   final String titulo;
+
+  final bool _logotipo;
+
+  /// Cuánto se ve la línea de abajo de la barra del inicio.
+  static const double opacidadLinea = 0.35;
 
   /// Botones de la derecha, en general [AccionBarra].
   final List<Widget> acciones;
@@ -90,10 +110,44 @@ class BarraSuperior extends StatelessWidget implements PreferredSizeWidget {
     final renglon =
         MediaQuery.textScalerOf(context).scale(estilo.fontSize!) *
         estilo.height!;
-    final alto = math.max(
-      FormasApp.altoBarraSuperior,
-      renglon + 2 * EspaciadoApp.medio,
-    );
+    final alto = _logotipo
+        ? FormasApp.altoBarraSuperior + EspaciadoApp.chico
+        : math.max(
+            FormasApp.altoBarraSuperior,
+            renglon + 2 * EspaciadoApp.medio,
+          );
+    // El logotipo va centrado entre el borde de arriba de la pantalla y la
+    // línea: sube la mitad de la barra de estado, que queda encima. Nunca
+    // tanto que se meta en ella.
+    final subida = _logotipo
+        ? math.min(
+            MediaQuery.paddingOf(context).top / 2,
+            (alto - LogotipoBlindRoute.altoBarra) / 2,
+          )
+        : 0.0;
+    final Widget medio = _logotipo
+        ? Semantics(
+            header: true,
+            namesRoute: true,
+            label: titulo,
+            child: ExcludeSemantics(
+              child: Padding(
+                padding: EdgeInsets.only(bottom: 2 * subida),
+                child: const LogotipoBlindRoute(),
+              ),
+            ),
+          )
+        : Semantics(
+            header: true,
+            namesRoute: true,
+            child: Text(
+              titulo,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: estilo.copyWith(color: e.textoPrincipal),
+            ),
+          );
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       // Íconos claros en la barra de estado, que queda sobre esta barra.
@@ -106,8 +160,21 @@ class BarraSuperior extends StatelessWidget implements PreferredSizeWidget {
         color: e.fondo,
         child: SafeArea(
           bottom: false,
-          child: SizedBox(
+          child: Container(
             height: alto,
+            // Con el logotipo, una línea fina y clara abajo, que separa la
+            // barra del resto. Decorativa: el borde de los controles, al
+            // 35 %.
+            decoration: _logotipo
+                ? BoxDecoration(
+                    border: Border(
+                      bottom: BorderSide(
+                        color: e.borde.withValues(alpha: opacidadLinea),
+                        width: FormasApp.grosorLinea,
+                      ),
+                    ),
+                  )
+                : null,
             child: Padding(
               padding: const EdgeInsets.symmetric(
                 horizontal: EspaciadoApp.minimo,
@@ -123,17 +190,7 @@ class BarraSuperior extends StatelessWidget implements PreferredSizeWidget {
                             alVolver ?? () => Navigator.maybePop(context),
                       )
                     : null,
-                middle: Semantics(
-                  header: true,
-                  namesRoute: true,
-                  child: Text(
-                    titulo,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: estilo.copyWith(color: e.textoPrincipal),
-                  ),
-                ),
+                middle: medio,
                 trailing: acciones.isEmpty
                     ? null
                     : Row(mainAxisSize: MainAxisSize.min, children: acciones),

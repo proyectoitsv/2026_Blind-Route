@@ -90,12 +90,48 @@ void main() {
   });
 
   testWidgets('el botón dice sólo «Comenzar a navegar», sin la aclaración de '
-      'abajo; la frase de arriba sigue', (tester) async {
+      'abajo ni la frase de arriba', (tester) async {
     await _armar(tester);
     expect(find.text('Comenzar a navegar'), findsOneWidget);
-    expect(find.text('Navegación interior para todos'), findsOneWidget);
+    expect(find.textContaining('Navegación interior'), findsNothing);
     expect(find.textContaining('Primero te ubico'), findsNothing);
     expect(tester.widget<BotonPulso>(find.byType(BotonPulso)).detalle, isNull);
+  });
+
+  testWidgets('«Comenzar a navegar» va lejos del anillo de las ondas, con '
+      'una raya de acento debajo que TalkBack no lee', (tester) async {
+    final semantica = tester.ensureSemantics();
+    await _armar(tester);
+    final circulo = tester.getCenter(find.byIcon(Icons.navigation_rounded));
+    final titulo = tester.getRect(find.text('Comenzar a navegar'));
+    // El anillo llega a 1,7 radios; el título, una sección más abajo.
+    const alcance = BotonPulso.diametro / 2 * BotonPulso.alcanceOnda;
+    expect(
+      titulo.top - (circulo.dy + alcance),
+      greaterThanOrEqualTo(EspaciadoApp.entreSecciones),
+    );
+    expect(
+      tester.widget<Text>(find.text('Comenzar a navegar')).style!.fontWeight,
+      FontWeight.w500,
+    );
+    final raya = find.byWidgetPredicate(
+      (w) =>
+          w is Container &&
+          w.constraints?.maxWidth == BotonPulso.anchoRaya &&
+          w.constraints?.maxHeight == BotonPulso.altoRaya,
+    );
+    expect(raya, findsOneWidget);
+    expect(
+      (tester.widget<Container>(raya).decoration! as BoxDecoration).color,
+      ColoresApp.acento,
+    );
+    expect(tester.getCenter(raya).dx, moreOrLessEquals(titulo.center.dx));
+    expect(tester.getRect(raya).top, greaterThan(titulo.bottom));
+    expect(
+      tester.getSemantics(find.bySemanticsLabel('Comenzar a navegar')).label,
+      'Comenzar a navegar',
+    );
+    semantica.dispose();
   });
 
   testWidgets('las ondas se mueven sólo sin «Reducir movimiento» y se '
@@ -129,7 +165,7 @@ void main() {
   });
 
   testWidgets('toda la primera vista lleva a navegar: el círculo, sus '
-      'costados, la frase de arriba y la pista de abajo', (tester) async {
+      'costados, lo de arriba y la pista de abajo', (tester) async {
     final observador = await _armar(tester);
     final circulo = tester.getCenter(find.byIcon(Icons.navigation_rounded));
     for (final lugar in [
@@ -137,7 +173,11 @@ void main() {
       // A un costado del círculo, cerca del borde de la pantalla.
       Offset(24, circulo.dy),
       Offset(telefono.width - 24, circulo.dy + 120),
-      tester.getCenter(find.text('Navegación interior para todos')),
+      // Justo debajo de la barra.
+      Offset(
+        telefono.width / 2,
+        tester.getBottomLeft(find.byType(BarraSuperior)).dy + 12,
+      ),
       tester.getCenter(find.text('Mapas y ajustes')),
     ]) {
       final antes = observador.abiertas.length;
@@ -166,13 +206,13 @@ void main() {
     expect(giros.last.abs(), lessThan(0.05 * BotonPulso.vaivenFlecha));
   });
 
-  testWidgets('TalkBack: el título, la frase, el botón grande y las filas, en '
+  testWidgets('TalkBack: el título, el botón grande y las filas, en '
       'ese orden y con las etiquetas de siempre; 48 dp, etiquetas y '
       'contraste', (tester) async {
     final semantica = tester.ensureSemantics();
     await _armar(tester);
     expect(
-      tester.getSemantics(find.text('Blind Route')),
+      tester.getSemantics(find.bySemanticsLabel('Blind Route')),
       isSemantics(label: 'Blind Route', isHeader: true, namesRoute: true),
     );
     expect(
@@ -203,7 +243,6 @@ void main() {
     expect(find.bySemanticsLabel(RegExp('Descargá')), findsNothing);
     expect(ordenTalkBack(tester), [
       'Blind Route',
-      'Navegación interior para todos',
       'Comenzar a navegar',
       'Mapas disponibles para descargar',
       'Ajustes: voz, movimiento y vibración',

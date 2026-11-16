@@ -13,7 +13,8 @@
 //   aviso.dart               mostrarAviso (un mensaje abajo que se va
 //                            solo, en lugar del SnackBar)
 //   barras.dart              BarraSuperior (botones redondos, título
-//                            centrado), AccionBarra, BarraInferior y
+//                            centrado; .logotipo, la del inicio),
+//                            AccionBarra, BarraInferior y
 //                            PestanaBarra (píldora de pestañas),
 //                            BarraAcciones y AccionPildora (píldora de
 //                            acciones)
@@ -43,6 +44,8 @@
 //   linea_ruta.dart          LineaRuta (la ruta sobre el plano), TramoRuta,
 //                            MarcaTramo, EstadoTramo, Recorrido
 //   linea_tiempo.dart        LineaTiempo (la ruta como línea de tiempo)
+//   logotipo.dart            LogotipoBlindRoute (el nombre como en el kit
+//                            de marca, dibujado)
 //   movimiento_cabezal.dart  MovimientoCabezal (cómo sigue el cabezal a la
 //                            posición; lo usan las dos líneas)
 //   panel_relieve.dart       PanelRelieve (levantado o hundido)
@@ -74,6 +77,7 @@ export 'grupo_filas.dart';
 export 'hoja_inferior.dart';
 export 'linea_ruta.dart';
 export 'linea_tiempo.dart';
+export 'logotipo.dart';
 export 'movimiento_cabezal.dart';
 export 'panel_relieve.dart';
 export 'progreso.dart';
