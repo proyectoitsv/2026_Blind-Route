@@ -195,6 +195,19 @@ La brújula de la navegación dejó de mostrar puntos cardinales, porque el nort
 </p>
 <p align="center"><em>Figura 11. El inicio con el botón con pulso y, desplazando, los mapas y los ajustes.</em></p>
 
+### Fondo azul e inicio sin la aclaración
+
+El fondo pasó del gris azulado `#1A1F29` a un azul muy oscuro, `#0B1020`, más cerca del logo. Junto con él se recalcularon los colores que dependen del fondo (la superficie, las dos sombras del relieve, el separador y los del plano), conservando para cada uno la misma relación de luminancia que tenía con el fondo anterior, de modo que el relieve se sigue viendo igual y las tarjetas se despegan del fondo con el mismo 1,12:1. Se probó también un azul más saturado, el del logo, pero se descartó porque con él lo hundido casi desaparecía y el relieve no se sostenía. Con el fondo nuevo todos los contrastes siguen pasando los mínimos y la mayoría sube, como se ve en la Tabla 1, donde el borde de los controles pasa de 4,41:1 a 5,05:1 y el texto principal de 15,50:1 a 17,77:1.
+
+En el inicio se sacó la aclaración que iba debajo de "Comenzar a navegar", de modo que el círculo queda con el título solo. TalkBack no la leía, así que para quien navega sin mirar no cambió nada. La Figura 12 muestra el inicio, la navegación y la configuración del piso con el fondo nuevo, y son las mismas capturas que usa el README.
+
+<p align="center">
+  <img src="estetica/actual-inicio.jpg" width="170" alt="Inicio con el fondo azul oscuro y el círculo cian, sin la aclaración debajo del título.">
+  <img src="estetica/actual-guiando.jpg" width="170" alt="Navegación guiando con el fondo azul oscuro.">
+  <img src="estetica/actual-zonas.jpg" width="170" alt="Configuración del piso en el modo Zonas con el fondo azul oscuro.">
+</p>
+<p align="center"><em>Figura 12. Inicio, navegación y configuración del piso con el fondo azul oscuro.</em></p>
+
 ## 3. Pendientes
 
 Las fases 5.2 a 5.7 no se probaron en el teléfono ni con TalkBack y la 5.1 se probó en parte, por lo que falta sobre todo probar la navegación caminando, ya que el Bluetooth, la posición en vivo y la ruta real no se pueden simular en los tests. En esa prueba también hay que decidir la vibración, que quedó con las fuerzas de antes porque una vibración suave se puede perder caminando, mientras que la tabla de movimiento pide suave al doblar y media al llegar.

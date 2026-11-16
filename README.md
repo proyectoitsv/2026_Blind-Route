@@ -18,9 +18,9 @@
 
 <table align="center">
   <tr>
-    <td align="center" width="33%"><img src="docs/estetica/inicio.jpg" width="220" alt="Pantalla de inicio con un círculo celeste en el centro para comenzar a navegar."></td>
-    <td align="center" width="33%"><img src="docs/estetica/fase-5.7-guiando.jpg" width="220" alt="Pantalla de navegación con la indicación para seguir derecho 11 metros, la ruta sobre el plano y la posición de la persona."></td>
-    <td align="center" width="33%"><img src="docs/estetica/fase-5.7-llegaste.jpg" width="220" alt="Pantalla de navegación con el aviso de llegada y los tramos recorridos en verde."></td>
+    <td align="center" width="33%"><img src="docs/estetica/actual-inicio.jpg" width="220" alt="Pantalla de inicio con un círculo celeste en el centro para comenzar a navegar."></td>
+    <td align="center" width="33%"><img src="docs/estetica/actual-guiando.jpg" width="220" alt="Pantalla de navegación con la indicación para seguir derecho 11 metros, la ruta sobre el plano y la posición de la persona."></td>
+    <td align="center" width="33%"><img src="docs/estetica/actual-llegaste.jpg" width="220" alt="Pantalla de navegación con el aviso de llegada y los tramos recorridos en verde."></td>
   </tr>
   <tr>
     <td align="center"><sub><b>1.</b> Comenzar</sub></td>
@@ -127,9 +127,9 @@ Las capturas se generaron en la computadora con datos y planos de ejemplo.
 <br>
 <table>
   <tr>
-    <td align="center"><img src="docs/estetica/fase-5.7-lista-destinos.jpg" width="180" alt="Lista de destinos para elegir a qué lugar ir."><br><sub>Elección del destino</sub></td>
-    <td align="center"><img src="docs/estetica/fase-5.2-descargando.jpg" width="180" alt="Catálogo de mapas disponibles, con un mapa en descarga."><br><sub>Mapas disponibles</sub></td>
-    <td align="center"><img src="docs/estetica/fase-3-ajustes.jpg" width="180" alt="Pantalla de ajustes con las opciones de voz, movimiento y vibración."><br><sub>Ajustes</sub></td>
+    <td align="center"><img src="docs/estetica/actual-lista-destinos.jpg" width="180" alt="Lista de destinos sobre la pantalla de navegación, para elegir a qué lugar ir."><br><sub>Elección del destino</sub></td>
+    <td align="center"><img src="docs/estetica/actual-catalogo.jpg" width="180" alt="Catálogo de mapas disponibles, con dos mapas descargados y uno para actualizar."><br><sub>Mapas disponibles</sub></td>
+    <td align="center"><img src="docs/estetica/actual-ajustes.jpg" width="180" alt="Pantalla de ajustes con las opciones de voz, movimiento y vibración."><br><sub>Ajustes</sub></td>
   </tr>
 </table>
 </details>
@@ -139,9 +139,9 @@ Las capturas se generaron en la computadora con datos y planos de ejemplo.
 <br>
 <table>
   <tr>
-    <td align="center"><img src="docs/estetica/fase-5.4-edificios.jpg" width="180" alt="Lista de edificios con el botón para agregar uno nuevo."><br><sub>Edificios</sub></td>
-    <td align="center"><img src="docs/estetica/fase-5.6-zonas.jpg" width="180" alt="Edición de las zonas no transitables sobre el plano."><br><sub>Configuración del piso</sub></td>
-    <td align="center"><img src="docs/estetica/fase-5.7-panel-admin.jpg" width="180" alt="Panel de ajustes de navegación con controles deslizantes."><br><sub>Ajustes de navegación</sub></td>
+    <td align="center"><img src="docs/estetica/actual-edificios.jpg" width="180" alt="Lista de edificios, cada uno con sus botones para cambiar el nombre y eliminar, y el botón para agregar uno nuevo."><br><sub>Edificios</sub></td>
+    <td align="center"><img src="docs/estetica/actual-zonas.jpg" width="180" alt="Edición de las zonas no transitables sobre el plano."><br><sub>Configuración del piso</sub></td>
+    <td align="center"><img src="docs/estetica/actual-panel-admin.jpg" width="180" alt="Panel de ajustes de navegación con controles deslizantes."><br><sub>Ajustes de navegación</sub></td>
   </tr>
 </table>
 </details>
@@ -151,8 +151,8 @@ Las capturas se generaron en la computadora con datos y planos de ejemplo.
 <br>
 <table>
   <tr>
-    <td align="center"><img src="docs/estetica/fase-5.7-guiando-200.jpg" width="180" alt="Navegación con la letra al 200 %, con la indicación en primer lugar."><br><sub>Navegación</sub></td>
-    <td align="center"><img src="docs/estetica/fase-5.2-catalogo-200.jpg" width="180" alt="Catálogo de mapas con la letra al 200 %."><br><sub>Mapas disponibles</sub></td>
+    <td align="center"><img src="docs/estetica/actual-guiando-200.jpg" width="180" alt="Navegación con la letra al 200 %, con la indicación en primer lugar."><br><sub>Navegación</sub></td>
+    <td align="center"><img src="docs/estetica/actual-catalogo-200.jpg" width="180" alt="Catálogo de mapas con la letra al 200 %."><br><sub>Mapas disponibles</sub></td>
   </tr>
 </table>
 </details>
