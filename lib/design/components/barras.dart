@@ -116,26 +116,14 @@ class BarraSuperior extends StatelessWidget implements PreferredSizeWidget {
             FormasApp.altoBarraSuperior,
             renglon + 2 * EspaciadoApp.medio,
           );
-    // El logotipo va centrado entre el borde de arriba de la pantalla y la
-    // línea: sube la mitad de la barra de estado, que queda encima. Nunca
-    // tanto que se meta en ella.
-    final subida = _logotipo
-        ? math.min(
-            MediaQuery.paddingOf(context).top / 2,
-            (alto - LogotipoBlindRoute.altoBarra) / 2,
-          )
-        : 0.0;
     final Widget medio = _logotipo
         ? Semantics(
             header: true,
             namesRoute: true,
             label: titulo,
-            child: ExcludeSemantics(
-              child: Padding(
-                padding: EdgeInsets.only(bottom: 2 * subida),
-                child: const LogotipoBlindRoute(),
-              ),
-            ),
+            // Centrado entre la barra de estado del teléfono, con su hora y
+            // sus íconos, y la línea de abajo: el mismo aire arriba y abajo.
+            child: const ExcludeSemantics(child: LogotipoBlindRoute()),
           )
         : Semantics(
             header: true,

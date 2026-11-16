@@ -82,6 +82,24 @@ List<DecoracionRelieve> relieves(WidgetTester tester, Finder de) => [
 DecoracionRelieve relieveDe(WidgetTester tester, Finder de) =>
     relieves(tester, de).first;
 
+/// El logotipo de la barra del inicio, centrado entre el pie de la barra de
+/// estado ([barraDeEstado] dp) y la línea de abajo: el mismo aire arriba y
+/// abajo.
+void _centradoBajoLaBarraDeEstado(WidgetTester tester, double barraDeEstado) {
+  final logo = find.byType(LogotipoBlindRoute);
+  final arriba = tester.getTopLeft(logo).dy - barraDeEstado;
+  final abajo =
+      tester.getBottomLeft(find.byType(BarraSuperior)).dy -
+      FormasApp.grosorLinea -
+      tester.getBottomLeft(logo).dy;
+  expect(arriba, greaterThan(EspaciadoApp.medio), reason: '$barraDeEstado');
+  expect(
+    arriba,
+    moreOrLessEquals(abajo, epsilon: 0.01),
+    reason: '$barraDeEstado',
+  );
+}
+
 void main() {
   // Los ajustes de movimiento, de fábrica y sin leer el teléfono de verdad.
   setUp(() {
@@ -1768,22 +1786,7 @@ void main() {
         ColoresApp.borde.withValues(alpha: BarraSuperior.opacidadLinea),
       );
       expect(linea.width, FormasApp.grosorLinea);
-      // El logotipo, centrado entre el borde de arriba de la pantalla (con
-      // la barra de estado) y la línea.
-      expect(
-        tester.getTopLeft(logo).dy,
-        moreOrLessEquals(
-          tester.getBottomLeft(barra).dy -
-              FormasApp.grosorLinea -
-              tester.getBottomLeft(logo).dy,
-          epsilon: 0.01,
-        ),
-      );
-      expect(tester.getTopLeft(logo).dy, greaterThanOrEqualTo(24));
-      expect(
-        tester.getCenter(logo).dy,
-        moreOrLessEquals(tester.getCenter(barra).dy, epsilon: 0.5),
-      );
+      _centradoBajoLaBarraDeEstado(tester, 24);
       expect(
         tester.getSemantics(find.bySemanticsLabel('Blind Route')),
         isSemantics(label: 'Blind Route', isHeader: true, namesRoute: true),
@@ -1794,13 +1797,12 @@ void main() {
       semantica.dispose();
     });
 
-    testWidgets('con una barra de estado alta, el logotipo no se mete en '
-        'ella', (tester) async {
-      await barraDelInicio(tester, 1, barraDeEstado: 60);
-      expect(
-        tester.getTopLeft(find.byType(LogotipoBlindRoute)).dy,
-        moreOrLessEquals(60),
-      );
+    testWidgets('con la barra de estado del S24 Ultra (34 dp) y con una '
+        'alta, el mismo aire arriba y abajo del logotipo', (tester) async {
+      for (final barraDeEstado in [34.0, 60.0]) {
+        await barraDelInicio(tester, 1, barraDeEstado: barraDeEstado);
+        _centradoBajoLaBarraDeEstado(tester, barraDeEstado);
+      }
     });
 
     testWidgets('con letra grande no crece ni desborda', (tester) async {
