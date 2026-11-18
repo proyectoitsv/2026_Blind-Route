@@ -176,3 +176,65 @@ class _PintorLogotipo extends CustomPainter {
   bool shouldRepaint(_PintorLogotipo viejo) =>
       viejo.letras != letras || viejo.punto != punto;
 }
+
+/// El logotipo de la app de administración: el de siempre y, debajo, la
+/// palabra «ADMINISTRADOR» de punta a punta, del borde de la B al de la e.
+///
+/// Las letras de abajo van repartidas a lo ancho (una por una, con el mismo
+/// espacio entre cada una), en acento, como el punto de la i. Es parte del
+/// dibujo: no crece con la letra del teléfono y TalkBack no lo lee (quien lo
+/// usa le da el nombre, como en [LogotipoBlindRoute]).
+class LogotipoAdministrador extends StatelessWidget {
+  const LogotipoAdministrador({super.key});
+
+  /// La palabra de abajo.
+  static const String palabra = 'ADMINISTRADOR';
+
+  /// Tamaño de la letra de la palabra de abajo.
+  static const double tamanoPalabra = 10;
+
+  /// Aire entre el logotipo y la palabra.
+  static const double separacion = 4;
+
+  /// Dónde empieza la tinta del logotipo (la B) y dónde termina (la e), en
+  /// coordenadas del SVG: la palabra va de una a la otra.
+  static const double inicioTinta = 44;
+  static const double finTinta = 5112;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = EstiloApp.de(context);
+    const alto = LogotipoBlindRoute.altoBarra;
+    const escala = alto / LogotipoBlindRoute.altoCaja;
+    final estilo = TextStyle(
+      fontFamily: 'Inter',
+      fontSize: tamanoPalabra,
+      fontWeight: FontWeight.w600,
+      height: 1,
+      color: e.acento,
+    );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const LogotipoBlindRoute(),
+        const SizedBox(height: separacion),
+        SizedBox(
+          width: alto * LogotipoBlindRoute.proporcion,
+          child: Padding(
+            padding: const EdgeInsets.only(
+              left: inicioTinta * escala,
+              right: (LogotipoBlindRoute.anchoCaja - finTinta) * escala,
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                for (final letra in palabra.split(''))
+                  Text(letra, textScaler: TextScaler.noScaling, style: estilo),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}

@@ -776,7 +776,7 @@ class ResolvedorCaminos {
         debugPrint(
           '[Pathfinder] TIMEOUT: el isolate no respondió en 8 s. '
           'Grilla de ${_resX * _resY} celdas — si este número es muy grande '
-          '(cientos de miles+), revisá escalaX/escalaY/tamCeldaMetros del '
+          '(cientos de miles+), revisa escalaX/escalaY/tamCeldaMetros del '
           'piso en la pantalla de configuración: probablemente hay un '
           'error de unidades (p. ej. metros cargados como centímetros).',
         );

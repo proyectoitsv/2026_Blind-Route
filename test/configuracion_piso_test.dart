@@ -357,8 +357,8 @@ void main() {
         'Brújula',
         'Entrar al modo borrar',
         'Plano del piso',
-        'Elegí un dispositivo de la lista y tocá el mapa para ubicarlo. '
-            'Arrastrá la mira de un beacon para moverlo.',
+        'Elige un dispositivo de la lista y toca el mapa para ubicarlo. '
+            'Arrastra la mira de un beacon para moverlo.',
         'Escáner detenido',
         'Escanear',
         'Filtrar por nombre o potencia\nLos más fuertes, primero',
@@ -428,7 +428,7 @@ void main() {
       await _elegirModo(tester, 'Escala');
       expect(_ayuda(tester), startsWith('Escala actual: 30,0 × 20,0 m'));
       await _elegirModo(tester, 'Zonas');
-      expect(_ayuda(tester), startsWith('Tocá el mapa para marcar'));
+      expect(_ayuda(tester), startsWith('Toca el mapa para marcar'));
       semantica.dispose();
     });
 
@@ -459,10 +459,10 @@ void main() {
       expect(_bordePlano(tester).width, FormasApp.grosorFoco);
       expect(
         _ayuda(tester),
-        'Modo borrar: tocá un beacon. «Listo» para salir.',
+        'Modo borrar: toca un beacon. «Listo» para salir.',
       );
       final ayuda = tester.widget<Text>(
-        find.text('Modo borrar: tocá un beacon. «Listo» para salir.'),
+        find.text('Modo borrar: toca un beacon. «Listo» para salir.'),
       );
       expect(ayuda.style!.color, e.error);
       await tester.tap(find.text('Listo'));
@@ -500,7 +500,7 @@ void main() {
       for (final (x, y) in [(0.2, 0.2), (0.4, 0.2), (0.4, 0.4)]) {
         await _tocarPlano(tester, x, y);
       }
-      expect(_ayuda(tester), startsWith('3 puntos. Tocá para agregar'));
+      expect(_ayuda(tester), startsWith('3 puntos. Toca para agregar'));
       // Deshacer saca uno solo.
       await tester.tap(find.bySemanticsLabel('Quitar el último punto'));
       await tester.pumpAndSettle();
@@ -515,7 +515,7 @@ void main() {
         isSemantics(isHeader: true),
       );
       expect(
-        find.text('Si lo dejás vacío, se llama «Zona prohibida».'),
+        find.text('Si lo dejas vacío, se llama «Zona prohibida».'),
         findsOneWidget,
       );
       await tester.enterText(find.byType(TextField), 'Columna');
@@ -527,7 +527,7 @@ void main() {
         jsonDecode(zonas.last['vertices_json']! as String) as List,
         hasLength(3),
       );
-      expect(_ayuda(tester), startsWith('Tocá el mapa para marcar'));
+      expect(_ayuda(tester), startsWith('Toca el mapa para marcar'));
       semantica.dispose();
     });
 
@@ -544,11 +544,11 @@ void main() {
       await tester.tap(find.text('Cancelar'));
       await tester.pumpAndSettle();
       expect(baseFalsa.filas('zonas_no_transitables'), hasLength(1));
-      expect(_ayuda(tester), startsWith('Tocá el mapa para marcar'));
+      expect(_ayuda(tester), startsWith('Toca el mapa para marcar'));
       await _tocarPlano(tester, 0.2, 0.2);
       await tester.tap(find.text('Descartar'));
       await tester.pumpAndSettle();
-      expect(_ayuda(tester), startsWith('Tocá el mapa para marcar'));
+      expect(_ayuda(tester), startsWith('Toca el mapa para marcar'));
       expect(_escrituras(), isEmpty);
     });
 
@@ -566,7 +566,7 @@ void main() {
       );
       await _tocarPlano(tester, 0.1, 0.5);
       await _tocarPlano(tester, 0.9, 0.5);
-      expect(_ayuda(tester), endsWith('tocá «Medida del largo».'));
+      expect(_ayuda(tester), endsWith('toca «Medida del largo».'));
       await tester.tap(find.text('Medida del largo'));
       await tester.pumpAndSettle();
       expect(
@@ -581,14 +581,14 @@ void main() {
       // Vacío: el error debajo del campo (antes no pasaba nada).
       await tester.tap(find.text('Guardar'));
       await tester.pumpAndSettle();
-      expect(find.text('Escribí un número mayor que 0.'), findsOneWidget);
+      expect(find.text('Escribe un número mayor que 0.'), findsOneWidget);
       await tester.enterText(find.byType(TextField), '24,5');
       await tester.pumpAndSettle();
-      expect(find.text('Escribí un número mayor que 0.'), findsNothing);
+      expect(find.text('Escribe un número mayor que 0.'), findsNothing);
       await tester.tap(find.text('Guardar'));
       await tester.pumpAndSettle();
       expect(find.text('Largo de la línea'), findsNothing);
-      expect(_ayuda(tester), contains('Largo: 24,5 m. Marcá el tercer punto'));
+      expect(_ayuda(tester), contains('Largo: 24,5 m. Marca el tercer punto'));
       expect(find.text('Medida del ancho'), findsOneWidget);
       // El tamaño de celda, al final del panel: TalkBack lo dice en metros y
       // lo sube y baja.
@@ -713,19 +713,19 @@ void main() {
       await _tocarPlano(tester, 0.5, 0.9);
       expect(find.text('Nuevo lugar'), findsOneWidget);
       final e = EstiloApp.de(tester.element(find.text('Nuevo lugar')));
-      expect(find.text('Escribí un nombre'), findsOneWidget);
+      expect(find.text('Escribe un nombre'), findsOneWidget);
       expect(
-        tester.widget<Text>(find.text('Escribí un nombre')).style!.color,
+        tester.widget<Text>(find.text('Escribe un nombre')).style!.color,
         e.advertencia,
       );
       Finder guardar() => find.widgetWithText(BotonPrincipal, 'Guardar');
       expect(tester.widget<BotonPrincipal>(guardar()).alPresionar, isNull);
       await tester.tap(find.bySemanticsLabel('Escalera o ascensor'));
       await tester.pumpAndSettle();
-      expect(find.text('Elegí si sube, baja o ambas'), findsOneWidget);
+      expect(find.text('Elige si sube, baja o ambas'), findsOneWidget);
       await tester.tap(find.widgetWithText(ChipFiltro, 'Baja'));
       await tester.pumpAndSettle();
-      expect(find.text('Elegí hacia dónde da la entrada'), findsOneWidget);
+      expect(find.text('Elige hacia dónde da la entrada'), findsOneWidget);
       final abajo = find.bySemanticsLabel('Entrada hacia abajo del plano');
       await tester.ensureVisible(abajo);
       expect(
@@ -798,16 +798,16 @@ void main() {
 
     testWidgets('calibrar: sin Bluetooth (en el test, flutter_blue_plus no '
         'tiene plataforma); la celda, la etiqueta, las lecturas y el punto '
-        'clave; «Activá el escáner primero», apagado', (tester) async {
+        'clave; «Activa el escáner primero», apagado', (tester) async {
       final semantica = tester.ensureSemantics();
       _cargarPiso();
       await _armar(tester);
       final errores = await _elegirModo(tester, 'Calibrar');
       expect(errores, [isA<UnsupportedError>()]);
-      expect(_ayuda(tester), 'Tocá la celda donde estás parado.');
+      expect(_ayuda(tester), 'Toca la celda donde estás parado.');
       expect(find.text('Calibraciones guardadas (3)'), findsOneWidget);
       await _tocarPlano(tester, 0.45, 0.42);
-      expect(_ayuda(tester), 'Celda (13, 8). Tomá la calibración acá abajo.');
+      expect(_ayuda(tester), 'Celda (13, 8). Toma la calibración aquí abajo.');
       expect(
         _nodo(tester, find.text('Celda (13, 8)')),
         isSemantics(isHeader: true),
@@ -832,7 +832,7 @@ void main() {
       );
       final boton = find.widgetWithText(
         BotonPrincipal,
-        'Activá el escáner primero',
+        'Activa el escáner primero',
       );
       await _verEnPanel(tester, boton);
       expect(boton, findsOneWidget);
@@ -953,7 +953,7 @@ void main() {
       _leerBrujula(10, error: 30);
       await tester.pumpAndSettle();
       final media = find.text(
-        'Precisión de la brújula: media. Hacé un 8 en el aire hasta que sea '
+        'Precisión de la brújula: media. Haz un 8 en el aire hasta que sea '
         'alta.',
       );
       expect(tester.widget<Text>(media).style!.color, e.advertencia);
@@ -984,7 +984,7 @@ void main() {
     });
 
     testWidgets('brújula: «Usar la dirección actual» mide 2 s («Midiendo… '
-        'quedate quieto», sin ruedita) y guarda el offset', (tester) async {
+        'quédate quieto», sin ruedita) y guarda el offset', (tester) async {
       _cargarPiso();
       await _armar(tester);
       await _elegirModo(tester, 'Brújula');
@@ -994,7 +994,7 @@ void main() {
       await _verEnPanel(tester, usar);
       await tester.tap(usar);
       await tester.pump();
-      expect(find.text('Midiendo… quedate quieto'), findsOneWidget);
+      expect(find.text('Midiendo… quédate quieto'), findsOneWidget);
       expect(find.byType(ProgressIndicator), findsNothing);
       for (var i = 0; i < 5; i++) {
         _leerBrujula(52);
@@ -1120,7 +1120,7 @@ void main() {
       await tester.tap(find.bySemanticsLabel('Publicar el mapa en la nube'));
       await tester.pumpAndSettle();
       expect(
-        _aviso('Cargá al menos un beacon antes de publicar el mapa.'),
+        _aviso('Carga al menos un beacon antes de publicar el mapa.'),
         findsOneWidget,
       );
     });
@@ -1277,7 +1277,7 @@ void main() {
       );
       await tester.enterText(find.byType(TextField).first, 'Ferretería');
       await tester.pumpAndSettle();
-      expect(find.text('Agregá al menos una palabra.'), findsOneWidget);
+      expect(find.text('Agrega al menos una palabra.'), findsOneWidget);
       await tester.enterText(find.byType(TextField).last, 'tornillo, clavos');
       await tester.pumpAndSettle();
       // La coma suma lo de antes.
@@ -1325,7 +1325,7 @@ void main() {
       expect(find.text('¿Borrar "${comida.nombre}"?'), findsOneWidget);
       expect(
         find.text(
-          'Un lugar lo usa y va a quedar sin rubro. Republicá sus mapas para '
+          'Un lugar lo usa y va a quedar sin rubro. Republica sus mapas para '
           'que llegue a los usuarios.',
         ),
         findsOneWidget,

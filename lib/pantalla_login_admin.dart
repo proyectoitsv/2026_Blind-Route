@@ -19,7 +19,7 @@ import 'supabase_config.dart';
 /// "Siguiente" pasa del email a la contraseña y "Listo" ingresa.
 ///
 /// Los errores van debajo de los campos (antes, en un SnackBar), en rojo y
-/// con un ícono, y TalkBack los anuncia: "Completá el email." y "Completá la
+/// con un ícono, y TalkBack los anuncia: "Completa el email." y "Completa la
 /// contraseña." debajo del que falte, y el de Supabase debajo de la
 /// contraseña. Escribir en un campo le borra el error.
 ///
@@ -101,8 +101,8 @@ class _PantallaLoginAdminState extends State<PantallaLoginAdmin> {
     if (email.isEmpty || pass.isEmpty) {
       // Debajo del que falte (de los dos, si faltan los dos).
       setState(() {
-        _errorEmail = email.isEmpty ? 'Completá el email.' : null;
-        _errorContrasena = pass.isEmpty ? 'Completá la contraseña.' : null;
+        _errorEmail = email.isEmpty ? 'Completa el email.' : null;
+        _errorContrasena = pass.isEmpty ? 'Completa la contraseña.' : null;
       });
       return;
     }
@@ -153,7 +153,8 @@ class _PantallaLoginAdminState extends State<PantallaLoginAdmin> {
           final e = EstiloApp.de(context);
           return Scaffold(
             backgroundColor: e.fondo,
-            appBar: const BarraSuperior(
+            appBar: const BarraSuperior.logotipo(
+              administrador: true,
               titulo: 'Blind Route — Administrador',
               mostrarVolver: false,
             ),
@@ -197,7 +198,7 @@ class _PantallaLoginAdminState extends State<PantallaLoginAdmin> {
           ),
           const SizedBox(height: EspaciadoApp.chico),
           Text(
-            'Ingresá con tu cuenta para cargar y publicar mapas.',
+            'Ingresa con tu cuenta para cargar y publicar mapas.',
             textAlign: TextAlign.center,
             style: TipografiaApp.cuerpo.copyWith(color: e.textoSecundario),
           ),
@@ -270,7 +271,7 @@ class _PantallaLoginAdminState extends State<PantallaLoginAdmin> {
               icono: Icons.cloud_off_rounded,
               titulo: 'Falta configurar Supabase',
               detalle:
-                  'Cargá url y anonKey en supabase_config.dart para usar la '
+                  'Carga url y anonKey en supabase_config.dart para usar la '
                   'app de administrador.',
             ),
           ),

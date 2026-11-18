@@ -176,7 +176,7 @@ class _ListaPisosState extends State<ListaPisos> {
     if (!mounted) return;
     if (piso['remote_id'] != null) {
       _avisar(
-        'Número actualizado. Volvé a publicar el piso para que llegue a los '
+        'Número actualizado. Vuelve a publicar el piso para que llegue a los '
         'usuarios.',
       );
     }
@@ -274,7 +274,7 @@ class _ListaPisosState extends State<ListaPisos> {
               child: EstadoPantalla(
                 icono: Icons.layers_rounded,
                 titulo: 'No hay pisos agregados',
-                detalle: 'Tocá «Agregar piso» para cargar la imagen del plano.',
+                detalle: 'Toca «Agregar piso» para cargar la imagen del plano.',
               ),
             ),
           ),
@@ -300,8 +300,8 @@ class _ListaPisosState extends State<ListaPisos> {
       icono: Icons.layers_rounded,
       titulo: nombre,
       subtitulo: numero == null
-          ? 'Sin número de piso: tocá el lápiz para asignarlo'
-          : 'Deslizá para eliminar',
+          ? 'Sin número de piso: toca el lápiz para asignarlo'
+          : 'Desliza para eliminar',
       tonoSubtitulo: numero == null ? TonoDato.advertencia : TonoDato.neutro,
       // Con TalkBack no se desliza (está la acción "Eliminar") y el lápiz es
       // el botón "Cambiar número", que viene después.

@@ -188,7 +188,7 @@ void main() {
   });
 
   group('lista de edificios', () {
-    testWidgets('con edificios: lo que dice TalkBack, en orden (sin «Deslizá '
+    testWidgets('con edificios: lo que dice TalkBack, en orden (sin «Desliza '
         'para eliminar»: cada tarjeta tiene la acción «Eliminar»); un solo '
         'botón principal; nada gira; 48 dp, etiquetas y contraste', (
       tester,
@@ -213,7 +213,7 @@ void main() {
         'Agregar edificio',
       ]);
       expect(
-        tester.getSemantics(find.text('Blind Route — Edificios')),
+        tester.getSemantics(find.bySemanticsLabel('Blind Route — Edificios')),
         isSemantics(isHeader: true, namesRoute: true),
       );
       for (final nombre in ['Facultad de Ingeniería', 'Hospital Central']) {
@@ -228,8 +228,8 @@ void main() {
         );
       }
       // Se ve, pero TalkBack no lo dice: con TalkBack no se desliza.
-      expect(find.text('Deslizá para eliminar'), findsNWidgets(2));
-      expect(find.bySemanticsLabel(RegExp('Deslizá')), findsNothing);
+      expect(find.text('Desliza para eliminar'), findsNWidgets(2));
+      expect(find.bySemanticsLabel(RegExp('Desliza')), findsNothing);
       // Es la pantalla de entrada: sin volver.
       expect(find.byTooltip('Volver'), findsNothing);
       // «Agregar edificio», el único botón principal (antes, un «+» flotante
@@ -261,7 +261,7 @@ void main() {
         'Blind Route — Edificios',
         'Mapas publicados en la nube',
         'Cerrar sesión',
-        'No hay edificios registrados\nTocá «Agregar edificio» para cargar '
+        'No hay edificios registrados\nToca «Agregar edificio» para cargar '
             'el primero.',
         'Agregar edificio',
       ]);
@@ -284,7 +284,7 @@ void main() {
       await armarPantalla(tester, const ListaEdificios(), escala: 2);
       expect(tester.takeException(), isNull);
       expect(palabrasPartidas(tester), isEmpty);
-      expect(textosCortados(tester), ['Blind Route — Edificios']);
+      expect(textosCortados(tester), isEmpty);
       // El cuadro del ícono no se muestra: el título se queda con el ancho.
       expect(find.byType(CuadroIcono), findsNothing);
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
@@ -295,10 +295,10 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Guardar'));
       await tester.pumpAndSettle();
-      expect(find.text('Escribí el nombre del edificio.'), findsOneWidget);
+      expect(find.text('Escribe el nombre del edificio.'), findsOneWidget);
       expect(tester.takeException(), isNull);
       expect(palabrasPartidas(tester), isEmpty);
-      expect(textosCortados(tester), ['Blind Route — Edificios']);
+      expect(textosCortados(tester), isEmpty);
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
       await expectLater(tester, meetsGuideline(textContrastGuideline));
@@ -359,7 +359,7 @@ void main() {
       // Vacío: el error debajo del campo, que TalkBack anuncia.
       await tester.tap(find.text('Guardar'));
       await tester.pumpAndSettle();
-      final error = find.text('Escribí el nombre del edificio.');
+      final error = find.text('Escribe el nombre del edificio.');
       expect(error, findsOneWidget);
       expect(
         tester.getRect(error).top,
@@ -645,10 +645,10 @@ void main() {
         );
       }
       final aviso = tester.widget<Text>(
-        find.text('Sin número de piso: tocá el lápiz para asignarlo'),
+        find.text('Sin número de piso: toca el lápiz para asignarlo'),
       );
       expect(aviso.style!.color, ColoresApp.advertencia);
-      expect(find.text('Deslizá para eliminar'), findsNWidgets(2));
+      expect(find.text('Desliza para eliminar'), findsNWidgets(2));
       expect(find.byType(BotonPrincipal), findsOneWidget);
       expect(find.byType(FloatingActionButton), findsNothing);
       expect(find.byType(ProgressIndicator), findsNothing);
@@ -670,7 +670,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(ordenTalkBack(tester), [
         'Facultad de Ingeniería',
-        'No hay pisos agregados\nTocá «Agregar piso» para cargar la imagen '
+        'No hay pisos agregados\nToca «Agregar piso» para cargar la imagen '
             'del plano.',
         'Agregar piso',
       ]);
@@ -796,7 +796,7 @@ void main() {
       expect(_tarjeta('Planta baja'), findsNothing);
       expect(
         find.text(
-          'Número actualizado. Volvé a publicar el piso para que llegue a los '
+          'Número actualizado. Vuelve a publicar el piso para que llegue a los '
           'usuarios.',
         ),
         findsOneWidget,

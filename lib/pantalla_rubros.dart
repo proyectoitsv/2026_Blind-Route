@@ -238,7 +238,7 @@ class _EditorRubroState extends State<_EditorRubro> {
   /// Qué falta para poder guardar (null = se puede guardar).
   String? get _faltante {
     final nombre = _nombreCtrl.text.trim();
-    if (nombre.isEmpty) return 'Escribí un nombre para el rubro.';
+    if (nombre.isEmpty) return 'Escribe un nombre para el rubro.';
     final norm = BuscadorLugares.normalizar(nombre);
     final repetido = Rubros.todos.any(
       (r) =>
@@ -248,7 +248,7 @@ class _EditorRubroState extends State<_EditorRubro> {
     if (repetido) return 'Ya hay un rubro que se llama así.';
     // Sin palabras el rubro no sirve para buscar, que es para lo que existe.
     if (_palabras.isEmpty && _palabraCtrl.text.trim().isEmpty) {
-      return 'Agregá al menos una palabra.';
+      return 'Agrega al menos una palabra.';
     }
     return null;
   }
@@ -307,7 +307,7 @@ class _EditorRubroState extends State<_EditorRubro> {
     final aviso = usados == 0
         ? 'Ningún lugar lo usa.'
         : '${usados == 1 ? 'Un lugar lo usa y va a quedar' : '$usados lugares lo usan y van a quedar'} '
-              'sin rubro. Republicá sus mapas para que llegue a los usuarios.';
+              'sin rubro. Republica sus mapas para que llegue a los usuarios.';
     final confirmar = await mostrarConfirmacion(
       context,
       titulo: '¿Borrar "${rubro.nombre}"?',

@@ -22,7 +22,7 @@ import 'supabase_service.dart';
 /// Un edificio se sigue eliminando deslizándolo hacia la izquierda, con la
 /// misma confirmación, ahora en una hoja (mostrarConfirmacion). Con TalkBack,
 /// que no deja deslizar, la tarjeta tiene la acción "Eliminar", que hace lo
-/// mismo; por eso TalkBack no lee "Deslizá para eliminar". "Nuevo edificio"
+/// mismo; por eso TalkBack no lee "Desliza para eliminar". "Nuevo edificio"
 /// es una hoja con el nombre (CampoTexto): si se guarda vacío, lo dice
 /// debajo del campo (antes no pasaba nada). Los avisos son los del sistema de
 /// diseño (mostrarAviso).
@@ -146,7 +146,7 @@ class _ListaEdificiosState extends State<ListaEdificios> {
           nombre,
         )) {
           return 'Otro administrador ya publicó un edificio con ese nombre. '
-              'Elegí otro.';
+              'Elige otro.';
         }
       } catch (e) {
         debugPrint('[Edificios] No se pudo revisar el nombre en la nube: $e');
@@ -202,7 +202,7 @@ class _ListaEdificiosState extends State<ListaEdificios> {
       try {
         if (await nube.nombreDeEdificioDeOtroAdmin(nuevo)) {
           return 'Otro administrador ya publicó un edificio con ese nombre. '
-              'Elegí otro.';
+              'Elige otro.';
         }
         await nube.renombrarEdificioPublicado(
           nuevo: nuevo,
@@ -213,7 +213,7 @@ class _ListaEdificiosState extends State<ListaEdificios> {
         debugPrint('[Edificios] No se pudo cambiar el nombre en la nube: $e');
         if (publicados.isNotEmpty) {
           return 'No se pudo cambiar el nombre en los mapas publicados. '
-              'Revisá la conexión y probá de nuevo.';
+              'Revisa la conexión y prueba de nuevo.';
         }
         // Sin pisos publicados no hay nada que cambiar en la nube: el nombre
         // se vuelve a revisar al publicar el primero.
@@ -287,7 +287,8 @@ class _ListaEdificiosState extends State<ListaEdificios> {
           final e = EstiloApp.de(context);
           return Scaffold(
             backgroundColor: e.fondo,
-            appBar: BarraSuperior(
+            appBar: BarraSuperior.logotipo(
+              administrador: true,
               titulo: 'Blind Route — Edificios',
               acciones: [
                 if (SupabaseConfig.configurado)
@@ -329,7 +330,7 @@ class _ListaEdificiosState extends State<ListaEdificios> {
               child: EstadoPantalla(
                 icono: Icons.business_rounded,
                 titulo: 'No hay edificios registrados',
-                detalle: 'Tocá «Agregar edificio» para cargar el primero.',
+                detalle: 'Toca «Agregar edificio» para cargar el primero.',
               ),
             ),
           ),
@@ -348,7 +349,7 @@ class _ListaEdificiosState extends State<ListaEdificios> {
           key: ValueKey<Object?>(edificio['id']),
           icono: Icons.business_rounded,
           titulo: nombre,
-          subtitulo: 'Deslizá para eliminar',
+          subtitulo: 'Desliza para eliminar',
           // Con TalkBack no se desliza: está la acción "Eliminar".
           etiquetaSemantica: nombre,
           acciones: [
@@ -436,7 +437,7 @@ class _NuevoEdificioState extends State<_NuevoEdificio> {
     // Sin espacios a los costados (un nombre sólo de espacios es vacío).
     final nombre = _nombre.text.trim();
     if (nombre.isEmpty) {
-      setState(() => _error = 'Escribí el nombre del edificio.');
+      setState(() => _error = 'Escribe el nombre del edificio.');
       return;
     }
     setState(() => _guardando = true);

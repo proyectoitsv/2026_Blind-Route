@@ -50,7 +50,7 @@ import 'tarjeta_dato.dart' show TonoDato;
 //
 // ─── TalkBack ───
 // La tarjeta se lee de una vez ("Planta baja, botón"). Si lo que se ve no
-// sirve tal cual (el subtítulo "Deslizá para eliminar", con TalkBack, no se
+// sirve tal cual (el subtítulo "Desliza para eliminar", con TalkBack, no se
 // puede hacer), lleva una etiqueta propia (etiquetaSemantica) y TalkBack dice
 // sólo esa.
 

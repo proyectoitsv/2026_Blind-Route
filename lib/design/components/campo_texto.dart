@@ -51,7 +51,7 @@ import 'presion.dart';
 // dice que está desactivado.
 //
 // ─── Error ───
-// Debajo del campo va qué está mal ("Completá el email."), con un ícono y en
+// Debajo del campo va qué está mal ("Completa el email."), con un ícono y en
 // rojo (6,82 sobre el fondo), y el borde del campo pasa al rojo (2 px con el
 // foco): el estado no depende sólo del color, lo dicen el ícono y el texto.
 // TalkBack lo anuncia al aparecer (región en vivo) y, recorriendo la

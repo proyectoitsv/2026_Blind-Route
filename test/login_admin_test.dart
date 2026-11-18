@@ -101,13 +101,13 @@ void main() {
     expect(ordenTalkBack(tester), [
       'Blind Route — Administrador',
       'Acceso de administrador',
-      'Ingresá con tu cuenta para cargar y publicar mapas.',
+      'Ingresa con tu cuenta para cargar y publicar mapas.',
       'Email',
       'Contraseña',
       'Ingresar',
     ]);
     expect(
-      tester.getSemantics(find.text('Blind Route — Administrador')),
+      tester.getSemantics(find.bySemanticsLabel('Blind Route — Administrador')),
       isSemantics(isHeader: true, namesRoute: true),
     );
     expect(
@@ -146,9 +146,11 @@ void main() {
     await armarPantalla(tester, const PantallaLoginAdmin(), escala: 2);
     expect(tester.takeException(), isNull);
     expect(palabrasPartidas(tester), isEmpty);
-    expect(textosCortados(tester), ['Blind Route — Administrador']);
+    expect(textosCortados(tester), isEmpty);
     expect(
-      tester.getSemantics(find.text('Blind Route — Administrador')).label,
+      tester
+          .getSemantics(find.bySemanticsLabel('Blind Route — Administrador'))
+          .label,
       'Blind Route — Administrador',
     );
     // El desplazamiento de la pantalla (cada campo tiene el suyo, adentro).
@@ -159,11 +161,11 @@ void main() {
     );
     await tester.tap(find.text('Ingresar'));
     await tester.pumpAndSettle();
-    expect(find.text('Completá el email.'), findsOneWidget);
-    expect(find.text('Completá la contraseña.'), findsOneWidget);
+    expect(find.text('Completa el email.'), findsOneWidget);
+    expect(find.text('Completa la contraseña.'), findsOneWidget);
     expect(tester.takeException(), isNull);
     expect(palabrasPartidas(tester), isEmpty);
-    expect(textosCortados(tester), ['Blind Route — Administrador']);
+    expect(textosCortados(tester), isEmpty);
     await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
     await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
     await expectLater(tester, meetsGuideline(textContrastGuideline));
@@ -173,7 +175,10 @@ void main() {
   testWidgets('mientras revisa si hay una sesión guardada (un cuadro): sólo la '
       'barra, sin nada que gire; después, el formulario', (tester) async {
     await _armarPrimerCuadro(tester);
-    expect(find.text('Blind Route — Administrador'), findsOneWidget);
+    expect(
+      find.bySemanticsLabel('Blind Route — Administrador'),
+      findsOneWidget,
+    );
     expect(find.byType(CampoTexto), findsNothing);
     expect(find.byType(BotonPrincipal), findsNothing);
     expect(find.byType(ProgressIndicator), findsNothing);
@@ -182,7 +187,7 @@ void main() {
     expect(find.text('Ingresar'), findsOneWidget);
   });
 
-  testWidgets('sin email ni contraseña: «Completá el email.» y «Completá la '
+  testWidgets('sin email ni contraseña: «Completa el email.» y «Completa la '
       'contraseña.» debajo de cada campo, que TalkBack anuncia y lee después '
       'del suyo, sin ir a la nube; escribir en un campo le borra el error', (
     tester,
@@ -191,8 +196,8 @@ void main() {
     await armarPantalla(tester, const PantallaLoginAdmin());
     await tester.tap(find.text('Ingresar'));
     await tester.pumpAndSettle();
-    final errorEmail = find.text('Completá el email.');
-    final errorContrasena = find.text('Completá la contraseña.');
+    final errorEmail = find.text('Completa el email.');
+    final errorContrasena = find.text('Completa la contraseña.');
     final campos = find.byType(TextField);
     expect(errorEmail, findsOneWidget);
     expect(errorContrasena, findsOneWidget);
@@ -211,9 +216,9 @@ void main() {
     );
     expect(ordenTalkBack(tester).sublist(3), [
       'Email',
-      'Completá el email.',
+      'Completa el email.',
       'Contraseña',
-      'Completá la contraseña.',
+      'Completa la contraseña.',
       'Ingresar',
     ]);
     for (final error in [errorEmail, errorContrasena]) {
@@ -302,7 +307,7 @@ void main() {
       tester.getSemantics(error),
       isSemantics(label: 'Invalid login credentials', isLiveRegion: true),
     );
-    expect(find.text('Completá el email.'), findsNothing);
+    expect(find.text('Completa el email.'), findsNothing);
     expect(find.byType(SnackBar), findsNothing);
     // Todo vuelve; el botón ya no es una región en vivo: de lo que cambió,
     // TalkBack anuncia sólo el error.
@@ -418,7 +423,7 @@ void main() {
     expect(find.byType(BotonPrincipal), findsNothing);
     expect(ordenTalkBack(tester), [
       'Blind Route — Administrador',
-      'Falta configurar Supabase\nCargá url y anonKey en supabase_config.dart '
+      'Falta configurar Supabase\nCarga url y anonKey en supabase_config.dart '
           'para usar la app de administrador.',
     ]);
     expect(
@@ -435,11 +440,11 @@ void main() {
       escala: 2,
     );
     expect(tester.takeException(), isNull);
-    expect(textosCortados(tester), ['Blind Route — Administrador']);
+    expect(textosCortados(tester), isEmpty);
     // «supabase_config.dart» es una sola «palabra», más larga que un
     // renglón: puede partirse.
     expect(
-      palabrasPartidas(tester, salvo: (texto) => texto.startsWith('Cargá')),
+      palabrasPartidas(tester, salvo: (texto) => texto.startsWith('Carga')),
       isEmpty,
     );
     semantica.dispose();

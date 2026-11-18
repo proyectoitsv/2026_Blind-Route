@@ -1817,6 +1817,57 @@ void main() {
       );
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('el de administración: «ADMINISTRADOR» debajo, de punta a '
+        'punta del logotipo y en acento; TalkBack dice el título; con letra '
+        'grande no crece ni desborda', (tester) async {
+      final semantica = tester.ensureSemantics();
+      for (final escala in [1.0, 2.0]) {
+        await armar(tester, const SizedBox(), escala: escala);
+        final navegador = tester.state<NavigatorState>(find.byType(Navigator));
+        navegador.push(
+          MaterialPageRoute<void>(
+            builder: (_) => const Scaffold(
+              appBar: BarraSuperior.logotipo(
+                administrador: true,
+                titulo: 'Blind Route — Administrador',
+                mostrarVolver: false,
+              ),
+              body: SizedBox.expand(),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final logo = find.byType(LogotipoBlindRoute);
+        final a = find.text('A').first;
+        final r = find.text('R').last;
+        const escalaSvg =
+            LogotipoBlindRoute.altoBarra / LogotipoBlindRoute.altoCaja;
+        final izquierda =
+            tester.getTopLeft(logo).dx +
+            LogotipoAdministrador.inicioTinta * escalaSvg;
+        final derecha =
+            tester.getTopLeft(logo).dx +
+            LogotipoAdministrador.finTinta * escalaSvg;
+        expect(tester.getTopLeft(a).dx, moreOrLessEquals(izquierda));
+        expect(tester.getTopRight(r).dx, moreOrLessEquals(derecha));
+        expect(
+          tester.getTopLeft(a).dy,
+          greaterThan(tester.getBottomLeft(logo).dy),
+        );
+        expect(tester.getSize(a).height, LogotipoAdministrador.tamanoPalabra);
+        expect(tester.widget<Text>(a).style!.color, ColoresApp.acento);
+        expect(
+          tester.getSemantics(
+            find.bySemanticsLabel('Blind Route — Administrador'),
+          ),
+          isSemantics(isHeader: true, namesRoute: true),
+        );
+        expect(find.bySemanticsLabel('A'), findsNothing);
+      }
+      semantica.dispose();
+    });
   });
 
   // ── Campo de texto ──────────────────────────────────────────────────────
@@ -2099,7 +2150,7 @@ void main() {
       tester,
     ) async {
       final semantica = tester.ensureSemantics();
-      String? error = 'Completá el email.';
+      String? error = 'Completa el email.';
       late StateSetter cambiar;
       await armar(
         tester,
@@ -2115,7 +2166,7 @@ void main() {
       expect(d.borde.color, ColoresApp.error);
       expect(d.borde.width, FormasApp.grosorLinea);
       // Debajo del campo, en rojo y con el ícono.
-      final textoError = find.text('Completá el email.');
+      final textoError = find.text('Completa el email.');
       expect(
         tester.getRect(textoError).top,
         greaterThan(tester.getRect(find.byType(TextField)).bottom),
@@ -2128,14 +2179,14 @@ void main() {
       // TalkBack: el campo y después el error, que se anuncia al aparecer.
       expect(
         tester.getSemantics(textoError),
-        isSemantics(label: 'Completá el email.', isLiveRegion: true),
+        isSemantics(label: 'Completa el email.', isLiveRegion: true),
       );
       expect(
         tester.semantics
             .simulatedAccessibilityTraversal()
             .map((nodo) => nodo.label)
             .where((etiqueta) => etiqueta.isNotEmpty),
-        ['Email', 'Completá el email.'],
+        ['Email', 'Completa el email.'],
       );
       // Con el foco, el borde sigue rojo, de 2 px.
       await tester.tap(find.byType(TextField));
@@ -2167,7 +2218,7 @@ void main() {
         const CampoTexto(
           etiqueta: 'Contraseña',
           oculto: true,
-          error: 'No se pudo iniciar sesión: revisá la conexión.',
+          error: 'No se pudo iniciar sesión: revisa la conexión.',
         ),
         escala: 2,
       );
@@ -2202,7 +2253,7 @@ void main() {
         EstadoPantalla(
           icono: Icons.cloud_off_rounded,
           titulo: 'No hay conexión con la nube',
-          detalle: 'Revisá la conexión.',
+          detalle: 'Revisa la conexión.',
           accion: BotonSecundario(
             texto: 'Reintentar',
             alPresionar: () => reintentos++,
@@ -2212,7 +2263,7 @@ void main() {
       expect(
         tester.getSemantics(find.text('No hay conexión con la nube')),
         isSemantics(
-          label: 'No hay conexión con la nube\nRevisá la conexión.',
+          label: 'No hay conexión con la nube\nRevisa la conexión.',
           isLiveRegion: true,
         ),
       );
@@ -2988,7 +3039,7 @@ void main() {
         TarjetaLista(
           icono: Icons.layers_rounded,
           titulo: 'Planta baja',
-          subtitulo: 'Deslizá para eliminar',
+          subtitulo: 'Desliza para eliminar',
           etiquetaSemantica: 'Planta baja',
           acciones: [
             BotonRedondo(

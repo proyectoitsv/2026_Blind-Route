@@ -555,7 +555,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
 
     if (_beaconsEnElMapa.isEmpty) {
-      _avisar('Cargá al menos un beacon antes de publicar el mapa.');
+      _avisar('Carga al menos un beacon antes de publicar el mapa.');
       return;
     }
 
@@ -582,7 +582,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           )) {
         _avisar(
           'No se publicó: otro administrador ya tiene publicado un edificio '
-          'llamado "$edificioNombre". Cargá este edificio con otro nombre.',
+          'llamado "$edificioNombre". Carga este edificio con otro nombre.',
           error: true,
         );
         return;
@@ -1030,7 +1030,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   void _cerrarZona() async {
     if (_verticesEnCurso.length < 3) {
-      _avisar('Necesitás al menos 3 puntos para cerrar la zona.');
+      _avisar('Necesitas al menos 3 puntos para cerrar la zona.');
       return;
     }
 
@@ -1614,7 +1614,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
     if (toma.length < 3) {
       _avisar(
-        'No llegaron lecturas de la brújula. Probá de nuevo.',
+        'No llegaron lecturas de la brújula. Prueba de nuevo.',
         error: true,
       );
       return;
@@ -1628,7 +1628,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     c /= toma.length;
     if (sqrt(s * s + c * c) < _consistenciaMinTomaRumbo) {
       _avisar(
-        'El teléfono se movió durante la toma. Quedate quieto y probá '
+        'El teléfono se movió durante la toma. Quédate quieto y prueba '
         'de nuevo.',
         error: true,
       );
@@ -1640,7 +1640,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       precisa
           ? 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°'
           : 'Offset guardado: ${_rotacionMapa.toStringAsFixed(0)}°, con la '
-                'brújula imprecisa. Calibrala (un 8 en el aire) y repetí.',
+                'brújula imprecisa. Calíbrala (un 8 en el aire) y repite.',
     );
   }
 
@@ -1745,7 +1745,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           _acumCal.clear();
         });
         _avisar(
-          'No se acumularon lecturas válidas. Activá el escáner.',
+          'No se acumularon lecturas válidas. Activa el escáner.',
           error: true,
         );
       }
@@ -1851,7 +1851,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// guardado llegaría después y quedaría sola, sin que el admin lo note.
   Future<void> _eliminarTodasLasCalibraciones() async {
     if (_tomandoMuestras || _guardandoCalibracion) {
-      _avisar('Esperá a que termine la toma en curso.');
+      _avisar('Espera a que termine la toma en curso.');
       return;
     }
     final puntosClave = _calibraciones.where((c) => c.esFingerprint).length;
@@ -2396,29 +2396,29 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     if (_borrando) {
       switch (_modo) {
         case _ModoEdicion.beacons:
-          return 'Modo borrar: tocá un beacon. «Listo» para salir.';
+          return 'Modo borrar: toca un beacon. «Listo» para salir.';
         case _ModoEdicion.zonas:
-          return 'Modo borrar: tocá una zona. «Listo» para salir.';
+          return 'Modo borrar: toca una zona. «Listo» para salir.';
         default:
-          return 'Modo borrar: tocá un lugar, escalera o ascensor. «Listo» '
+          return 'Modo borrar: toca un lugar, escalera o ascensor. «Listo» '
               'para salir.';
       }
     }
     switch (_modo) {
       case _ModoEdicion.beacons:
-        return 'Elegí un dispositivo de la lista y tocá el mapa para ubicarlo. '
-            'Arrastrá la mira de un beacon para moverlo.';
+        return 'Elige un dispositivo de la lista y toca el mapa para ubicarlo. '
+            'Arrastra la mira de un beacon para moverlo.';
       case _ModoEdicion.zonas:
         if (_verticesEnCurso.isEmpty) {
-          return 'Tocá el mapa para marcar los vértices (mínimo 3). Arrastrá '
+          return 'Toca el mapa para marcar los vértices (mínimo 3). Arrastra '
               'sin soltar para afinar.';
         }
         final n = _verticesEnCurso.length;
-        return '${n == 1 ? '1 punto' : '$n puntos'}. Tocá para agregar, '
-            'arrastrá para corregir o cerrá la zona.';
+        return '${n == 1 ? '1 punto' : '$n puntos'}. Toca para agregar, '
+            'arrastra para corregir o cierra la zona.';
       case _ModoEdicion.lugares:
-        return 'Tocá el mapa para agregar un lugar, escalera o ascensor. '
-            'Arrastralo para moverlo; se edita desde la lista.';
+        return 'Toca el mapa para agregar un lugar, escalera o ascensor. '
+            'Arrástralo para moverlo; se edita desde la lista.';
       case _ModoEdicion.escala:
         final actual =
             'Escala actual: ${_decimal(_escalaX)} × ${_decimal(_escalaY)} m '
@@ -2427,30 +2427,30 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         final textoLargo = largo == null ? '' : 'Largo: ${_decimal(largo)} m. ';
         switch (_puntosEscala.length) {
           case 0:
-            return '$actual Marcá el primer punto del largo.';
+            return '$actual Marca el primer punto del largo.';
           case 1:
-            return '$actual Marcá el segundo punto del largo.';
+            return '$actual Marca el segundo punto del largo.';
           case 2:
             if (largo == null) {
-              return '$actual Acomodá los puntos y tocá «Medida del largo».';
+              return '$actual Acomoda los puntos y toca «Medida del largo».';
             }
-            return '$actual ${textoLargo}Marcá el tercer punto: el ancho va '
+            return '$actual ${textoLargo}Marca el tercer punto: el ancho va '
                 'desde el segundo.';
         }
         if (_anchoMetros == null) {
-          return '$actual ${textoLargo}Acomodá el tercer punto y tocá «Medida '
+          return '$actual ${textoLargo}Acomoda el tercer punto y toca «Medida '
               'del ancho».';
         }
-        return '$actual Medición lista. Arrastrá los puntos para ajustar o '
+        return '$actual Medición lista. Arrastra los puntos para ajustar o '
             '«Reiniciar» para medir de nuevo.';
       case _ModoEdicion.calibracion:
         if (_celdaCalSeleccionada == null) {
-          return 'Tocá la celda donde estás parado.';
+          return 'Toca la celda donde estás parado.';
         }
         final c = _celdaCalSeleccionada!;
-        return 'Celda (${c.ix}, ${c.iy}). Tomá la calibración acá abajo.';
+        return 'Celda (${c.ix}, ${c.iy}). Toma la calibración aquí abajo.';
       case _ModoEdicion.brujula:
-        return 'Apuntá el teléfono hacia el «arriba» del plano y tocá «Usar la '
+        return 'Apunta el teléfono hacia el «arriba» del plano y toca «Usar la '
             'dirección actual».';
     }
   }
@@ -3174,7 +3174,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
             icono: Icons.place_rounded,
             titulo: 'No hay lugares de interés',
             detalle:
-                'Tocá el mapa para agregar un lugar, una escalera o un '
+                'Toca el mapa para agregar un lugar, una escalera o un '
                 'ascensor.',
           ),
         ),
@@ -3317,10 +3317,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         : _headingEnVivo == null
         ? 'Medición de ${_duracionFingerprint.inSeconds} s. Sin brújula: se '
               'guarda sin rumbo y es menos preciso.'
-        : 'Medición de ${_duracionFingerprint.inSeconds} s. Mirá hacia donde '
+        : 'Medición de ${_duracionFingerprint.inSeconds} s. Mira hacia donde '
               'se llega caminando (ahora: '
               '${_headingEnVivo!.toStringAsFixed(0)}°). Si se llega desde dos '
-              'lados, tomá uno por cada sentido.',
+              'lados, toma uno por cada sentido.',
     icono: Icons.push_pin_rounded,
     valor: _tomaEsFingerprint,
     alCambiar: _tomandoMuestras
@@ -3331,7 +3331,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// Empezar la toma: el botón principal del modo.
   Widget _botonToma() => BotonPrincipal(
     texto: !_escaneando
-        ? 'Activá el escáner primero'
+        ? 'Activa el escáner primero'
         : _tomaEsFingerprint
         ? 'Medir punto clave (${_duracionFingerprint.inSeconds} s)'
         : 'Iniciar toma de calibración (${_duracionCalibracion.inSeconds} s)',
@@ -3500,10 +3500,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
             ),
             const SizedBox(height: EspaciadoApp.medio),
             Text(
-              '1. Si la precisión no es alta, hacé un 8 en el aire.\n'
-              '2. Apuntá el borde superior del teléfono hacia el «arriba» del '
+              '1. Si la precisión no es alta, haz un 8 en el aire.\n'
+              '2. Apunta el borde superior del teléfono hacia el «arriba» del '
               'plano.\n'
-              '3. Tocá «Usar la dirección actual» y quedate quieto 2 s.\n'
+              '3. Toca «Usar la dirección actual» y quédate quieto 2 s.\n'
               'Se guarda solo. El ajuste fino va con el deslizador.',
               style: TipografiaApp.cuerpo.copyWith(color: e.textoPrincipal),
             ),
@@ -3543,7 +3543,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       // Toma promediada del rumbo: la forma principal de calibrar.
       BotonPrincipal(
         texto: _tomaRumbo != null
-            ? 'Midiendo… quedate quieto'
+            ? 'Midiendo… quédate quieto'
             : 'Usar la dirección actual',
         icono: Icons.my_location_rounded,
         alPresionar: heading == null || _tomaRumbo != null
@@ -3592,12 +3592,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     final texto = alta
         ? 'Precisión de la brújula: alta.'
         : p == null
-        ? 'Precisión de la brújula: desconocida. Hacé un 8 en el aire '
+        ? 'Precisión de la brújula: desconocida. Haz un 8 en el aire '
               'antes de calibrar.'
         : p <= 30
-        ? 'Precisión de la brújula: media. Hacé un 8 en el aire hasta '
+        ? 'Precisión de la brújula: media. Haz un 8 en el aire hasta '
               'que sea alta.'
-        : 'Precisión de la brújula: baja. Hacé un 8 en el aire hasta '
+        : 'Precisión de la brújula: baja. Haz un 8 en el aire hasta '
               'que sea alta.';
     return Semantics(
       container: true,
@@ -3911,7 +3911,7 @@ class _HojaNombreZonaState extends State<_HojaNombreZona> {
         CampoTexto(
           etiqueta: 'Nombre (opcional)',
           ayuda: 'Por ejemplo, Escaleras o Ascensor',
-          pie: 'Si lo dejás vacío, se llama «Zona prohibida».',
+          pie: 'Si lo dejas vacío, se llama «Zona prohibida».',
           controlador: _nombre,
           autofocus: true,
           capitalizacion: TextCapitalization.sentences,
@@ -3967,7 +3967,7 @@ class _HojaMetrosState extends State<_HojaMetros> {
       Navigator.of(context).pop(v);
       return;
     }
-    setState(() => _error = 'Escribí un número mayor que 0.');
+    setState(() => _error = 'Escribe un número mayor que 0.');
   }
 
   @override
@@ -4149,10 +4149,10 @@ class _HojaLugarState extends State<_HojaLugar> {
   /// Qué falta para poder guardar (null = se puede guardar).
   String? get _faltante {
     if (!_esEscalera) {
-      return _nombreCtrl.text.trim().isEmpty ? 'Escribí un nombre' : null;
+      return _nombreCtrl.text.trim().isEmpty ? 'Escribe un nombre' : null;
     }
-    if (_sentido == null) return 'Elegí si sube, baja o ambas';
-    if (_direccion == null) return 'Elegí hacia dónde da la entrada';
+    if (_sentido == null) return 'Elige si sube, baja o ambas';
+    if (_direccion == null) return 'Elige hacia dónde da la entrada';
     return null;
   }
 

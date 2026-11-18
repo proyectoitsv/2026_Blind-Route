@@ -363,8 +363,8 @@ void main() {
       expect(ordenTalkBack(tester), [
         'Mapas publicados',
         'Volver a cargar la lista',
-        'Todavía no hay mapas publicados\nPublicá un piso desde la '
-            'configuración para verlo acá.',
+        'Todavía no hay mapas publicados\nPublica un piso desde la '
+            'configuración para verlo aquí.',
       ]);
       expect(
         tester.getSemantics(find.text('Todavía no hay mapas publicados')),

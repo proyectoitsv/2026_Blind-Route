@@ -60,22 +60,32 @@ class BarraSuperior extends StatelessWidget implements PreferredSizeWidget {
     this.acciones = const [],
     this.mostrarVolver,
     this.alVolver,
-  }) : _logotipo = false;
+  }) : _logotipo = false,
+       administrador = false;
 
   /// La barra del inicio: el logotipo centrado en lugar del título, como el
   /// nombre de Instagram. TalkBack lo lee como
   /// el título de siempre («Blind Route», cabecera que nombra la pantalla).
   /// El logotipo no crece con la letra, así que la barra tampoco. Abajo,
   /// una línea fina la separa del resto.
+  ///
+  /// En la app de administración ([administrador]) lleva debajo la palabra
+  /// «ADMINISTRADOR» ([LogotipoAdministrador]); [titulo] es lo que lee
+  /// TalkBack.
   const BarraSuperior.logotipo({
     super.key,
     this.acciones = const [],
     this.mostrarVolver,
     this.alVolver,
-  }) : titulo = 'Blind Route',
+    this.administrador = false,
+    String? titulo,
+  }) : titulo = titulo ?? 'Blind Route',
        _logotipo = true;
 
   final String titulo;
+
+  /// Si el logotipo es el de la app de administración.
+  final bool administrador;
 
   final bool _logotipo;
 
@@ -123,7 +133,11 @@ class BarraSuperior extends StatelessWidget implements PreferredSizeWidget {
             label: titulo,
             // Centrado entre la barra de estado del teléfono, con su hora y
             // sus íconos, y la línea de abajo: el mismo aire arriba y abajo.
-            child: const ExcludeSemantics(child: LogotipoBlindRoute()),
+            child: ExcludeSemantics(
+              child: administrador
+                  ? const LogotipoAdministrador()
+                  : const LogotipoBlindRoute(),
+            ),
           )
         : Semantics(
             header: true,

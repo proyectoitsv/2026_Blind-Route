@@ -190,7 +190,7 @@ class _PantallaMapasAdminState extends State<PantallaMapasAdmin> {
           const EstadoPantalla(
             icono: Icons.map_rounded,
             titulo: 'Todavía no hay mapas publicados',
-            detalle: 'Publicá un piso desde la configuración para verlo acá.',
+            detalle: 'Publica un piso desde la configuración para verlo aquí.',
           ),
         ),
       );
