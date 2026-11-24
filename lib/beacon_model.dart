@@ -12,6 +12,16 @@ class BeaconMarcado {
   final String nombre;
   final String mac;
 
+  /// Altura de instalación (m sobre el piso), o null si no se indicó.
+  ///
+  /// El plano es 2D, pero la señal recorre la distancia en 3D: un beacon en
+  /// el techo está a más de un metro del teléfono aunque la persona esté justo
+  /// debajo. Sin la altura, la distancia de la calibración y la del
+  /// posicionamiento salen del plano y el modelo de rango se deforma (ver
+  /// ProcesadorSenal.alturaRelativa). Null equivale a "a la altura del
+  /// teléfono", que es lo que se suponía antes: los mapas viejos no cambian.
+  double? altura;
+
   /// Último RSSI filtrado (dBm). Se actualiza en cada ciclo de escaneo.
   double rssiFiltrado;
 
@@ -19,6 +29,7 @@ class BeaconMarcado {
     required this.posicion,
     required this.nombre,
     required this.mac,
+    this.altura,
     this.rssiFiltrado = -100.0, // Valor inicial por defecto
   });
 }

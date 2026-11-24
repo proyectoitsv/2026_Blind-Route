@@ -1,4 +1,4 @@
-# Auricular BlindRoute: cómo funciona (firmware 2.0)
+# Auricular BlindRoute: cómo funciona (firmware 2.1)
 
 El ESP32 se muestra al teléfono como **ESP32_BlindRoute**, con clase de dispositivo de **auricular inalámbrico**. Tiene un micrófono (INMP441) y un parlante (MAX98357A). Con el firmware 2.0 funciona como auricular de verdad: la música y los sonidos de cualquier app salen por el parlante, y las llamadas y el asistente de voz del teléfono usan el micrófono y el parlante del auricular.
 
@@ -18,8 +18,19 @@ Los tres conviven: el teléfono puede tener música por A2DP y, al entrar una ll
 
 - **Nombre:** ESP32_BlindRoute.
 - **Clase de dispositivo:** auricular inalámbrico (audio y telefonía). Por eso el teléfono lo muestra como auricular y no como un dispositivo genérico.
-- **Emparejamiento:** el auricular no tiene pantalla ni teclado, así que acepta el emparejamiento sin pedir confirmación. Si el teléfono pide PIN, el PIN es `0000`.
-- **Reconexión:** el ESP32 recuerda el último teléfono emparejado (lo guarda en su memoria no volátil) y lo busca solo cada pocos segundos mientras no esté conectado.
+- **Emparejamiento:** el auricular no tiene pantalla ni teclado, así que empareja en modo "Just Works": el teléfono pregunta "¿Vincular?" y el ESP32 acepta sin código. Si un teléfono viejo pide PIN, el PIN es `0000`.
+- **Reconexión:** el ESP32 guarda en su memoria no volátil el **último teléfono usado** (el último que se emparejó o se conectó). Lo busca durante **60 segundos** al arrancar y cuando se pierde el enlace por distancia, turnando un intento de HFP y uno de A2DP cada 6 segundos. Pasado ese tiempo deja de buscar y queda visible y conectable: el teléfono se conecta él, desde Ajustes → Bluetooth.
+
+### 2.1 Por qué un teléfono podía no conectarse (corregido en la 2.1)
+
+Hasta la versión 2.0 el auricular buscaba al teléfono **para siempre**: un intento de HFP cada 5 segundos y uno de A2DP cada 10. Cada intento ocupa la radio hasta 5 segundos si el teléfono no contesta, así que la radio pasaba casi todo el tiempo llamando al teléfono recordado y casi no escuchaba a otros. Además, el teléfono recordado era el **primero** de la lista de vinculados, no el último usado.
+
+Con el Samsung vinculado primero, al probar con otro teléfono (el Pixel) pasaba una de dos cosas:
+
+- con el Samsung cerca y con Bluetooth, el ESP32 se reconectaba al Samsung y ocupaba A2DP y HFP, que admiten un solo teléfono a la vez: el Pixel podía emparejar pero no conectar;
+- con el Samsung lejos, la radio estaba ocupada llamándolo y el Pixel no lo encontraba o se cansaba de esperar.
+
+Si después de cargar la 2.1 un teléfono sigue sin conectar, puede haber una clave vieja (uno de los dos lados olvidó el vínculo y el otro no). El puerto serie lo muestra como `Emparejamiento fallido (estado N)`. Se arregla olvidando en los dos lados: en el teléfono, Ajustes → Bluetooth → ESP32_BlindRoute → Olvidar; en el ESP32, el comando `o` por USB.
 
 ## 3. Qué pasa dentro del ESP32
 
@@ -47,7 +58,13 @@ En la práctica: si estás escuchando música y entra una llamada, la voz de la 
 
 ### 4.1 Sonido de la música (ecualizador y limitador)
 
-El parlante es chico: no mueve los graves y exagera los medios agudos. Eso suena metálico, chato y enlatado. Para compensarlo, la música (solo la música, no la voz de las llamadas) pasa por un procesamiento antes del amplificador:
+El parlante es chico: no mueve los graves y exagera los medios agudos. Eso suena metálico, chato y enlatado. Para compensarlo, la música (solo la música, no la voz de las llamadas) pasa por un procesamiento antes del amplificador.
+
+**Salida en estéreo (2.1).** Hasta la 2.0 el amplificador se configuraba en modo mono de 16 bits. En el ESP32 clásico ese modo lee las muestras de a pares, y si salen en el orden invertido aparece una copia espejada del sonido: en las llamadas (8 o 16 kHz) cae en plena voz y suena metálico o robótico; en la música (44,1 kHz) agrega un brillo áspero arriba de 14 kHz. Desde la 2.1 el firmware manda tramas estéreo con la misma muestra en las dos ranuras (como el firmware viejo de solo A2DP): así el orden no importa y las dos ranuras van llenas.
+
+**Colchón de la música (2.1).** Antes de empezar a sonar, y después de un corte, se juntan 80 ms de música (`PREBUFFER_A2DP_MS`). Sin colchón, cualquier ráfaga atrasada del Bluetooth dejaba al amplificador sin datos y metía un hueco de silencio; muchos huecos seguidos suenan ásperos. El informe `[bt-audio]` cuenta esos huecos en `cortes`.
+
+El resto del procesamiento:
 
 - **Ecualizador de 4 etapas** (filtros biquad). Con el preset 1 (el de arranque): corta lo que está por debajo de 140 Hz, que el parlante no puede reproducir y solo lo hace distorsionar; baja 3 dB la zona áspera alrededor de 3,5 kHz; y suaviza 2 dB por encima de 7 kHz.
 - **Ganancia y limitador.** La ganancia de arranque es +3 dB. Un limitador (techo cerca de −1 dBFS, ataque inmediato y suelta en unos 80 ms) evita que los picos hagan distorsionar el parlante, así sube el volumen que se percibe sin romper el sonido.
@@ -64,10 +81,33 @@ Presets, que se cambian en caliente por el puerto USB (115200 baudios, un comand
 | `g` y un número de 0 a 12 (por ejemplo, `g5`) | Ganancia en dB antes del limitador |
 | `q` | Muestra el preset, la ganancia y el volumen de llamada actuales |
 | `m` y un número de segundos (por ejemplo, `m8`) | Prueba del micrófono sin llamada: imprime el nivel (`[mic] pico=... rms=...`) cada 250 ms. Sirve para verificar el cableado del micrófono |
+| `o` | Olvida todos los teléfonos vinculados (y el último usado). Hay que olvidar el auricular también en el teléfono y emparejarlo de nuevo |
 
 Los cambios por USB valen hasta que se reinicia la placa. Para dejar otro valor de arranque se cambian `eqPreset` y `gananciaDb` en el firmware.
 
-Mientras suena música, el firmware imprime cada 2 segundos una línea `[bt-audio]` con el audio recibido, el pico, lo que se escribió al parlante, el preset, la ganancia y cuánto está bajando el limitador. Si el limitador baja con frecuencia más de 6 dB, la ganancia es demasiada para esa música.
+Mientras suena música, el firmware imprime cada 2 segundos una línea `[bt-audio]` con el audio recibido, el pico, lo que se escribió al parlante, los cortes, el preset, la ganancia y cuánto está bajando el limitador. Si el limitador baja con frecuencia más de 6 dB, la ganancia es demasiada para esa música.
+
+#### Qué probar si suena metálico
+
+En orden, de lo más probable a lo menos:
+
+1. **Ver si es en las llamadas o en la música.** Si el puerto serie dice `Llamada: audio CVSD 8 kHz`, la llamada usa el códec de telefonía de banda angosta: suena a teléfono fijo por naturaleza. La banda ancha (mSBC, 16 kHz) depende de cómo está compilada la librería Bluetooth del núcleo, no de este firmware.
+2. **Comparar `p0` con `p1`.** Si con `p0` (sin proceso) suena mejor, el ecualizador no le sienta a ese parlante: probar `p2` o `p3`.
+3. **Bajar la ganancia: `g0`.** El limitador sube el volumen a costa de deformar los picos (corta en el acto, sin anticipar). Si el informe muestra `limitador` más allá de −3 dB todo el tiempo, sobra ganancia.
+4. **Mirar `cortes`.** Si crece mientras suena, subir `PREBUFFER_A2DP_MS` a 100-150.
+5. **Mirar el `bitpool`** en la línea `A2DP SBC`: con un máximo menor que 53, el teléfono está mandando la música con menos calidad.
+
+Otros parámetros que se pueden tocar en el código, con su efecto:
+
+| Parámetro | Valor | Qué cambia |
+|---|---|---|
+| `eqPreset` | 1 | Preset del ecualizador al arrancar (0 a 3) |
+| `gananciaDb` | 3 | Ganancia antes del limitador, en dB. Más volumen, más deformación |
+| `LIM_UMBRAL` | 29500 | Techo del limitador (~−1 dBFS) |
+| `PREBUFFER_A2DP_MS` | 80 | Colchón de la música. Más: menos cortes y más retardo |
+| `PCM_SALIDA_BYTES` | 16384 | Buffer entre el Bluetooth y el parlante (~186 ms a 44,1 kHz) |
+| `use_apll` en `initAmplifierI2S` | false | Con `true`, el reloj del I2S sale del APLL y la frecuencia es exacta. El efecto audible con el MAX98357A es mínimo |
+| Pin GAIN del MAX98357A | (hardware) | La ganancia del amplificador: 9 dB sin conectar. Si satura con volumen alto, bajarla con el pin es mejor que bajar el volumen digital |
 
 ## 5. Pines
 
@@ -113,22 +153,28 @@ Android solo manda el micrófono Bluetooth a una app en tres casos: una llamada,
 
 | Mensaje | Qué significa |
 |---|---|
-| `Firmware 2.0` | Arrancó la versión con A2DP y HFP |
-| `Teléfono enlazado: XX:XX:XX:XX:XX:XX` | Dirección del último teléfono emparejado (de la memoria) |
+| `Firmware 2.1` | Arrancó la versión con A2DP, HFP y la reconexión por ventana |
+| `Último teléfono usado: XX:...` | El teléfono que va a buscar al arrancar (guardado en la memoria) |
+| `Buscando al teléfono durante 60 s (...)` | Abrió la ventana de reconexión (al arrancar o porque se perdió el enlace) |
+| `Fin de la búsqueda del teléfono (...)` | Se cerró la ventana: ya conectó, se emparejó otro teléfono o no contestó |
+| `Teléfono recordado: XX:...` | Cambió el último teléfono usado |
+| `Emparejamiento fallido (estado N)` | El emparejamiento no se completó. Si se repite, olvidar el auricular en los dos lados (en el ESP32, comando `o`) |
+| `Teléfono enlazado: XX:XX:XX:XX:XX:XX` | Hay un solo teléfono vinculado y es el que va a buscar |
 | `HFP listo: si` | El perfil de manos libres está activo |
 | `HFP: conectando (...)` | Intenta conectar el canal de control con el teléfono |
 | `HFP: conectado` | Canal de control abierto: el teléfono conoce al auricular |
 | `HFP: sin conexion de control` | El teléfono no respondió (está lejos, apagado o no tiene el perfil activado) |
+| `A2DP: conectando con ...` | Intenta conectar la música con el teléfono (solo dentro de la ventana de reconexión) |
 | `HFP llamada: en curso` / `terminada` | Estado de la llamada, según el teléfono |
 | `HFP asistente de voz: activo` / `apagado` | Estado del asistente de voz |
 | `HFP: abriendo audio (...)` | Pide abrir el canal de voz |
 | `Llamada: audio mSBC 16 kHz` / `CVSD 8 kHz` | Códec negociado con el teléfono |
 | `Llamada: audio cerrado` | Terminó el canal de voz |
-| `A2DP conectado con ...` / `A2DP desconectado` | Conexión de música |
+| `A2DP conectado con ...` / `A2DP desconectado` | Conexión de música. `(se perdió el enlace)`: se cortó por distancia y abre la ventana de reconexión |
 | `A2DP codec SBC a 44100 Hz` | Tasa de la música que manda el teléfono |
 | `A2DP audio: sonando` / `parado` | Hay música o no |
 | `A2DP SBC: canales=... bitpool=2..53` | Parámetros del códec que negoció el teléfono (calidad alta: joint stereo, 16 bloques, 8 subbandas, bitpool hasta 53) |
-| `[bt-audio] A2DP in=... pico=... \| parlante out=... \| preset=... g=... limitador=... dB` | Cada 2 s con música: bytes recibidos, pico de la señal, bytes escritos al parlante, preset, ganancia y reducción del limitador |
+| `[bt-audio] A2DP in=... pico=... \| parlante out=... cortes=... \| preset=... g=... limitador=... dB` | Cada 2 s con música: bytes recibidos, pico de la señal, bytes escritos al parlante, huecos sin datos, preset, ganancia y reducción del limitador |
 | `Sonido: preset N` / `Sonido: ganancia +X dB` | Respuesta a un comando de sonido por USB |
 | `HFP volumen de la voz: N/15` | El usuario cambió el volumen de la llamada en el celular. El auricular baja o sube él mismo la voz que reproduce (3 dB por paso; 0 es silencio) |
 | `[sco-mic] leido=... pico=... \| pedido por el Bluetooth=... veces, entregado=... bytes, sin audio=... veces` | Durante una llamada, cada 2 s: audio que salió del micrófono, su pico, y cuánto de eso pidió y recibió el teléfono. `entregado` tiene que crecer; si queda en 0, el teléfono no está pidiendo el audio del micrófono |
@@ -139,7 +185,7 @@ Android solo manda el micrófono Bluetooth a una app en tres casos: una llamada,
 
 - **Micrófono para BlindRoute:** el firmware ya entrega el micrófono por HFP. La app de BlindRoute, para usarlo en su propio reconocimiento de voz, tiene que pedir el canal de voz al sistema (Android: AudioManager y el micrófono de comunicación). Eso es código Android nativo y requiere permiso explícito del proyecto.
 - **Calidad en llamadas:** mientras hay un canal de voz abierto, el teléfono puede bajar la música a la calidad de llamada. Es el comportamiento normal de Android con cualquier auricular.
-- **Un teléfono a la vez:** el auricular recuerda un solo teléfono (el último emparejado).
+- **Un teléfono a la vez:** A2DP y HFP atienden un solo teléfono a la vez. El auricular busca solo al último usado; otro teléfono vinculado se conecta desde sus ajustes de Bluetooth.
 - **Emparejamiento sin confirmación:** el auricular acepta el emparejamiento sin PIN ni confirmación, porque no tiene pantalla. Mientras esté en modo emparejamiento, cualquiera en rango lo puede emparejar. Si esto preocupa, se puede pedir un PIN.
 - **Sin botones:** contestar y colgar se hace en el teléfono (o con el asistente de voz).
 - **Latencia y calidad:** no medidas todavía. Se miden en la prueba de llamada y de música del punto 6.
@@ -176,7 +222,7 @@ También se puede abrir el archivo `.ino` en Arduino IDE, con la placa "ESP32 De
 
 ## 12. Archivos
 
-- `esp32_blindroute_audio.ino`: el firmware (versión 2.0).
+- `esp32_blindroute_audio.ino`: el firmware (versión 2.1).
 - `COMO_FUNCIONA.md`: este documento.
 
 Este firmware reemplaza al de `hardware/esp32_blindroute_a2dp`, que solo tenía música (A2DP): el nuevo suma las llamadas y el micrófono (HFP), el ecualizador y el protocolo SPP de BlindRoute.

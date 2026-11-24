@@ -1003,6 +1003,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         posicionesBeacons: {
           for (final b in _beaconsEnElMapa.values) b.mac: b.posicion,
         },
+        alturasBeacons: {
+          for (final b in _beaconsEnElMapa.values) b.mac: b.altura,
+        },
         grilla: _grilla,
       );
       final ajustados = _modelosRango.values.where((m) => m.ajustado).length;
@@ -1602,7 +1605,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // Beacon más cercano = rango más confiable: el error en metros del
         // modelo log crece con la distancia, así que pesa menos lo lejano.
         final confianza = 1.0 / (d + 1.0);
-        observaciones.add(ObservacionRango(b.posicion, d, confianza));
+        // d es la distancia 3D (la que mide la señal): el solver le resta
+        // la altura del beacon sobre el teléfono, no se la saca acá.
+        observaciones.add(ObservacionRango(
+          b.posicion,
+          d,
+          confianza,
+          alturaRelativa: ProcesadorSenal.alturaRelativa(b.altura),
+        ));
       }
       if (observaciones.isEmpty) return;
 

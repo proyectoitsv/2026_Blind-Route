@@ -1005,7 +1005,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       for (var b in activos) {
         final tx = ProcesadorSenal.txPowerCalibrado(b.mac, _calibraciones);
         final d = ProcesadorSenal.rssiADistanciaConTx(b.rssiFiltrado, tx);
-        obs.add(ObservacionRango(b.posicion, d, 1.0 / (d + 1.0)));
+        obs.add(ObservacionRango(
+          b.posicion,
+          d,
+          1.0 / (d + 1.0),
+          alturaRelativa: ProcesadorSenal.alturaRelativa(b.altura),
+        ));
       }
       final p = Posicionador.estimar(
         obs,
@@ -1731,7 +1736,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       if (b != null) {
         final dxm = (b.posicion.dx - cx) * _escalaX;
         final dym = (b.posicion.dy - cy) * _escalaY;
-        final dRaw = sqrt(dxm * dxm + dym * dym);
+        // Distancia REAL (3D): con el beacon en el techo, parado debajo la
+        // señal igual recorre la diferencia de altura.
+        final dRaw = ProcesadorSenal.distanciaReal(dxm, dym, b.altura);
         final d = dRaw < 0.1 ? 0.1 : dRaw;
         txAjustado[mac] = rssiMedio + 10 * nExp * (log(d) / ln10);
       }
@@ -3019,6 +3026,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         _filaFiltro(visibles.length),
         const SizedBox(height: EspaciadoApp.margenLateral),
       ]),
+      if (_beaconsEnElMapa.isNotEmpty)
+        _bloque([
+          ..._alturasBeacons(e),
+          const SizedBox(height: EspaciadoApp.entreSecciones),
+        ]),
       if (sinCoincidencias)
         SliverToBoxAdapter(
           child: EstadoPantalla(
@@ -3138,6 +3150,74 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         ),
       ],
     );
+  }
+
+  /// Los beacons ya ubicados, con su altura. Tocar uno la cambia.
+  ///
+  /// La altura importa porque la señal viaja en 3D y el plano es 2D: ver
+  /// "ALTURAS" en ProcesadorSenal. Sin indicar, se toma a la altura del
+  /// teléfono, que es lo que se suponía antes.
+  List<Widget> _alturasBeacons(EstiloApp e) {
+    String altura(BeaconMarcado b) => b.altura == null
+        ? 'Altura sin indicar'
+        : 'Altura: ${_decimal(b.altura!)} m';
+    String alturaHablada(BeaconMarcado b) => b.altura == null
+        ? 'altura sin indicar'
+        : 'altura ${_decimal(b.altura!)} metros';
+    return [
+      const EncabezadoSeccion(titulo: 'Altura de los beacons'),
+      const SizedBox(height: EspaciadoApp.chico),
+      Text(
+        'Desde el piso hasta el beacon. Toca uno para cambiarla. Sin '
+        'indicar, se toma a la altura del teléfono '
+        '(${_decimal(ProcesadorSenal.alturaTelefonoM)} m).',
+        style: TipografiaApp.subtitulo.copyWith(color: e.textoSecundario),
+      ),
+      for (final b in _beaconsEnElMapa.values) ...[
+        const SizedBox(height: EspaciadoApp.entreTarjetas),
+        TarjetaLista(
+          key: ValueKey<String>('altura-${b.mac}'),
+          icono: Icons.height_rounded,
+          titulo: b.nombre,
+          // El final de la MAC, para distinguir beacons con el mismo nombre
+          // (las Holy-IOT se llaman todas igual). Entera no entra con la
+          // letra al 200 %: se partiría a la mitad.
+          subtitulo: '${altura(b)}\nMAC …${_finMac(b.mac)}',
+          etiquetaSemantica: '${b.nombre}, ${alturaHablada(b)}',
+          alTocar: () => _pedirAlturaBeacon(b),
+        ),
+      ],
+    ];
+  }
+
+  /// Los dos últimos bytes de una MAC ("2B:04").
+  static String _finMac(String mac) =>
+      mac.length > 5 ? mac.substring(mac.length - 5) : mac;
+
+  /// La altura de [beacon] en una hoja; con "Usar en todos", la de todos los
+  /// beacons del piso. Se guarda enseguida, igual que al moverlos. No hace
+  /// falta volver a calibrar: la navegación recalcula el modelo de cada
+  /// beacon con la altura nueva (ver ProcesadorSenal.ajustarModelosRango).
+  Future<void> _pedirAlturaBeacon(BeaconMarcado beacon) async {
+    final r = await mostrarHoja<({double altura, bool todos})>(
+      context,
+      titulo: 'Altura de ${beacon.nombre}',
+      contenido: (context) => _HojaAltura(
+        altura: beacon.altura ?? ProcesadorSenal.alturaTelefonoM,
+        hayOtros: _beaconsEnElMapa.length > 1,
+      ),
+    );
+    if (r == null || !mounted) return;
+    setState(() {
+      if (r.todos) {
+        for (final b in _beaconsEnElMapa.values) {
+          b.altura = r.altura;
+        }
+      } else {
+        beacon.altura = r.altura;
+      }
+    });
+    await _sincronizarBeacons();
   }
 
   /// Un dispositivo de la lista, que se elige para ubicarlo en el mapa (uno
@@ -4008,6 +4088,89 @@ class _HojaMetrosState extends State<_HojaMetros> {
               icono: Icons.check_rounded,
               expandido: false,
               alPresionar: _guardar,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// La hoja de la altura de un beacon: un deslizador de 0 a 5 m de a 10 cm y,
+/// si hay más beacons, un interruptor para usarla en todos (lo común: todos
+/// en el techo, a la misma altura). Devuelve la altura y si va para todos, o
+/// null si se cancela.
+class _HojaAltura extends StatefulWidget {
+  const _HojaAltura({required this.altura, required this.hayOtros});
+
+  /// La altura con que abre (la del beacon, o la del teléfono si no tenía).
+  final double altura;
+
+  /// Si el piso tiene otros beacons: entonces está "Usar en todos".
+  final bool hayOtros;
+
+  @override
+  State<_HojaAltura> createState() => _HojaAlturaState();
+}
+
+class _HojaAlturaState extends State<_HojaAltura> {
+  static const double _maxima = 5;
+
+  late double _altura = widget.altura.clamp(0.0, _maxima).toDouble();
+  bool _todos = false;
+
+  static String _texto(double v) =>
+      '${v.toStringAsFixed(1).replaceAll('.', ',')} m';
+
+  static String _hablado(double v) =>
+      '${v.toStringAsFixed(1).replaceAll('.', ',')} metros';
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Deslizador(
+          etiqueta: 'Altura',
+          valor: _altura,
+          min: 0,
+          max: _maxima,
+          divisiones: 50, // de a 0,1 m
+          formato: _texto,
+          formatoSemantico: _hablado,
+          ayuda: 'Desde el piso hasta el beacon. En el techo suele ser 2,5 a '
+              '3 m.',
+          // Redondeado al paso: el Slider puede dejar 2,4999…
+          alCambiar: (v) =>
+              setState(() => _altura = (v * 10).roundToDouble() / 10),
+        ),
+        if (widget.hayOtros) ...[
+          const SizedBox(height: EspaciadoApp.entreSecciones),
+          GrupoFilas(
+            filas: [
+              FilaGrupo.interruptor(
+                titulo: 'Usar en todos los beacons del piso',
+                icono: Icons.select_all_rounded,
+                valor: _todos,
+                alCambiar: (v) => setState(() => _todos = v),
+              ),
+            ],
+          ),
+        ],
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        FilaBotones(
+          children: [
+            BotonSecundario(
+              texto: 'Cancelar',
+              alPresionar: () => Navigator.of(context).pop(),
+            ),
+            BotonPrincipal(
+              texto: 'Guardar',
+              icono: Icons.check_rounded,
+              expandido: false,
+              alPresionar: () => Navigator.of(
+                context,
+              ).pop((altura: _altura, todos: _todos)),
             ),
           ],
         ),

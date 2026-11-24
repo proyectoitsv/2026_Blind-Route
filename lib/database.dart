@@ -28,7 +28,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 17, // v14: lugares.palabras_clave · v15: .rubro · v16: .ascensor · v17: rubros
+      version: 18, // v14: lugares.palabras_clave · v15: .rubro · v16: .ascensor · v17: rubros · v18: beacons.altura
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -72,6 +72,7 @@ class DatabaseHelper {
         x REAL NOT NULL,
         y REAL NOT NULL,
         nombre_beacon TEXT NOT NULL,
+        altura REAL,
         FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
       )
     ''');
@@ -347,6 +348,15 @@ class DatabaseHelper {
       if (!cols.any((c) => (c['name'] as String?) == 'rubro_palabras')) {
         await db.execute(
             'ALTER TABLE lugares_interes ADD COLUMN rubro_palabras TEXT');
+      }
+    }
+    if (oldVersion < 18) {
+      // v18: altura de instalación de cada beacon (m sobre el piso). Null =
+      // sin indicar, que la navegación toma como "a la altura del teléfono",
+      // o sea como hasta ahora (ver ProcesadorSenal.alturaRelativa).
+      final cols = await db.rawQuery('PRAGMA table_info(beacons)');
+      if (!cols.any((c) => (c['name'] as String?) == 'altura')) {
+        await db.execute('ALTER TABLE beacons ADD COLUMN altura REAL');
       }
     }
   }
@@ -688,6 +698,8 @@ class DatabaseHelper {
           'x': (b['x'] as num).toDouble(),
           'y': (b['y'] as num).toDouble(),
           'nombre_beacon': b['nombre'] ?? '',
+          // Los mapas publicados antes de la v18 no la traen: queda null.
+          'altura': (b['altura'] as num?)?.toDouble(),
         });
       }
 
@@ -820,6 +832,7 @@ class DatabaseHelper {
           'x': b.posicion.dx,
           'y': b.posicion.dy,
           'nombre_beacon': b.nombre,
+          'altura': b.altura,
         });
       }
     });
@@ -832,6 +845,7 @@ class DatabaseHelper {
       posicion: Offset(json['x'] as double, json['y'] as double),
       nombre: json['nombre_beacon'] as String,
       mac: json['mac'] as String,
+      altura: (json['altura'] as num?)?.toDouble(),
     )).toList();
   }
 

@@ -48,6 +48,7 @@
 #include "BluetoothSerial.h"
 #include <driver/i2s.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <math.h>
 
 // Perfiles de audio Bluetooth clásico (A2DP y HFP). Están en el núcleo del
@@ -82,7 +83,7 @@ struct Biquad {
 
 // Versión del firmware. La app la pide con el comando 'V' para comprobar que el
 // dispositivo es el correcto antes de usarlo.
-#define FW_VERSION  "2.0"
+#define FW_VERSION  "2.1"
 
 // El callback de Bluetooth corre en otra tarea del sistema. Solo marca el
 // cambio: el loop lo atiende y es el único que toca el buffer de audio.
@@ -216,7 +217,7 @@ EstadoPlay estadoPlay = PLAY_IDLE;
 uint8_t  ring[RING_BYTES];
 size_t   ringHead = 0;      // donde escribe el Bluetooth
 size_t   ringTail = 0;      // donde lee el I2S
-int16_t  feedBuf[FEED_MUESTRAS];
+int16_t  feedBuf[FEED_MUESTRAS * 2];   // tramas estéreo (ver initAmplifierI2S)
 
 bool     enUnderrun    = false;
 uint32_t underrunDesde = 0;
@@ -402,10 +403,21 @@ void initAmplifierI2S() {
     .sample_rate          = SAMPLE_RATE,
     .bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT,
 
-    // ALL_LEFT repite la misma muestra en las dos ranuras (izquierda y derecha).
-    // Con ONLY_LEFT la ranura derecha queda vacía, y el MAX98357A en modo mezcla
-    // (pin SD sin forzar) promedia las dos: sale la mitad del volumen, 6 dB menos.
-    .channel_format       = I2S_CHANNEL_FMT_ALL_LEFT,
+    // ESTÉREO DE VERDAD: cada trama lleva la muestra en las dos ranuras, y la
+    // duplica el firmware (ver escribirAmpEstereo), no el periférico.
+    //
+    // Antes era ALL_LEFT (modo mono de 16 bits). En el ESP32 clásico ese modo
+    // tiene una particularidad: el DMA lee de a palabras de 32 bits (dos
+    // muestras) y el orden en que salen esas dos muestras no es el obvio. Si
+    // salen intercambiadas de a pares, aparece una copia "espejada" del sonido
+    // (f → fs/2 − f): a 8 o 16 kHz (llamadas) cae en plena voz y suena
+    // metálico o robótico; a 44,1 kHz cae arriba de 14 kHz y agrega un brillo
+    // áspero. Además, i2s_set_clk(..., I2S_CHANNEL_MONO) puede reconfigurar las
+    // ranuras y dejar una vacía (6 dB menos con el pin SD del MAX98357A sin
+    // forzar). Con tramas estéreo con la misma muestra en las dos ranuras no
+    // importa el orden: L y R son iguales. Es lo que hacía el firmware viejo
+    // (esp32_blindroute_a2dp).
+    .channel_format       = I2S_CHANNEL_FMT_RIGHT_LEFT,
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
     .intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1,
     .dma_buf_count        = 8,
@@ -423,6 +435,29 @@ void initAmplifierI2S() {
   };
   i2s_driver_install(AMP_I2S_PORT, &cfg, 0, NULL);
   i2s_set_pin(AMP_I2S_PORT, &pins);
+}
+
+// Manda [muestras] muestras mono al parlante como tramas estéreo, con la misma
+// muestra en las dos ranuras (ver initAmplifierI2S). [tramas] es un buffer de
+// trabajo del que llama, de [capMuestras] * 2 int16: cada tarea usa el suyo,
+// así dos tareas no se pisan. Bloquea hasta que el DMA lo acepta todo.
+// Devuelve los bytes escritos al I2S (4 por muestra).
+static size_t escribirAmpEstereo(const int16_t* mono, size_t muestras,
+                                 int16_t* tramas, size_t capMuestras) {
+  size_t total = 0;
+  while (muestras > 0) {
+    const size_t n = muestras > capMuestras ? capMuestras : muestras;
+    for (size_t i = 0; i < n; i++) {
+      tramas[2 * i] = mono[i];
+      tramas[2 * i + 1] = mono[i];
+    }
+    size_t escritos = 0;
+    i2s_write(AMP_I2S_PORT, tramas, n * 4, &escritos, portMAX_DELAY);
+    total += escritos;
+    mono += n;
+    muestras -= n;
+  }
+  return total;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -552,7 +587,7 @@ void iniciarReproduccion() {
   // reproducirAudioLocal() cambia el reloj del I2S al sample rate del WAV.
   // Hay que devolverlo al nuestro o el audio de la app sale acelerado o lento.
   i2s_set_clk(AMP_I2S_PORT, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT,
-              I2S_CHANNEL_MONO);
+              I2S_CHANNEL_STEREO);
   i2s_zero_dma_buffer(AMP_I2S_PORT);
 
   enUnderrun      = false;
@@ -626,17 +661,23 @@ void alimentarAltavoz() {
     if (v >  32767) v =  32767;
     if (v < -32768) v = -32768;
 #endif
-    feedBuf[i] = (int16_t)v;
+    // Trama estéreo: la misma muestra en las dos ranuras (ver initAmplifierI2S).
+    feedBuf[2 * i]     = (int16_t)v;
+    feedBuf[2 * i + 1] = (int16_t)v;
   }
 
   size_t escritos = 0;
-  esp_err_t err = i2s_write(AMP_I2S_PORT, feedBuf, n * 2, &escritos, 0);
+  i2s_write(AMP_I2S_PORT, feedBuf, n * 4, &escritos, 0);
 
-  // Avanzar SOLO lo que el DMA aceptó. Si aceptó menos de lo que preparamos,
-  // el resto sigue en el anillo y se manda en la próxima vuelta.
-  if (err == ESP_OK && escritos > 0) {
-    ringTail = (ringTail + escritos / 2) % RING_BYTES;
-    sesReproducidas += escritos / 2;
+  // Avanzar SOLO lo que el DMA aceptó (4 bytes por muestra). Si aceptó menos
+  // de lo que preparamos, el resto sigue en el anillo y se manda en la próxima
+  // vuelta. Se avanza aunque i2s_write devuelva error: con timeout 0 devuelve
+  // ESP_ERR_TIMEOUT cuando se llena a mitad de camino, pero lo que alcanzó a
+  // escribir ya está en el DMA. Antes eso no se descontaba y esas muestras
+  // sonaban dos veces.
+  if (escritos >= 4) {
+    ringTail = (ringTail + escritos / 4) % RING_BYTES;
+    sesReproducidas += escritos / 4;
   }
 }
 
@@ -655,25 +696,35 @@ void reproducirAudioLocal(const char* path) {
 
   uint32_t sampleRate = header[24] | (header[25] << 8) |
                         (header[26] << 16) | (header[27] << 24);
+  // Canales del WAV (16 bits). Mono: se duplica cada muestra en las dos
+  // ranuras; estéreo: va tal cual (ver initAmplifierI2S).
+  const uint16_t canales = header[22] | (header[23] << 8);
   i2s_set_clk(AMP_I2S_PORT, sampleRate, I2S_BITS_PER_SAMPLE_16BIT,
-              I2S_CHANNEL_MONO);
+              I2S_CHANNEL_STEREO);
 
   size_t bytes_written = 0;
-  uint8_t buffer[512];
+  static int16_t muestras[256];
+  static int16_t tramas[256 * 2];
   while (file.available()) {
-    int bytes_read = file.read(buffer, sizeof(buffer));
-    i2s_write(AMP_I2S_PORT, buffer, bytes_read, &bytes_written, portMAX_DELAY);
+    int bytes_read = file.read((uint8_t*)muestras, sizeof(muestras));
+    if (bytes_read <= 0) break;
+    if (canales == 2) {
+      i2s_write(AMP_I2S_PORT, muestras, bytes_read & ~3, &bytes_written,
+                portMAX_DELAY);
+    } else {
+      escribirAmpEstereo(muestras, (size_t)bytes_read / 2, tramas, 256);
+    }
   }
   file.close();
 
-  uint8_t silencio[512] = {0};
-  i2s_write(AMP_I2S_PORT, silencio, sizeof(silencio), &bytes_written,
+  memset(tramas, 0, sizeof(tramas));
+  i2s_write(AMP_I2S_PORT, tramas, sizeof(tramas), &bytes_written,
             portMAX_DELAY);
   i2s_zero_dma_buffer(AMP_I2S_PORT);
 
   // Dejar el reloj como lo espera el streaming.
   i2s_set_clk(AMP_I2S_PORT, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT,
-              I2S_CHANNEL_MONO);
+              I2S_CHANNEL_STEREO);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -879,22 +930,79 @@ static volatile bool microCorriendo = false;
 static esp_bd_addr_t bdaRecordado;
 static bool bdaValido = false;
 static bool hfpListo = false;
-static uint32_t ultimoIntentoHfp  = 0;
 static uint32_t ultimoIntentoSco  = 0;
-static uint32_t ultimoIntentoA2dp = 0;
 
 static const uint32_t SCO_TASA_CVSD = 8000;
 static const uint32_t SCO_TASA_MSBC = 16000;
+
+// ─── RECONEXIÓN ──────────────────────────────────────────────────────────────
+// Es el auricular el que busca al teléfono (como cualquier auricular), pero
+// SOLO durante una ventana: al arrancar y cuando se corta el enlace por
+// distancia. Antes buscaba para siempre: HFP cada 5 s y A2DP cada 10 s.
+//
+// POR QUÉ IMPORTA (y por qué un Pixel no llegaba a conectarse): cada intento
+// es un "page" de radio que dura hasta 5,12 s si el teléfono no contesta. Con
+// HFP cada 5 s y A2DP cada 10 s, la radio del ESP32 pasaba casi todo el
+// tiempo llamando al teléfono recordado, y mientras llama casi no escucha:
+// otro teléfono que lo quería emparejar o conectar no lo encontraba o se
+// cansaba de esperar. Y el teléfono recordado era el PRIMERO de la lista de
+// vinculados (el Samsung con que se probó), no el último usado: con el
+// Samsung cerca, el ESP32 se le volvía a conectar y ocupaba A2DP y HFP (un
+// solo teléfono a la vez), así que el Pixel podía emparejar pero no conectar.
+//
+// Ahora: el último teléfono usado se guarda en la memoria no volátil (NVS), y
+// pasada la ventana el ESP32 solo espera: visible y conectable, para que el
+// teléfono se conecte él (desde Ajustes → Bluetooth, o solo al prender el
+// Bluetooth, como con cualquier auricular).
+#define VENTANA_RECONEXION_MS   60000   // cuánto busca al teléfono
+#define INTERVALO_RECONEXION_MS  6000   // entre intento e intento (HFP y A2DP se turnan)
+
+static uint32_t reconectarHasta = 0;    // millis() hasta el que se busca; 0 = no se busca
+static uint32_t ultimoIntentoReconexion = 0;
+static bool turnoHfp = true;            // el próximo intento es HFP (si no, A2DP)
+
+static Preferences preferencias;        // espacio "auricular" de la NVS
+static const char *NVS_TELEFONO = "telefono";
+
+static void imprimirBda(const esp_bd_addr_t bda) {
+  for (int i = 0; i < 6; i++) {
+    Serial.printf("%02X%s", bda[i], i < 5 ? ":" : "");
+  }
+}
 
 static void recordarBda(const esp_bd_addr_t bda) {
   memcpy(bdaRecordado, bda, sizeof(esp_bd_addr_t));
   bdaValido = true;
 }
 
-static void imprimirBda(const esp_bd_addr_t bda) {
-  for (int i = 0; i < 6; i++) {
-    Serial.printf("%02X%s", bda[i], i < 5 ? ":" : "");
-  }
+// Recuerda [bda] como el teléfono a reconectar, también después de reiniciar.
+// Solo escribe la NVS si cambió (la flash tiene ciclos de escritura contados).
+static void guardarTelefono(const esp_bd_addr_t bda) {
+  esp_bd_addr_t guardado;
+  const bool igual =
+      preferencias.getBytes(NVS_TELEFONO, guardado, sizeof(guardado)) == sizeof(guardado) &&
+      memcmp(guardado, bda, sizeof(guardado)) == 0;
+  recordarBda(bda);
+  if (igual) return;
+  preferencias.putBytes(NVS_TELEFONO, bda, sizeof(esp_bd_addr_t));
+  Serial.print("Teléfono recordado: ");
+  imprimirBda(bda);
+  Serial.println();
+}
+
+static void abrirVentanaReconexion(const char *motivo) {
+  if (!bdaValido) return;
+  reconectarHasta = millis() + VENTANA_RECONEXION_MS;
+  if (reconectarHasta == 0) reconectarHasta = 1;   // 0 significa "no se busca"
+  ultimoIntentoReconexion = millis() - INTERVALO_RECONEXION_MS;  // el primero, ya
+  Serial.printf("Buscando al teléfono durante %d s (%s)\n",
+                VENTANA_RECONEXION_MS / 1000, motivo);
+}
+
+static void cerrarVentanaReconexion(const char *motivo) {
+  if (reconectarHasta == 0) return;
+  reconectarHasta = 0;
+  Serial.printf("Fin de la búsqueda del teléfono (%s)\n", motivo);
 }
 
 // Tasa que necesita el parlante en este momento: la de la llamada si la hay,
@@ -911,12 +1019,21 @@ static void gapEventoBt(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *para
   switch (event) {
     case ESP_BT_GAP_AUTH_CMPL_EVT:
       if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
-        recordarBda(param->auth_cmpl.bda);
         Serial.print("Emparejado con ");
         imprimirBda(param->auth_cmpl.bda);
         Serial.println();
+        guardarTelefono(param->auth_cmpl.bda);
+        // El teléfono que acaba de emparejar conecta A2DP y HFP él solo. Si
+        // el ESP32 también los abre al mismo tiempo, los dos pedidos chocan
+        // (y si estaba buscando a OTRO teléfono, lo deja de buscar).
+        cerrarVentanaReconexion("teléfono nuevo emparejado");
       } else {
-        Serial.printf("Emparejamiento fallido (estado %d)\n", param->auth_cmpl.stat);
+        // Un estado distinto de 0 suele ser una clave vieja: el teléfono o el
+        // ESP32 olvidó el vínculo y el otro no. Hay que olvidarlo en los dos
+        // (en el ESP32, el comando "o" por USB).
+        Serial.printf("Emparejamiento fallido (estado %d). Si se repite, "
+                      "olvidá el auricular en el teléfono y mandá \"o\" por USB.\n",
+                      param->auth_cmpl.stat);
       }
       break;
 
@@ -940,15 +1057,21 @@ static void gapEventoBt(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *para
 static void a2dpEventoBt(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param) {
   switch (event) {
     case ESP_A2D_CONNECTION_STATE_EVT:
-      btA2dpConectado = (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED);
-      if (btA2dpConectado) {
-        recordarBda(param->conn_stat.remote_bda);
+      if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+        btA2dpConectado = true;
         Serial.print("A2DP conectado con ");
         imprimirBda(param->conn_stat.remote_bda);
         Serial.println();
-      } else {
+        guardarTelefono(param->conn_stat.remote_bda);
+      } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
+        btA2dpConectado = false;
         btA2dpActivo = false;
-        Serial.println("A2DP desconectado");
+        // ABNORMAL = se perdió el enlace (distancia, interferencia). NORMAL =
+        // lo cortó alguien (el Bluetooth del teléfono se apagó, o se tocó
+        // "Desconectar"): ahí no hay que insistir.
+        const bool perdido = (param->conn_stat.disc_rsn == ESP_A2D_DISC_RSN_ABNORMAL);
+        Serial.printf("A2DP desconectado%s\n", perdido ? " (se perdió el enlace)" : "");
+        if (perdido) abrirVentanaReconexion("se perdió el enlace");
       }
       break;
 
@@ -1030,10 +1153,10 @@ static uint32_t hfDatosSalida(uint8_t *buf, uint32_t len) {
   return len;
 }
 
+// Un intento de conectar HFP con el teléfono recordado. El ritmo lo pone
+// atenderPerfilesBt (ver RECONEXIÓN).
 static void conectarHfp(const char *motivo) {
   if (!hfpListo || !bdaValido || btSlcConectado) return;
-  if (millis() - ultimoIntentoHfp < 5000) return;
-  ultimoIntentoHfp = millis();
   Serial.printf("HFP: conectando (%s) con ", motivo);
   imprimirBda(bdaRecordado);
   Serial.println();
@@ -1234,7 +1357,10 @@ static void probarMicrofono(int segundos) {
   Serial.println("Prueba de micrófono: fin");
 }
 
-// Comandos por el puerto USB (115200, terminados en enter): p0..p3, g<dB>, q, m<s>.
+static void olvidarTelefonos();  // más abajo, con la reconexión
+
+// Comandos por el puerto USB (115200, terminados en enter): p0..p3, g<dB>, q,
+// m<s> y o (olvidar los teléfonos vinculados).
 static void interpretarComandoUsb(const char *l) {
   switch (l[0]) {
     case 'p': case 'P': {
@@ -1262,6 +1388,9 @@ static void interpretarComandoUsb(const char *l) {
       probarMicrofono(s > 0 ? s : 5);
       break;
     }
+    case 'o': case 'O':
+      olvidarTelefonos();
+      break;
     default:
       break;
   }
@@ -1284,29 +1413,62 @@ static void atenderComandosUsb() {
   }
 }
 
+// Colchón de música (ms) que se junta antes de que empiece a sonar, y de nuevo
+// después de un corte. El Bluetooth entrega la música a ráfagas y el DMA del
+// I2S guarda solo ~46 ms a 44,1 kHz: sin colchón, cualquier ráfaga atrasada
+// deja al DMA sin datos y mete un hueco de silencio (un "clic"). Muchos huecos
+// seguidos suenan ásperos. Más = más robusto y más retardo (el firmware viejo
+// usaba 100). Si "cortes" sube en el informe [bt-audio], subilo a 100-150.
+// Solo para la música: en las llamadas el DMA ya guarda ~256 ms a 8 kHz.
+#define PREBUFFER_A2DP_MS  80
+
+volatile uint32_t diagCortes = 0;  // veces que la música se quedó sin datos sonando
+
 // Tarea del parlante: saca el PCM de pcmSalida y lo manda al amplificador. Se
 // queda bloqueada en el I2S (no en el loop), así la radio nunca espera al audio.
 static void tareaSalidaAmp(void *) {
   static int16_t buf[PCM_SALIDA_DISPARO];
+  static int16_t tramas[PCM_SALIDA_DISPARO * 2];  // buf en estéreo (ver initAmplifierI2S)
   uint32_t tasaActual = SAMPLE_RATE;
+  bool juntandoColchon = true;
   for (;;) {
     if (!audioBtActivo()) {
       if (tasaActual != SAMPLE_RATE) {
-        i2s_set_clk(AMP_I2S_PORT, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
+        i2s_set_clk(AMP_I2S_PORT, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
         tasaActual = SAMPLE_RATE;
       }
+      juntandoColchon = true;
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
     }
 
     const uint32_t pedida = tasaAmpBt();
     if (pedida != tasaActual) {
-      i2s_set_clk(AMP_I2S_PORT, pedida, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
+      i2s_set_clk(AMP_I2S_PORT, pedida, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
       tasaActual = pedida;
+      juntandoColchon = true;
     }
 
+    const bool musica = btA2dpActivo && !btScoActivo;
+    if (musica && juntandoColchon) {
+      const size_t colchon = (size_t)tasaActual * sizeof(int16_t) * PREBUFFER_A2DP_MS / 1000;
+      if (xStreamBufferBytesAvailable(pcmSalida) < colchon) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+        continue;
+      }
+    }
+    juntandoColchon = false;
+
     const size_t n = xStreamBufferReceive(pcmSalida, buf, sizeof(buf), pdMS_TO_TICKS(50));
-    if (n == 0) continue;
+    if (n == 0) {
+      // 50 ms sin datos: el DMA ya se vació y sonó silencio. Se vuelve a
+      // juntar el colchón en vez de sonar a los tirones.
+      if (musica) {
+        diagCortes = diagCortes + 1;
+        juntandoColchon = true;
+      }
+      continue;
+    }
 
     // Música: ecualizador y limitador. La voz de llamada pasa sin tocar.
     if (btA2dpActivo && !btScoActivo && eqPreset != 0) {
@@ -1329,9 +1491,9 @@ static void tareaSalidaAmp(void *) {
       }
     }
 
-    size_t escritos = 0;
-    const esp_err_t e = i2s_write(AMP_I2S_PORT, buf, n, &escritos, portMAX_DELAY);
-    if (e != ESP_OK) diagAmpError++;
+    const size_t muestras = n / sizeof(int16_t);
+    const size_t escritos = escribirAmpEstereo(buf, muestras, tramas, PCM_SALIDA_DISPARO);
+    if (escritos < muestras * 4) diagAmpError++;
     diagAmpSalida += escritos;
   }
 }
@@ -1343,10 +1505,11 @@ static void imprimirDiagnosticoBt() {
   if (millis() - ultimo < 2000) return;
   ultimo = millis();
   const float reduccionDb = 20.0f * log10f(diagLimMinimo > 0.001f ? diagLimMinimo : 0.001f);
-  Serial.printf("[bt-audio] A2DP in=%lu perdido=%lu pico=%u | parlante out=%lu err=%lu | buffer=%u bytes | tasa=%lu | preset=%d g=+%.1f limitador=%.1f dB\n",
+  Serial.printf("[bt-audio] A2DP in=%lu perdido=%lu pico=%u | parlante out=%lu err=%lu cortes=%lu | buffer=%u bytes | tasa=%lu | preset=%d g=+%.1f limitador=%.1f dB\n",
                 (unsigned long)diagA2dpEntrada, (unsigned long)diagA2dpPerdida,
                 (unsigned)diagPicoA2dp,
                 (unsigned long)diagAmpSalida, (unsigned long)diagAmpError,
+                (unsigned long)diagCortes,
                 (unsigned)(pcmSalida ? xStreamBufferBytesAvailable(pcmSalida) : 0),
                 (unsigned long)tasaAmpBt(),
                 (int)eqPreset, (double)gananciaDb, (double)reduccionDb);
@@ -1399,12 +1562,12 @@ static void hfEventoBt(esp_hf_client_cb_event_t event, esp_hf_client_cb_param_t 
       hfpListo = (param->prof_stat.state == ESP_HF_INIT_SUCCESS ||
                   param->prof_stat.state == ESP_HF_INIT_ALREADY);
       Serial.printf("HFP listo: %s\n", hfpListo ? "si" : "no");
-      if (hfpListo) conectarHfp("arranque");
+      // La conexión la intenta atenderPerfilesBt, dentro de la ventana.
       break;
 
     case ESP_HF_CLIENT_CONNECTION_STATE_EVT:
-      recordarBda(param->conn_stat.remote_bda);
       btSlcConectado = (param->conn_stat.state == ESP_HF_CLIENT_CONNECTION_STATE_SLC_CONNECTED);
+      if (btSlcConectado) guardarTelefono(param->conn_stat.remote_bda);
       if (param->conn_stat.state == ESP_HF_CLIENT_CONNECTION_STATE_DISCONNECTED) {
         btLlamada = false;
         btVoz = false;
@@ -1466,38 +1629,108 @@ static void hfEventoBt(esp_hf_client_cb_event_t event, esp_hf_client_cb_param_t 
 
 // ─── Arranque y reconexión ───────────────────────────────────────────────────
 
-// Al arrancar, toma el teléfono enlazado más reciente como destino de reconexión.
+#define MAX_VINCULADOS 8
+
+// Al arrancar elige a qué teléfono reconectar: el último usado, guardado en la
+// NVS, si sigue vinculado. Antes era el primero de la lista de vinculados, que
+// no es el más reciente (es el orden en que los guarda la pila Bluetooth): con
+// dos teléfonos vinculados, buscaba siempre al primero.
 static void recordarVinculadoAlArrancar() {
   int cantidad = esp_bt_gap_get_bond_device_num();
   if (cantidad <= 0) {
     Serial.println("Sin teléfono enlazado: emparejar desde el teléfono.");
     return;
   }
-  if (cantidad > 4) cantidad = 4;
-  esp_bd_addr_t lista[4];
+  if (cantidad > MAX_VINCULADOS) cantidad = MAX_VINCULADOS;
+  esp_bd_addr_t lista[MAX_VINCULADOS];
   int n = cantidad;
-  if (esp_bt_gap_get_bond_device_list(&n, lista) == ESP_OK && n > 0) {
+  if (esp_bt_gap_get_bond_device_list(&n, lista) != ESP_OK || n <= 0) return;
+
+  esp_bd_addr_t guardado;
+  if (preferencias.getBytes(NVS_TELEFONO, guardado, sizeof(guardado)) == sizeof(guardado)) {
+    for (int i = 0; i < n; i++) {
+      if (memcmp(lista[i], guardado, sizeof(guardado)) == 0) {
+        recordarBda(guardado);
+        Serial.print("Último teléfono usado: ");
+        imprimirBda(guardado);
+        Serial.println();
+        return;
+      }
+    }
+  }
+  // Sin el último guardado (firmware anterior a la 2.1): solo si hay uno
+  // solo vinculado no hay dudas de cuál es.
+  if (n == 1) {
     recordarBda(lista[0]);
     Serial.print("Teléfono enlazado: ");
     imprimirBda(lista[0]);
     Serial.println();
+  } else {
+    Serial.printf("%d teléfonos vinculados y ninguno marcado como el último: "
+                  "se espera a que uno se conecte.\n", n);
   }
 }
 
+// Un intento de conectar A2DP con el teléfono recordado. El ritmo lo pone
+// atenderPerfilesBt (ver RECONEXIÓN).
 static void conectarA2dp() {
   if (!bdaValido || btA2dpConectado) return;
-  if (millis() - ultimoIntentoA2dp < 10000) return;
-  ultimoIntentoA2dp = millis();
-  esp_a2d_sink_connect(bdaRecordado);  // si el teléfono no responde, se reintenta
+  Serial.print("A2DP: conectando con ");
+  imprimirBda(bdaRecordado);
+  Serial.println();
+  esp_a2d_sink_connect(bdaRecordado);
 }
 
 // Se llama en cada vuelta del loop. Todo está limitado por tiempo.
 static void atenderPerfilesBt() {
-  conectarHfp("reintento");
   if (btSlcConectado && (btLlamada || btVoz) && !btScoActivo) {
     abrirSco("reintento");
   }
-  conectarA2dp();
+
+  if (reconectarHasta == 0) return;
+  if (btSlcConectado && btA2dpConectado) {
+    cerrarVentanaReconexion("conectado");
+    return;
+  }
+  if ((int32_t)(millis() - reconectarHasta) >= 0) {
+    cerrarVentanaReconexion("el teléfono no contestó; queda visible para que se conecte él");
+    return;
+  }
+  if (millis() - ultimoIntentoReconexion < INTERVALO_RECONEXION_MS) return;
+  ultimoIntentoReconexion = millis();
+
+  // Un perfil por intento, turnándose: si HFP no conecta (por ejemplo, con
+  // "Llamadas" apagado para el auricular en el teléfono), A2DP igual se
+  // intenta. Y nunca dos "page" de radio a la vez.
+  const bool hfpPendiente = hfpListo && !btSlcConectado;
+  const bool a2dpPendiente = !btA2dpConectado;
+  if (hfpPendiente && (turnoHfp || !a2dpPendiente)) {
+    conectarHfp("reconexión");
+  } else if (a2dpPendiente) {
+    conectarA2dp();
+  }
+  turnoHfp = !turnoHfp;
+}
+
+// Olvida todos los teléfonos vinculados (comando "o" por USB). Sirve cuando un
+// teléfono no puede volver a conectar porque uno de los dos lados perdió la
+// clave del vínculo: hay que olvidarlo también en el teléfono.
+static void olvidarTelefonos() {
+  int cantidad = esp_bt_gap_get_bond_device_num();
+  if (cantidad > MAX_VINCULADOS) cantidad = MAX_VINCULADOS;
+  esp_bd_addr_t lista[MAX_VINCULADOS];
+  int n = cantidad;
+  int borrados = 0;
+  if (cantidad > 0 && esp_bt_gap_get_bond_device_list(&n, lista) == ESP_OK) {
+    for (int i = 0; i < n; i++) {
+      if (esp_bt_gap_remove_bond_device(lista[i]) == ESP_OK) borrados++;
+    }
+  }
+  preferencias.remove(NVS_TELEFONO);
+  bdaValido = false;
+  cerrarVentanaReconexion("se olvidaron los teléfonos");
+  Serial.printf("Se olvidaron %d teléfonos. Olvidá también \"ESP32_BlindRoute\" "
+                "en el teléfono y emparejalo de nuevo.\n", borrados);
 }
 
 // Configura los perfiles después de SerialBT.begin(), que ya dejó Bluedroid andando.
@@ -1510,6 +1743,16 @@ static void iniciarPerfilesBt() {
   xTaskCreate(tareaSalidaAmp, "amp_bt", 4096, nullptr, 5, &tareaSalida);
 
   esp_bt_gap_register_callback(gapEventoBt);
+
+#ifdef CONFIG_BT_SSP_ENABLED
+  // Emparejamiento seguro simple sin pantalla ni teclado ("Just Works"), como
+  // cualquier auricular. Antes no se fijaba y quedaba la capacidad por
+  // defecto de la pila, que no es la misma en todas las versiones. Con esto
+  // el teléfono muestra solo "¿Vincular con ESP32_BlindRoute?" y el ESP32
+  // acepta sin código.
+  esp_bt_io_cap_t capacidad = ESP_BT_IO_CAP_NONE;
+  esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &capacidad, sizeof(capacidad));
+#endif
 
   // Clase de dispositivo: auricular inalámbrico con audio y telefonía. Es lo que
   // hace que el teléfono lo muestre como auricular y no como un dispositivo cualquiera.
@@ -1533,6 +1776,7 @@ static void iniciarPerfilesBt() {
   esp_a2d_sink_init();
 
   recordarVinculadoAlArrancar();
+  abrirVentanaReconexion("arranque");
 }
 
 void setup() {
@@ -1546,6 +1790,9 @@ void setup() {
 
   initMicrophoneI2S();
   initAmplifierI2S();
+
+  // Antes que el Bluetooth: guarda cuál fue el último teléfono usado.
+  preferencias.begin("auricular", false);
 
   SerialBT.begin("ESP32_BlindRoute");
   SerialBT.register_callback(alCambiarConexion);

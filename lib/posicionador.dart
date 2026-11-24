@@ -8,7 +8,8 @@ class ObservacionRango {
   /// Posición del beacon, normalizada `[0,1]` respecto de la imagen del plano.
   final Offset posBeacon;
 
-  /// Distancia estimada beacon↔usuario, en metros (modelo log-distancia).
+  /// Distancia estimada beacon↔usuario, en metros (modelo log-distancia). Es
+  /// la distancia REAL, en 3D: la que recorre la señal.
   final double distancia;
 
   /// Peso relativo de la observación (mayor = más confiable). Como el error en
@@ -16,7 +17,21 @@ class ObservacionRango {
   /// cercano pese más que uno lejano.
   final double confianza;
 
-  const ObservacionRango(this.posBeacon, this.distancia, this.confianza);
+  /// Altura del beacon menos la del teléfono (m). 0 = a la misma altura, que
+  /// es lo que se suponía antes de conocer las alturas.
+  ///
+  /// Con un beacon en el techo, [distancia] nunca baja de esta diferencia:
+  /// parado justo debajo, el rango es ~1,4 m. Si el solver tratara ese rango
+  /// como una distancia sobre el plano, no podría poner a la persona debajo
+  /// del beacon. Por eso el residuo se mide en 3D (ver [Posicionador]).
+  final double alturaRelativa;
+
+  const ObservacionRango(
+    this.posBeacon,
+    this.distancia,
+    this.confianza, {
+    this.alturaRelativa = 0,
+  });
 }
 
 /// Estima la posición del usuario (normalizada) por **multilateración** de los
@@ -43,6 +58,12 @@ class ObservacionRango {
 ///   multipath se descarta solo, sin arruinar la solución.
 /// • **Amortiguación Levenberg-Marquardt** (λI en la normal) para que el
 ///   sistema 2×2 no se vuelva singular con geometrías degeneradas.
+/// • **Rango en 3D**: la incógnita es la posición sobre el plano (x, y), pero
+///   el rango predicho es `√(Δx² + Δy² + Δz²)`, con Δz la
+///   [ObservacionRango.alturaRelativa] del beacon. Con Δz = 0 es el cálculo
+///   2D de siempre. Justo debajo de un beacon alto el jacobiano tiende a 0:
+///   ahí el rango casi no cambia al moverse unos centímetros, y el solver lo
+///   sabe (le da poco peso a esa dirección en vez de forzar un círculo).
 class Posicionador {
   /// Umbral de Huber (m): por encima de este residuo de rango, la observación
   /// empieza a descartarse progresivamente (robustez ante multipath).
@@ -168,12 +189,15 @@ class Posicionador {
     final bx = List<double>.filled(n, 0);
     final by = List<double>.filled(n, 0);
     final d = List<double>.filled(n, 0);
+    final dz2 = List<double>.filled(n, 0);
     final wc = List<double>.filled(n, 0);
     double sumWc = 0;
     for (int i = 0; i < n; i++) {
       bx[i] = obs[i].posBeacon.dx * mx;
       by[i] = obs[i].posBeacon.dy * my;
       d[i] = obs[i].distancia;
+      final dz = obs[i].alturaRelativa;
+      dz2[i] = dz.isFinite ? dz * dz : 0;
       wc[i] = obs[i].confianza;
       sumWc += wc[i];
     }
@@ -222,7 +246,9 @@ class Posicionador {
       double g1 = pa11 * dxp + pa12 * dyp, g2 = pa12 * dxp + pa22 * dyp;
       for (int i = 0; i < n; i++) {
         final ex = x - bx[i], ey = y - by[i];
-        double rng = sqrt(ex * ex + ey * ey);
+        // Rango 3D: la altura del beacon sobre el teléfono suma a la
+        // distancia aunque no sea una incógnita (ver ObservacionRango).
+        double rng = sqrt(ex * ex + ey * ey + dz2[i]);
         if (rng < 1e-3) rng = 1e-3;
         final r = rng - d[i]; // residuo de rango (m)
         final ar = r.abs();

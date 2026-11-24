@@ -99,7 +99,7 @@ El proyecto genera dos aplicaciones a partir del mismo código, que se instalan 
     <td>
       <ul>
         <li>Edificios y pisos con la imagen del plano y su <b>escala en metros</b>.</li>
-        <li>Ubicación de <b>balizas</b>, <b>zonas no transitables</b> y <b>lugares de interés</b> (aulas, baños, escaleras, ascensores).</li>
+        <li>Ubicación de <b>balizas</b> (con la altura a la que está cada una), <b>zonas no transitables</b> y <b>lugares de interés</b> (aulas, baños, escaleras, ascensores).</li>
         <li><b>Calibración</b> de la señal y <b>puntos de referencia</b> para mejorar la precisión.</li>
         <li><b>Publicación en la nube</b> de los mapas para la aplicación de la persona usuaria.</li>
         <li><b>Panel de ajustes</b> de la navegación, por edificio o generales.</li>

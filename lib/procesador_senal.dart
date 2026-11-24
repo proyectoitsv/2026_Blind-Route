@@ -177,6 +177,41 @@ class ProcesadorSenal {
   /// para que la calibración use el mismo valor al despejar txPower.
   static double get pathLossExponent => _pathLossExponent;
 
+  // ─── ALTURAS ──────────────────────────────────────────────────────────────
+  //
+  // El plano es 2D y la señal viaja en 3D. La distancia que "ve" el RSSI es
+  //   d = √(d_plano² + Δh²),   Δh = altura del beacon − altura del teléfono.
+  // Antes se usaba d_plano en todo (calibración y posicionamiento), que es lo
+  // mismo que suponer Δh = 0. Con un beacon en el techo (Δh ≈ 1,4 m) eso
+  // deforma el modelo de cada beacon: la regresión sobre d_plano da un n más
+  // bajo que el real (2,0 → 1,53 en una simulación con calibraciones a 1, 3,
+  // 6 y 10 m) y el rango queda inflado cerca del beacon (+0,8 m justo debajo)
+  // y torcido lejos (−0,45 m a 4 m, +2 m a 12 m). Con beacons a alturas
+  // DISTINTAS cada uno se deforma distinto, así que las circunferencias dejan
+  // de cruzarse en un punto y la posición se corre. Un techo más alto puede
+  // llevar el n ajustado por debajo de [_nMin]: entonces se descarta la
+  // regresión y se usa el modelo por defecto, que es peor todavía.
+
+  /// Altura (m sobre el piso) a la que se supone el teléfono: en la mano o en
+  /// el pecho, tanto al calibrar como al navegar. Un error de ±0,3 m acá
+  /// mueve el rango horizontal ~0,3 m justo debajo de un beacon alto, y casi
+  /// nada a partir de 3 m.
+  static const double alturaTelefonoM = 1.2;
+
+  /// Altura del beacon menos la del teléfono (m). Null (beacon sin altura
+  /// indicada) se toma como "a la altura del teléfono": 0, lo de antes.
+  static double alturaRelativa(double? alturaBeacon) =>
+      (alturaBeacon == null || !alturaBeacon.isFinite)
+          ? 0.0
+          : alturaBeacon - alturaTelefonoM;
+
+  /// Distancia real (3D, en m) entre el teléfono y un beacon separados
+  /// [dxm] × [dym] metros sobre el plano.
+  static double distanciaReal(double dxm, double dym, double? alturaBeacon) {
+    final dz = alturaRelativa(alturaBeacon);
+    return sqrt(dxm * dxm + dym * dym + dz * dz);
+  }
+
   static double rssiADistanciaConTx(double rssiFiltrado, double txPower) {
     if (rssiFiltrado >= 0) return 0.1;
     final d = pow(10.0, (txPower - rssiFiltrado) / (10.0 * _pathLossExponent))
@@ -560,12 +595,17 @@ class ProcesadorSenal {
   /// datos ya se venian guardando, solo no se estaban aprovechando.
   ///
   /// Si un beacon no tiene datos suficientes se devuelve el modelo por defecto
-  /// (n fijo y el txPower promediado de [txPowerCalibrado]), o sea el
+  /// (n fijo y el txPower promedio de sus calibraciones), o sea el
   /// comportamiento anterior: el ajuste nunca empeora el punto de partida.
+  ///
+  /// [alturasBeacons]: la altura de cada beacon (m sobre el piso; null o
+  /// ausente = a la altura del teléfono). Las distancias son 3D, con
+  /// [distanciaReal]: ver "ALTURAS" más arriba.
   static Map<String, ModeloRangoBeacon> ajustarModelosRango({
     required List<CalibracionRegistro> calibraciones,
     required Map<String, Offset> posicionesBeacons,
     required GrillaNav grilla,
+    Map<String, double?> alturasBeacons = const {},
   }) {
     final modelos = <String, ModeloRangoBeacon>{};
 
@@ -582,23 +622,44 @@ class ProcesadorSenal {
         if (pos == null) continue;
         final dxm = (pos.dx - cx) * grilla.metrosX;
         final dym = (pos.dy - cy) * grilla.metrosY;
-        final d = sqrt(dxm * dxm + dym * dym);
+        final d = distanciaReal(dxm, dym, alturasBeacons[mac]);
         if (!d.isFinite || d < _dMinAjuste) continue;
         puntos.putIfAbsent(mac, () => []).add((x: log(d) / ln10, y: rssi));
       }
     }
 
-    ModeloRangoBeacon porDefecto(String mac, int n) => ModeloRangoBeacon(
+    // El txPower por defecto sale de las MISMAS lecturas, con la distancia de
+    // ahora (posición y altura actuales del beacon). No se promedia el
+    // txPowerAjustado guardado en cada calibración: ese se calculó con la
+    // altura que tenía el beacon al calibrar (o sin altura, en las
+    // calibraciones viejas), y cambiarle la altura después no lo actualiza.
+    // Solo si no queda ningún punto útil se cae a lo guardado.
+    ModeloRangoBeacon porDefecto(
+      String mac,
+      List<({double x, double y})> pts,
+    ) {
+      if (pts.isEmpty) {
+        return ModeloRangoBeacon(
           txPower: txPowerCalibrado(mac, calibraciones),
           n: _pathLossExponent,
-          puntos: n,
         );
+      }
+      double suma = 0;
+      for (final p in pts) {
+        suma += p.y + 10 * _pathLossExponent * p.x; // rssi + 10·n·log10(d)
+      }
+      return ModeloRangoBeacon(
+        txPower: suma / pts.length,
+        n: _pathLossExponent,
+        puntos: pts.length,
+      );
+    }
 
     for (final mac in posicionesBeacons.keys) {
       final pts = puntos[mac] ?? const <({double x, double y})>[];
 
       if (pts.length < _minPuntosAjuste) {
-        modelos[mac] = porDefecto(mac, pts.length);
+        modelos[mac] = porDefecto(mac, pts);
         continue;
       }
 
@@ -611,7 +672,7 @@ class ProcesadorSenal {
         sy += p.y;
       }
       if (maxX - minX < _minRangoLog) {
-        modelos[mac] = porDefecto(mac, pts.length);
+        modelos[mac] = porDefecto(mac, pts);
         continue;
       }
 
@@ -623,7 +684,7 @@ class ProcesadorSenal {
         sxx += dx * dx;
       }
       if (sxx < 1e-9) {
-        modelos[mac] = porDefecto(mac, pts.length);
+        modelos[mac] = porDefecto(mac, pts);
         continue;
       }
 
@@ -633,7 +694,7 @@ class ProcesadorSenal {
       if (!nAjustado.isFinite || nAjustado < _nMin || nAjustado > _nMax) {
         debugPrint('[Rango] $mac: n ajustado fuera de rango '
             '(${nAjustado.toStringAsFixed(2)}); se usa el modelo por defecto.');
-        modelos[mac] = porDefecto(mac, pts.length);
+        modelos[mac] = porDefecto(mac, pts);
         continue;
       }
 

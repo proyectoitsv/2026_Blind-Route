@@ -135,6 +135,9 @@ class SupabaseService {
                 'x': b.posicion.dx,
                 'y': b.posicion.dy,
                 'nombre': b.nombre,
+                // Dentro del mismo JSONB: la tabla no necesita una columna
+                // nueva y las versiones viejas de la app la ignoran.
+                'altura': b.altura,
               })
           .toList(),
       'zonas': zonas
