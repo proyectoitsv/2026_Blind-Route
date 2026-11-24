@@ -1,15 +1,13 @@
-import 'package:blindroute/grilla_nav.dart';
-import 'package:blindroute/seguidor_ruta.dart';
-import 'package:flutter_test/flutter_test.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // RECÁLCULO: ¿CAMBIÓ LO QUE HAY QUE HACER?
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Plano de 10 × 10 m con celdas de 1 m. Las rutas se escriben como celdas
 // (columna, fila); el pathfinder del empalme es un doble que devuelve el
 // camino que se le pasa, así cada caso arma exactamente la situación que
 // prueba.
+
+import 'package:blindroute/grilla_nav.dart';
+import 'package:blindroute/seguidor_ruta.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 final _g = GrillaNav(metrosX: 10, metrosY: 10, tamCeldaMetros: 1.0);
 

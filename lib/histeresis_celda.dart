@@ -1,11 +1,14 @@
+// Qué celda de la grilla se considera la del usuario.
+//
+// HisteresisCelda recibe la celda que da la posición en cada ciclo y sólo la
+// acepta después de varios ciclos seguidos en ella, así la posición no
+// titila entre dos celdas vecinas. Cruzar una pared exige más ciclos que
+// moverse por el mismo lado.
+
 import 'dart:math';
 
 import 'grilla_nav.dart';
 
-/// ═══════════════════════════════════════════════════════════════════════════
-/// HISTÉRESIS DE CELDA
-/// ═══════════════════════════════════════════════════════════════════════════
-///
 /// Estabiliza en qué celda de la grilla está el usuario. Sin esto, cuando el
 /// usuario está cerca del borde entre dos celdas la posición oscila entre
 /// ellas con cada lectura BLE, y eso da saltos en el mapa e indicaciones de
@@ -17,25 +20,24 @@ import 'grilla_nav.dart';
 ///
 /// Con las zonas bloqueadas por el centro de la celda, una pared angosta (20
 /// cm) no bloquea ninguna celda: sólo corta la conexión entre las de los dos
-/// lados. Antes se bloqueaban las celdas que tocaba, y eso dejaba un colchón:
-/// para pasar al otro lado, la medición tenía que caer ~0,65 m más allá de la
-/// pared. Ahora le alcanza con salir del polígono, y caminando se confirma
-/// en un ciclo: cualquier ciclo ruidoso del otro lado hacía saltar al
-/// usuario atrás de la pared. Si el salto duraba más que el tiempo fuera de
-/// ruta, la ruta se recalculaba desde el lado equivocado.
+/// lados. Para pasar al otro lado, a la medición le alcanza con salir del
+/// polígono, y caminando una celda se confirma en un ciclo: cualquier ciclo
+/// ruidoso del otro lado haría saltar al usuario atrás de la pared. Si el
+/// salto dura más que el tiempo fuera de ruta, la ruta se recalcula desde el
+/// lado equivocado.
 ///
 /// Por eso, si la candidata está del otro lado de una pared ([_cruzaPared])
 /// se piden más ciclos (`ciclosPared`), y se cuentan los ciclos seguidos DEL
 /// OTRO LADO, en cualquier celda, no en la misma: con celdas de 0,5 m el
 /// ruido reparte las mediciones entre varias celdas de ese lado, y contar
-/// por celda reiniciaba el conteo a cada rato (en simulación, con 8 ciclos
-/// una corrección real llegaba a tardar 35 s).
+/// por celda reiniciaría el conteo a cada rato (en simulación, con 8 ciclos
+/// una corrección real llega a tardar 35 s).
 ///
 /// Y durante [ciclosParaDeshacer] ciclos después de cruzar, volver al lado de
 /// antes cuesta lo normal. Sin esto, salir de un cruce falso costaría lo
 /// mismo que entrar: hay menos cruces, pero cada uno dura más, y en
-/// simulación salían MÁS recálculos de ruta que antes. Deshacer no abre otra
-/// ventana (si no, el punto podría ir y venir a ritmo de ruido).
+/// simulación salen MÁS recálculos de ruta que sin la espera. Deshacer no
+/// abre otra ventana (si no, el punto podría ir y venir a ritmo de ruido).
 ///
 /// Los movimientos entre celdas del mismo lado (caminar, doblar una esquina,
 /// pasar por una puerta) no cambian: sólo paga la demora una posición que

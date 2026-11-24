@@ -1,13 +1,4 @@
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../tipografia.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Estado de una pantalla
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Lo que va en lugar del contenido cuando no hay nada para mostrar (una lista
 // vacía, una búsqueda sin resultados), cuando algo falló (sin conexión) o
@@ -29,6 +20,13 @@ import '../tipografia.dart';
 // ─── Letra grande ───
 // El texto se parte en renglones y crece hacia abajo. Si no entra en la
 // pantalla, quien lo usa lo pone en algo que se desplace.
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../tipografia.dart';
 
 /// Un estado de pantalla: vacía, con un error o esperando.
 class EstadoPantalla extends StatelessWidget {

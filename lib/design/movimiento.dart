@@ -1,13 +1,6 @@
-import 'package:flutter/widgets.dart';
-
-import 'ajustes_movimiento.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Movimiento de BlindRoute
-// ═══════════════════════════════════════════════════════════════════════════
 //
-// Duraciones, curvas y el resorte de la tabla de movimiento (sección 5 de la
-// v5 del prompt, fase 3 del rediseño). Principios:
+// Duraciones, curvas y el resorte de la tabla de movimiento. Principios:
 //   · Fluido es arrancar en el mismo cuadro de la acción y poder
 //     interrumpirse: si se toca otra vez, sigue desde donde está, no empieza
 //     de cero.
@@ -34,6 +27,11 @@ import 'ajustes_movimiento.dart';
 // hoja) aplica la curva al valor, que baja: una curva de salida se sentiría
 // de entrada (arrancaría lento). Para que la salida también arranque rápido,
 // la curva de reversa es la misma dada vuelta (Curve.flipped).
+
+import 'package:flutter/widgets.dart';
+
+import 'ajustes_movimiento.dart';
+
 abstract final class MovimientoApp {
   // ── Movimiento reducido ─────────────────────────────────────────────────
 

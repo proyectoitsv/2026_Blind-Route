@@ -1,3 +1,5 @@
+// Qué app está corriendo (EntornoApp): la del usuario o la del administrador.
+
 /// Qué app está corriendo: la del usuario o la del administrador.
 ///
 /// Las dos comparten código (la pantalla de navegación, por ejemplo) y hay

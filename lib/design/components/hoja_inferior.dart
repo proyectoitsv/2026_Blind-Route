@@ -1,20 +1,4 @@
-import 'dart:math' as math;
-
-import 'package:flutter/material.dart';
-
-import '../ambiente_diseno.dart';
-import '../colores.dart';
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../movimiento.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'botones.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Hoja inferior
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Para cargas rápidas (un nombre, una opción) sin cambiar de pantalla: una
 // superficie levantada, con las esquinas de arriba de radio 24, la manija
@@ -47,6 +31,20 @@ import 'botones.dart';
 // Si el contenido no entra, se desplaza. Con el teclado abierto, la hoja
 // sube para que el campo quede a la vista. En una tablet no pasa de 640 dp
 // de ancho.
+
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import '../ambiente_diseno.dart';
+import '../colores.dart';
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../movimiento.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'botones.dart';
 
 /// Abre una hoja inferior con [titulo] y lo que arme [contenido]. Devuelve
 /// lo que se le pase a Navigator.pop al cerrarla.

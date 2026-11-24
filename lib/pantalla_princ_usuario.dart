@@ -1,3 +1,6 @@
+// Pantalla principal de la app del usuario: "Comenzar a navegar" (el modo
+// automático), los mapas disponibles para descargar y los ajustes.
+
 import 'package:flutter/material.dart';
 
 import 'design/design.dart';
@@ -11,14 +14,13 @@ import 'voz_service.dart';
 /// se compilan en este binario (el punto de entrada main_user.dart no las
 /// referencia).
 ///
-/// ─── Sistema de diseño (fase 5.1 del rediseño) ───
 /// Va envuelta en AmbienteDiseno (el tema nuevo y «Reducir movimiento») y
 /// abre las pantallas con RutaApp, con la transición de la tabla de
 /// movimiento. La primera vista es sólo "Comenzar a navegar": un círculo de
 /// acento con ondas (BotonPulso) en el medio, que se toca en cualquier parte
 /// del círculo o de su texto. "Mapas disponibles" y "Ajustes" quedan debajo,
-/// a la vista desplazando, como filas de un grupo; TalkBack los nombra como
-/// antes ("Mapas disponibles para descargar", "Ajustes: voz, movimiento y
+/// a la vista desplazando, como filas de un grupo; TalkBack los nombra
+/// ("Mapas disponibles para descargar", "Ajustes: voz, movimiento y
 /// vibración") y llega a ellos recorriendo la pantalla.
 class PantallaPrincipalUsuario extends StatefulWidget {
   const PantallaPrincipalUsuario({super.key});

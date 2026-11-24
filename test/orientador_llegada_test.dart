@@ -1,13 +1,11 @@
-import 'package:blindroute/orientacion_service.dart';
-import 'package:blindroute/orientador_llegada.dart';
-import 'package:flutter_test/flutter_test.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // ORIENTACIÓN AL LLEGAR
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // El lugar queda al norte (rumbo 0°). Los ciclos van cada 200 ms, como el
 // posicionamiento; [_ms] da la hora de cada uno desde el inicio.
+
+import 'package:blindroute/orientacion_service.dart';
+import 'package:blindroute/orientador_llegada.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 final DateTime _t0 = DateTime(2026, 10, 26, 12);
 

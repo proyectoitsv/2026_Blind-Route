@@ -1,3 +1,10 @@
+// Ciclo de vida del escaneo Bluetooth (BluetoothHelper).
+//
+// Un solo scan para toda la app: lo arranca y lo detiene con la cuota de
+// Android (5 arranques cada 30 s), lo renueva antes de los 30 minutos, lo
+// pasa de una pantalla a otra sin cortarlo (con un token de dueño) y dice por
+// qué no se puede escanear (Bluetooth apagado, permisos, ubicación).
+
 import 'dart:async';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -77,31 +84,24 @@ class BluetoothHelper {
 
   // ── DUEÑO ACTUAL DEL SCAN ─────────────────────────────────────────────────
   //
-  // POR QUÉ HACE FALTA (esta es LA causa del congelamiento):
-  //
-  // Flutter destruye la pantalla vieja DESPUÉS de construir la nueva. Con
-  // `pushReplacement` (ModoAutomatico → PantallaNavegacion) y con el `pop`
-  // normal, el `dispose()` de la pantalla saliente se ejecuta cuando la
-  // entrante YA corrió su `initState` y su inicialización asíncrona.
+  // POR QUÉ HACE FALTA: Flutter destruye la pantalla vieja DESPUÉS de
+  // construir la nueva. Con `pushReplacement` (ModoAutomatico →
+  // PantallaNavegacion) y con el `pop` normal, el `dispose()` de la pantalla
+  // saliente se ejecuta cuando la entrante YA corrió su `initState` y su
+  // inicialización asíncrona.
   //
   // Como todo el estado de escaneo es estático, ese `dispose()` tardío
-  // desarmaba la suscripción y los callbacks que acababa de registrar la
-  // pantalla NUEVA. Resultado exacto del bug reportado:
-  //   • el scan físico seguía vivo → `isScanningNow` = true,
-  //   • pero no había ningún listener → no llegaba un solo resultado,
-  //   • y `reiniciarScanForzado()` salía por `_onResultadosActual == null`,
-  //     así que ni siquiera se podía recuperar solo.
+  // desarmaría la suscripción y los callbacks que acaba de registrar la
+  // pantalla NUEVA, y la navegación quedaría congelada:
+  //   • el scan físico sigue vivo → `isScanningNow` = true,
+  //   • pero no hay ningún listener → no llega un solo resultado,
+  //   • y `reiniciarScanForzado()` sale por `_onResultadosActual == null`,
+  //     así que ni siquiera se puede recuperar solo.
   //
-  // La evidencia estaba en el log: el TTS "Buscando ubicación" de la pantalla
-  // nueva aparecía como `Interrupted: true`, interrumpido por el
-  // `_voz.limpiar()` de la pantalla vieja. Ese `limpiar()` y el
-  // `detenerScanSeguro()` viven en el mismo `dispose()`: si uno llegó tarde,
-  // el otro también.
-  //
-  // Solución: cada pantalla registra un token (`this`) al tomar el scan. Las
-  // operaciones destructivas solo tienen efecto si quien las pide sigue siendo
-  // el dueño. Una pantalla que se destruye tarde ya no es dueña de nada y su
-  // limpieza se vuelve inofensiva.
+  // Por eso cada pantalla registra un token (`this`) al tomar el scan. Las
+  // operaciones destructivas sólo tienen efecto si quien las pide sigue
+  // siendo el dueño: una pantalla que se destruye tarde no es dueña de nada y
+  // su limpieza es inofensiva. VozService hace lo mismo con el TTS.
   static Object? _dueno;
 
   /// `true` si [candidato] es quien tiene registrado el scan ahora mismo.
@@ -307,10 +307,9 @@ class BluetoothHelper {
 
   /// Arranca el scan físico si no hay uno corriendo. Respeta la cuota.
   static Future<bool> _asegurarScanFisico() async {
-    // La ÚNICA fuente de verdad sobre si hay scan es el plugin. Antes había una
-    // bandera estática `_scanIniciado` en paralelo que se desincronizaba: al
-    // salir de la pantalla con `mantenerScanActivo` quedaba en `true` aunque el
-    // scan hubiera muerto, y entonces esta función no volvía a arrancarlo nunca.
+    // La ÚNICA fuente de verdad sobre si hay scan es el plugin. Una bandera
+    // propia en paralelo se desincronizaría (quedaría en `true` con el scan
+    // muerto) y esta función no volvería a arrancarlo nunca.
     if (FlutterBluePlus.isScanningNow) return true;
 
     final espera = esperaParaArrancar();
@@ -361,10 +360,9 @@ class BluetoothHelper {
   /// entrega nada". Devuelve `false` si no hay cupo o si ya hay un reinicio en
   /// curso; el llamador debe reintentar más tarde y NO insistir en bucle.
   static Future<bool> reiniciarScanForzado() async {
-    // Toda salida temprana se loguea. En la version anterior estas dos
-    // devolvian `false` en silencio, y por eso el log solo mostraba
-    // "Forzando reinicio" una y otra vez sin ninguna pista de por que no
-    // pasaba nada. Un camino de fallo sin log es un camino de fallo invisible.
+    // Toda salida temprana se loguea: un camino de fallo sin log es un camino
+    // de fallo invisible (el log mostraría "Forzando reinicio" una y otra vez
+    // sin ninguna pista de por qué no pasa nada).
     if (_reinicioEnCurso) {
       debugPrint('[BLE] Reinicio ignorado: ya hay uno en curso.');
       return false;
@@ -435,11 +433,11 @@ class BluetoothHelper {
   /// Suelta la suscripción y los callbacks SIN tocar el scan físico.
   ///
   /// Es lo que tiene que llamar una pantalla que se destruye pero quiere dejar
-  /// el scan corriendo para la siguiente. Antes esas pantallas no llamaban a
-  /// nada: la suscripción sobrevivía apuntando a una `State` desmontada, cuyo
-  /// callback descarta todo por `!mounted`. El scan seguía "vivo" pero sus
-  /// resultados no llegaban a ninguna parte, y encima el listener del adaptador
-  /// podía resucitarlo con esos callbacks muertos.
+  /// el scan corriendo para la siguiente. Si no la llamara, la suscripción
+  /// sobreviviría apuntando a una `State` desmontada, cuyo callback descarta
+  /// todo por `!mounted`: el scan seguiría "vivo" pero sus resultados no
+  /// llegarían a ninguna parte, y el listener del adaptador podría
+  /// resucitarlo con esos callbacks muertos.
   static Future<void> liberarSuscripcion(Object dueno) async {
     if (!esDueno(dueno)) {
       // Otra pantalla ya tomó el scan: esta limpieza llegó tarde y desarmaría

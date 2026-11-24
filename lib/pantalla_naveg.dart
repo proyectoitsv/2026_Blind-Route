@@ -1,3 +1,12 @@
+// Pantalla de navegación (la comparten la app del usuario y la del admin).
+//
+// Es el centro de la app: escanea los beacons, calcula la posición en cada
+// ciclo (señal → distancias → multilateración → puerta por rumbo → One Euro →
+// tope de paso → zonas prohibidas → celda), calcula y sigue la ruta, da las
+// indicaciones por voz (giros anticipados, llegada, puntos clave), atiende los
+// pedidos de destino por voz y maneja el salto entre pisos. Lo que se ve está
+// en vista_navegacion.dart; acá está la lógica.
+
 import 'dart:async';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/material.dart';
@@ -138,8 +147,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Ciclos sin coincidencia que se toleran sin soltar el punto clave. Con
   /// el ruido de los beacons (en una toma parado a 45 cm de un beacon el
   /// crudo iba de -64 a -35 dBm) un ciclo suelto queda ambiguo o por encima
-  /// del umbral, y antes eso reiniciaba todo: la corrección casi nunca
-  /// llegaba a juntar los ciclos para aplicarse.
+  /// del umbral. Si eso reiniciara todo, la corrección casi nunca llegaría a
+  /// juntar los ciclos para aplicarse.
   static const int _fpCiclosGracia = 4;
 
   /// Constante de suavizado (ciclos) de la distancia en dB del candidato.
@@ -161,25 +170,25 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// cuando deja de coincidir, en los dos casos a razón de la "fuerza de la
   /// corrección" de [AjustesNavegacion] por ciclo.
   ///
-  /// POR QUÉ UN PESO ACUMULADO: antes la fuerza era la fracción que se corría
-  /// la posición en cada ciclo, y eso no alcanzaba: el ciclo siguiente la
-  /// multilateración vuelve a calcular desde las lecturas (con el ancla a la
-  /// posición anterior), así que la posición se quedaba a mitad de camino. En
-  /// una cuenta aproximada (el ancla pesa 3 veces los rangos parado y 0,25
-  /// caminando), parado llegaba al 55-70 % de la distancia al punto clave y
-  /// caminando al 27-40 %. Con el peso acumulado, parado llega al 90 % o más.
+  /// POR QUÉ UN PESO ACUMULADO: correr la posición una fracción fija en cada
+  /// ciclo no alcanza. El ciclo siguiente la multilateración vuelve a calcular
+  /// desde las lecturas (con el ancla a la posición anterior), así que la
+  /// posición se queda a mitad de camino: en una cuenta aproximada (el ancla
+  /// pesa 3 veces los rangos parado y 0,25 caminando), parado llegaría al
+  /// 55-70 % de la distancia al punto clave y caminando al 27-40 %. Con el
+  /// peso acumulado, parado llega al 90 % o más.
   double _fpPeso = 0.0;
 
   /// Centro de la celda del punto clave que se está aplicando.
   Offset? _fpObjetivo;
 
   /// Puntos clave ya anunciados ("Estás en X"), por etiqueta: dónde están,
-  /// cuándo se dijo y si el usuario ya se alejó de ahí. Antes se guardaba
-  /// sólo el último y se olvidaba cada vez que la coincidencia se cortaba
-  /// unos ciclos, cosa que con el ruido de los beacons pasa todo el tiempo:
-  /// parado en el punto clave, "Estás en X" se repetía cada pocos segundos.
-  /// Ahora se dice una vez por visita: se repite recién después de alejarse
-  /// [_fpAlejarseMetros] y con [_fpRepetirAnuncio] de por medio.
+  /// cuándo se dijo y si el usuario ya se alejó de ahí. Con el ruido de los
+  /// beacons la coincidencia se corta unos ciclos todo el tiempo: si el
+  /// anuncio se olvidara en cada corte, parado en el punto clave "Estás en X"
+  /// se repetiría cada pocos segundos. Se dice una vez por visita: se repite
+  /// recién después de alejarse [_fpAlejarseMetros] y con
+  /// [_fpRepetirAnuncio] de por medio.
   final Map<String, ({Offset centro, DateTime cuando, bool seAlejo})>
   _fpAnunciados = {};
   static const double _fpAlejarseMetros = 3.0;
@@ -193,16 +202,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   // ── Posición ──────────────────────────────────────────────────────────────
   //
-  // FILTRO ONE EURO + ACELERÓMETRO (reemplaza al EMA de α fijo).
+  // FILTRO ONE EURO + ACELERÓMETRO.
   //
-  // El EMA anterior usaba α = 0.15 (τ ≈ 1.2 s) SIEMPRE. Ese único valor tenía
-  // que servir para dos situaciones opuestas y no servía bien para ninguna:
-  // con el usuario parado dejaba pasar ~31 cm de jitter por ciclo (la celda
-  // parpadeaba), y caminando iba ~1.2 s atrasado (≈1.4 m a paso normal).
+  // Un EMA de α fijo (0.15, τ ≈ 1.2 s) tiene que servir para dos situaciones
+  // opuestas y no sirve bien para ninguna: con el usuario parado deja pasar
+  // ~31 cm de jitter por ciclo (la celda parpadea), y caminando va ~1.2 s
+  // atrasado (≈1.4 m a paso normal).
   //
-  // Ahora la frecuencia de corte se adapta: el acelerómetro dice si el usuario
-  // está quieto o caminando, y el filtro interpola entre suavizado fuerte y
-  // respuesta rápida. Medido en simulación con ruido BLE de 1.5 m:
+  // Con el One Euro la frecuencia de corte se adapta: el acelerómetro dice si
+  // el usuario está quieto o caminando, y el filtro interpola entre suavizado
+  // fuerte y respuesta rápida. Medido en simulación con ruido BLE de 1.5 m:
   //   EMA α=0.15  → 1.19 m de error caminando | 30.5 cm/ciclo de jitter parado
   //   One Euro+acc→ 0.95 m de error caminando |  8.7 cm/ciclo de jitter parado
   late final FiltroUnEuroPosicion _filtroPosicion;
@@ -223,9 +232,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   /// Umbral de APAGADO del rumbo, mas bajo que el de encendido (histeresis).
   /// Sin esto, con la calidad oscilando alrededor de _calidadRumboMinima el
-  /// rumbo entraba y salia ciclo a ciclo; y cada salida ademas reseteaba la
-  /// puerta direccional (evidencia y apertura a cero), asi que la restriccion
-  /// quedaba efectivamente apagada aunque "en promedio" hubiera calidad.
+  /// rumbo entraría y saldría ciclo a ciclo; y cada salida resetea la puerta
+  /// direccional (evidencia y apertura a cero), así que la restricción
+  /// quedaría apagada en la práctica aunque en promedio hubiera calidad.
   static const double _calidadRumboApagar = 0.15;
   bool _rumboActivo = false;
 
@@ -266,12 +275,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // beacon con una lectura anomala no puede arrastrar la posicion de golpe. Se
   // escala con el movimiento: parado, un salto grande es siempre ruido.
   //
-  // ANTES estaba expresado en unidades NORMALIZADAS (0.012 y 0.04), lo que lo
-  // hacia depender del tamano del plano: los mismos 0.04 son 2 m en un plano de
-  // 50 m y 4 m en uno de 100 m. Y como se aplicaba sobre la distancia
-  // normalizada, en un plano rectangular (metrosX != metrosY) el tope terminaba
-  // siendo distinto segun la direccion, sin relacion con el rumbo. Ahora es un
-  // limite de velocidad fisico y se multiplica por el dt real del ciclo.
+  // Es un límite físico (m/s, multiplicado por el dt real del ciclo) y no una
+  // fracción del plano: 0.04 del plano son 2 m en uno de 50 m y 4 m en uno de
+  // 100 m, y en un plano rectangular (metrosX != metrosY) el tope cambiaría
+  // según la dirección, sin relación con el rumbo.
   // El de caminando es regulable ([AjustesNavegacion.velocidadMaxima]): es el
   // que limita cuánto puede "alcanzar de golpe" el punto después de un atraso.
   static const double _velMaxQuietoMs = 1.2;
@@ -279,9 +286,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Fraccion del tope longitudinal que se le permite al eje PERPENDICULAR al
   /// rumbo cuando el usuario camina. Es la ultima linea de defensa contra la
   /// deriva lateral, por debajo de la puerta direccional.
-  /// RECALIBRADO 0.35 → 0.25: con la puerta bien cerrada este tope es la
-  /// cota dura de cuán rápido puede deslizarse el ícono de costado
-  /// (0.25 × 3.0 m/s = 0.75 m/s caminando).
+  /// Con la puerta cerrada, este tope es la cota dura de cuán rápido puede
+  /// deslizarse el ícono de costado (0.25 × 3.0 m/s = 0.75 m/s caminando).
   static const double _facTopePerp = 0.25;
 
   /// Zona muerta (en metros) con el usuario detenido: mientras la salida del
@@ -297,8 +303,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // temporal fuerte en el posicionador (×3), One Euro a 0,04 Hz, tope de paso
   // y zona muerta. Eso es lo correcto cuando la posición ya es buena, pero al
   // arrancar no lo es: el primer fix sale de ventanas de RSSI a medio llenar
-  // y a veces con sólo dos beacons a la vista. Si la persona no caminaba, ese
-  // primer fix quedaba clavado para siempre.
+  // y a veces con sólo dos beacons a la vista. Si la persona no camina, ese
+  // primer fix quedaría clavado para siempre.
   //
   // Durante los primeros segundos después de obtener (o recuperar) la
   // posición, el pipeline corre "como si el usuario caminara" —ancla floja,
@@ -308,8 +314,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // haya un cambio brusco de régimen.
   //
   // Medido en simulación con el Posicionador y el filtro reales, usuario
-  // quieto y primer fix a 8 m: antes 8 m de error indefinidamente; con esto
-  // ~0,6 m a los 3 s y ~0,4 m al terminar la fase.
+  // quieto y primer fix a 8 m: sin esta fase el error se queda en 8 m; con
+  // ella, ~0,6 m a los 3 s y ~0,4 m al terminar la fase.
 
   /// Momento en que arrancó la fase de adquisición en curso (null = no hay).
   DateTime? _adquisicionDesde;
@@ -335,9 +341,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   static const Duration _esperaMaxPrimerFix = Duration(milliseconds: 1500);
   DateTime? _esperandoPrimerFixDesde;
 
-  // _historialPosiciones/_ventanaCentroid (promedio móvil redundante) fueron
-  // eliminados: sumaban una segunda capa de latencia sin reducir ruido real,
-  // ver el comentario en _calcularPosicionRobusta().
+  /// Centro de la celda confirmada del usuario (ver [_histeresisCelda]): lo
+  /// que se dibuja y desde donde se calculan la ruta y las indicaciones.
   Offset? _posicionFinal;
 
   // Histéresis de celda: estabiliza en qué celda de la grilla está el usuario,
@@ -392,8 +397,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   static const int _ciclosParaLlegada = 3;
 
   /// Distancia (m) al objetivo a la que se considera que el usuario llegó.
-  /// Antes era 1,5 m, y la llegada se anunciaba con el lugar todavía lejos
-  /// (pedido del usuario: que la tome a 0,5 m). Como la posición confirmada
+  /// Con 1,5 m la llegada se anuncia con el lugar todavía lejos. Como la
+  /// posición confirmada
   /// es siempre el centro de una celda, también cuenta estar en la MISMA
   /// celda del objetivo (ver [_enObjetivo]): con celdas de 1 m, un lugar
   /// cerca del borde de su celda queda a más de 0,5 m de cualquier centro y
@@ -429,7 +434,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   //
   // Después de cambiar de piso el usuario está parado SOBRE la escalera por
   // la que llegó, que para el pathfinder es un obstáculo. Sin esto la ruta
-  // arrancaba desde la celda libre más cercana, que podía estar detrás o al
+  // arrancaría desde la celda libre más cercana, que puede estar detrás o al
   // costado de la escalera. Mientras siga cerca de esa escalera, la ruta sale
   // desde el punto frente a su entrada/salida.
 
@@ -457,7 +462,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   // ── MAPA DESPLAZABLE (zoom + arrastre, estilo Google Maps) ─────────────────
   //
-  // El plano ya no se achica para entrar en la pantalla: se dibuja a una
+  // El plano no se achica para entrar en la pantalla: se dibuja a una
   // escala fija en píxeles por metro, con la proporción real del piso
   // (escalaX : escalaY), y se mira a través de un InteractiveViewer. Un dedo
   // lo arrastra, dos dedos hacen zoom.
@@ -497,8 +502,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   //
   // La vista se mueve con un "resorte" amortiguado en vez de una animación
   // de duración fija. La posición se redibuja hasta 4 veces por segundo; una
-  // animación de 300 ms se reiniciaba antes de terminar y el mapa avanzaba a
-  // los tirones (arranca, frena, arranca). Con el resorte, cada posición
+  // animación de 300 ms se reiniciaría antes de terminar y el mapa avanzaría
+  // a los tirones (arranca, frena, arranca). Con el resorte, cada posición
   // nueva sólo cambia el OBJETIVO y la cámara sigue su movimiento sin cortes:
   // en cada frame recorre una fracción fija de lo que le falta.
   //
@@ -567,9 +572,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   // ── SEGUIMIENTO DE RUTA (ver SeguidorRuta en seguidor_ruta.dart) ──────────
   //
-  // La ruta ya no se recalcula por distancia recorrida (el viejo umbral de
-  // 0.10 del plano), sino cuando el usuario se SALE de ella de forma
-  // sostenida. Mientras camina por el camino no se recalcula nada.
+  // La ruta no se recalcula por distancia recorrida sino cuando el usuario se
+  // SALE de ella de forma sostenida. Mientras camina por el camino no se
+  // recalcula nada.
 
   /// Desde cuándo el usuario está fuera de la ruta (null = está sobre ella).
   DateTime? _fueraDeRutaDesde;
@@ -613,10 +618,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   // Trilateracion
   static const int _minBeaconsActivos = 2;
   static const int _maxBeaconsParaCalcular = 6; // máx. beacons por espacio
-  // _umbralRSSI: descarta beacons demasiado lejanos/ruidosos. Con la nueva
-  //   calibración (txPower = -55 dBm, n = 2.7), -90 dBm ≈ 20 m y -95 dBm ≈ 30 m.
-  //   Bajamos de -95 a -90: más allá de ~20 m la señal BLE es tan débil y ruidosa
-  //   que su distancia estimada distorsiona la trilateración más de lo que aporta.
+  // _umbralRSSI: descarta beacons demasiado lejanos o ruidosos. Con el modelo
+  //   por defecto (txPower = -55 dBm, n = 2.7), -90 dBm ≈ 20 m. Más allá de
+  //   eso la señal BLE es tan débil y ruidosa que su distancia estimada
+  //   distorsiona la multilateración más de lo que aporta.
   static const double _umbralRSSI = -90;
   // Dos beacons cuyo RSSI filtrado cae en la misma banda de este ancho (dBm)
   // se consideran "igual de cercanos": ahí desempata la varianza (más estable
@@ -708,30 +713,27 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   //
   // true desde que un recálculo adopta un camino que cambia lo que hay que
   // hacer ([DecisionRuta.cambioDeFondo]) hasta que se dice su indicación.
-  // Antes esa indicación pasaba por el filtro anti-rebote (4 confirmaciones
-  // + 1,8 s, que se reinician cada vez que la indicación cambia mientras el
-  // usuario gira) y, si coincidía con la última dicha, esperaba el intervalo
-  // de repetición (15 s por defecto). Además el giro ya anunciado de la ruta
-  // vieja seguía valiendo ([_giroComprometido]): al pasarse de una esquina,
-  // la ruta nueva lo hacía volver a ella pero la indicación se calculaba
-  // como si ya estuviera parado ahí, así que seguía siendo "Girá a la
-  // izquierda" (ya dicho, no se repetía) en vez de "Date la vuelta". El
-  // "Date la vuelta" salía ~10 s después del giro, 7 u 8 m pasada la
-  // esquina. Ahora se dice enseguida, con la prioridad de un giro (ver
-  // VozService.hablarUrgente).
+  // Se dice enseguida, con la prioridad de un giro (ver
+  // VozService.hablarUrgente), y lo anunciado sobre la ruta vieja deja de
+  // valer ([_rutaCambioDeFondo]). El caso típico es pasarse de una esquina:
+  // la ruta nueva lo hace volver. Por el camino normal, la indicación pasaría
+  // por el filtro anti-rebote (4 confirmaciones + 1,8 s, que se reinician
+  // cada vez que cambia mientras el usuario gira) y por el intervalo de
+  // repetición (15 s); y con el giro de la ruta vieja todavía comprometido
+  // ([_giroComprometido]) se calcularía como si ya estuviera parado en la
+  // esquina: seguiría siendo "Girá a la izquierda" en vez de "Date la
+  // vuelta", que saldría ~10 s después, 7 u 8 m pasada la esquina.
   bool _indicacionRutaNuevaPendiente = false;
 
   // ── "UBICACIÓN LISTA" ─────────────────────────────────────────────────────
   //
   // true desde la primera posición hasta que se dice "Ubicación lista.".
-  // Antes se decía una sola vez, en el ciclo de la primera posición, con
-  // hablarSinEsperar, que descarta la frase si el motor está ocupado. Y casi
-  // siempre lo estaba: la primera posición llega mientras todavía suena
-  // "Buscando ubicación." (enseguida si se viene del modo automático, que
-  // deja el scan andando; y la primera vez que se abre la app el motor de
-  // voz tarda más en arrancar). El aviso se perdía y no se reintentaba.
-  // Ahora queda pendiente y se reintenta en cada ciclo, como la primera
-  // indicación.
+  // Queda pendiente y se reintenta en cada ciclo, como la primera
+  // indicación. Decirlo una sola vez con hablarSinEsperar (que descarta la
+  // frase si el motor está ocupado) no sirve: la primera posición casi
+  // siempre llega mientras todavía suena "Buscando ubicación." (enseguida si
+  // se viene del modo automático, que deja el scan andando; y la primera vez
+  // que se abre la app el motor de voz tarda más en arrancar).
   //
   // Y se dice recién cuando la posición se asentó, no con el primer fix:
   // durante la fase de adquisición el filtro corre rápido a propósito y el
@@ -755,15 +757,14 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   // ── GIROS ANTICIPADOS ─────────────────────────────────────────────────────
   //
-  // El problema: "Girá a la izquierda" recién aparecía cuando la posición
-  // medida llegaba a la celda de la esquina. Pero la posición medida viene
-  // atrasada respecto del usuario (ventana de RSSI + filtro: más de un
-  // segundo), la indicación tenía que pasar el filtro anti-rebote de la voz
-  // (1,8 s) y decirla lleva otro segundo y pico. Caminando a 0,9 m/s eso son
-  // unos 4 metros: el giro se decía con la esquina ya pasada, o sólo si el
-  // usuario se quedaba parado en ella.
+  // Si "Girá a la izquierda" se dijera cuando la posición medida llega a la
+  // celda de la esquina, saldría tarde: la posición viene atrasada respecto
+  // del usuario (ventana de RSSI + filtro: más de un segundo), la indicación
+  // pasaría por el filtro anti-rebote de la voz (1,8 s) y decirla lleva otro
+  // segundo y pico. Caminando a 0,9 m/s eso son unos 4 metros: el giro se
+  // diría con la esquina ya pasada.
   //
-  // Ahora los giros se anuncian ANTES de llegar a la esquina, en dos pasos:
+  // Por eso los giros se anuncian ANTES de llegar a la esquina, en dos pasos:
   //   1. "En 5 metros, girá a la izquierda"  (para que lo espere)
   //   2. "Girá a la izquierda"               (para que lo escuche al llegar
   //      a la esquina)
@@ -847,8 +848,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Cuánto se espera a que el A* devuelva la ruta para decir el destino y la
   /// primera indicación en UNA sola frase ("Baño. Girá a la izquierda."). El
   /// cálculo tarda milisegundos; si alguna vez no llega a tiempo se dice el
-  /// destino seguido de "Calculando ruta.", como antes, y la indicación sale
-  /// sola en cuanto haya ruta.
+  /// destino seguido de "Calculando ruta.", y la indicación sale sola en
+  /// cuanto haya ruta.
   static const Duration _esperaMaxPrimeraRuta = Duration(milliseconds: 1200);
 
   @override
@@ -886,9 +887,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     if (!_saltandoDePiso) WakelockPlus.disable();
     _orientacion.limpiar();
     // Guarda de dueño, misma razón que en BluetoothHelper: si esta pantalla se
-    // destruye DESPUÉS de que la siguiente ya arrancó, limpiar el TTS acá corta
-    // el anuncio de la pantalla nueva. En el log del bug se veía justamente
-    // eso: "Buscando ubicación" marcado como Interrupted: true.
+    // destruye DESPUÉS de que la siguiente ya arrancó, limpiar el TTS acá
+    // cortaría el anuncio de la pantalla nueva ("Buscando ubicación").
     _voz.limpiar(dueno: this);
     _movimiento.detener();
     _puertaRumbo.resetear();
@@ -1083,18 +1083,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
             _estadoScan = 'Continuando escaneo...';
           });
         }
-        // Antes esta rama llamaba a _suscribirAScan(), que se suscribia al
-        // stream pero NO instalaba el watchdog del scan. Resultado: todo el
-        // camino "vengo del modo automatico" corria sin vigilancia, y si el
-        // scan moria no habia nada que lo reviviera. Ahora ambos caminos pasan
-        // por el mismo metodo.
+        // Pasa por _iniciarEscaneo y no sólo se suscribe al stream: así el
+        // scan que dejó andando el modo automático también queda vigilado
+        // por el watchdog, y si se muere, se reinicia.
         await _iniciarEscaneo(reutilizandoScan: true);
         return;
       }
 
       if (!mounted) return;
       // Si falta algo se dice qué: el Bluetooth, un permiso o la ubicación
-      // del teléfono (antes era siempre "Bluetooth no disponible.").
+      // del teléfono.
       final falla = await BluetoothHelper.diagnosticar();
       if (falla != null) {
         if (mounted) setState(() => _estadoScan = falla.aviso);
@@ -1142,23 +1140,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           if (!recibioPrimerHeadingValido) {
             recibioPrimerHeadingValido = true;
             timeoutBrujula.cancel();
-            // Iniciar timer de UI para el chip de brújula a 4 Hz.
-            //
-            // BUG ORIGINAL: `setState(() {})` acá era INCONDICIONAL, 4 veces
-            // por segundo, durante TODA la sesión de navegación — sin
-            // importar si el heading había cambiado o no. Eso reconstruye la
-            // pantalla ENTERA (mapa con InteractiveViewer, tarjeta de
-            // indicación de giro, listas de beacons/lugares, etc.) 4x/s de
-            // forma perpetua, compitiendo por el isolate principal con el
-            // pipeline de posicionamiento BLE (~5.5 Hz) y con la recepción
-            // del resultado del compute() del A*. A mayor duración de la
-            // sesión, más se acumula esta competencia por CPU — coincide con
-            // que el cálculo de ruta empeoraba con el tiempo.
-            //
-            // FIX: solo hacer setState si el heading cambió lo suficiente
-            // como para importar visualmente (>1°). Si el usuario está
-            // parado/apuntando estable, no hay rebuild — el heading crudo se
-            // sigue actualizando en el modelo igual, sin costo de UI.
+            // Timer de UI para el chip de brújula a 4 Hz. Sólo hace setState
+            // si el heading cambió más de 1°: un setState reconstruye la
+            // pantalla ENTERA (el mapa, la tarjeta de la indicación, las
+            // listas), y hacerlo 4 veces por segundo durante toda la sesión
+            // compite por el hilo principal con el posicionamiento (~5.5 Hz)
+            // y con el resultado del A*. Con el usuario quieto no hay
+            // rebuild; el heading se sigue actualizando en el modelo igual.
             _compassUITimer?.cancel();
             _compassUITimer = Timer.periodic(
               const Duration(milliseconds: 250),
@@ -1214,8 +1202,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   ///
   /// [reutilizandoScan] indica que venimos de otra pantalla que dejo el scan
   /// fisico corriendo (modo automatico): no hay que volver a pedir permisos ni
-  /// arrancar nada, solo suscribirse. Pero el watchdog se instala IGUAL, que es
-  /// justamente lo que faltaba antes.
+  /// arrancar nada, sólo suscribirse. Pero el watchdog se instala igual.
   Future<void> _iniciarEscaneo({bool reutilizandoScan = false}) async {
     if (!mounted) return;
     setState(() => _escaneando = true);
@@ -1262,11 +1249,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   // ── ERRORES DEL ESCANEO: TAMBIÉN POR VOZ ─────────────────────────────────
   //
-  // Antes un error del escaneo (no arrancó, o se cortó) sólo quedaba escrito
-  // en la pantalla ("Error en scan: …", con el texto en inglés del plugin).
-  // Quien no ve se quedaba sin guía y sin saber por qué. Ahora se dice por
-  // voz, igual que la pérdida de señal: qué pasa y, si se puede resolver
-  // (Bluetooth apagado, falta un permiso, ubicación apagada), qué hacer.
+  // Un error del escaneo (no arrancó, o se cortó) se dice por voz, igual que
+  // la pérdida de señal: qué pasa y, si se puede resolver (Bluetooth apagado,
+  // falta un permiso, ubicación apagada), qué hacer. Escrito sólo en la
+  // pantalla, quien no ve se quedaría sin guía y sin saber por qué.
 
   /// El último error del escaneo que se dijo por voz, para no repetirlo en
   /// cada reintento del watchdog. Vuelve a null cuando llegan resultados.
@@ -1382,18 +1368,17 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     // ── SÓLO LECTURAS NUEVAS ───────────────────────────────────────────────
     // flutter_blue_plus entrega en cada callback la lista ACUMULADA de
     // dispositivos (todo lo oído en los últimos removeIfGone = 4 s), y cada
-    // uno viene con su ÚLTIMA lectura aunque no haya vuelto a emitir. Antes
-    // se procesaba la lista entera en cada callback, con dos efectos:
-    //   • la última lectura de cada beacon entraba a su ventana de mediana
-    //     una y otra vez: las "13 lecturas" de la ventana eran casi todas
-    //     copias de una o dos, y cuántas copias entraban dependía de cuántos
-    //     dispositivos BLE hubiera alrededor (cada uno dispara callbacks). La
-    //     ventana no medía lo que decía y el mismo ajuste andaba distinto en
-    //     cada lugar;
-    //   • un beacon "aparecía en el ciclo" mientras siguiera en la lista, así
-    //     que el decaimiento de abajo recién arrancaba a los 4 s.
-    // Ahora una lectura cuenta sólo si es posterior a la última procesada de
-    // ese beacon ([_ultimaLecturaBeacon]).
+    // uno viene con su ÚLTIMA lectura aunque no haya vuelto a emitir. Por eso
+    // una lectura cuenta sólo si es posterior a la última procesada de ese
+    // beacon ([_ultimaLecturaBeacon]). Procesar la lista entera en cada
+    // callback tendría dos efectos:
+    //   • la última lectura de cada beacon entraría a su ventana una y otra
+    //     vez: la ventana estaría llena de copias de una o dos lecturas, y
+    //     cuántas copias entran dependería de cuántos dispositivos BLE haya
+    //     alrededor (cada uno dispara callbacks). El mismo ajuste andaría
+    //     distinto en cada lugar;
+    //   • un beacon "aparecería en el ciclo" mientras siga en la lista, así
+    //     que el decaimiento de abajo recién arrancaría a los 4 s.
     final ahoraSenales = DateTime.now();
     for (var res in resultados) {
       try {
@@ -1421,15 +1406,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     // callbacks de los demás dispositivos; decaerlo en cada uno lo
     // arrastraría hacia abajo todo el tiempo.
     //
-    // FIX: antes el decaimiento era de 2 dBm por CALLBACK. El ritmo de
-    // callbacks de flutter_blue_plus con continuousUpdates es variable (5-50
-    // por segundo segun el trafico BLE del ambiente), asi que la velocidad de
-    // caida no era una propiedad del beacon sino del ruido de fondo del lugar:
-    // en un ambiente concurrido un beacon que se perdia dos o tres lotes
-    // seguidos (normal por sombra del cuerpo) caia decenas de dBm y quedaba
-    // por debajo de _umbralRSSI. Al descartarse, el set visible bajaba a 2
-    // beacons y el posicionamiento perdia geometria justo cuando mas la
-    // necesitaba. Ahora el decaimiento es en dBm por SEGUNDO real.
+    // El decaimiento es en dBm por SEGUNDO real, no por callback: el ritmo de
+    // callbacks con continuousUpdates varía (5-50 por segundo según el
+    // tráfico BLE del ambiente), y la caída dependería del ruido de fondo del
+    // lugar. En un lugar concurrido, un beacon que se pierde dos o tres lotes
+    // seguidos (normal por la sombra del cuerpo) caería decenas de dBm por
+    // debajo de _umbralRSSI, y el set visible bajaría a 2 beacons justo
+    // cuando más geometría hace falta.
     final dtDecaimiento = _ultimoDecaimiento == null
         ? 0.0
         : ahoraSenales.difference(_ultimoDecaimiento!).inMicroseconds / 1e6;
@@ -1533,8 +1516,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           .toList();
 
       if (candidatos.length < _minBeaconsActivos) {
-        // Sólo si el texto cambió: antes se redibujaba la pantalla entera en
-        // cada ciclo (~5 veces por segundo) con el mismo mensaje.
+        // Sólo si el texto cambió: si no, se redibujaría la pantalla entera
+        // ~5 veces por segundo con el mismo mensaje.
         final texto =
             'Beacons cercanos: ${candidatos.length} (necesitamos $_minBeaconsActivos)';
         if (mounted && texto != _estadoScan) {
@@ -1582,14 +1565,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       });
       final activos = candidatos.take(_maxBeaconsParaCalcular).toList();
 
-      // MULTILATERACIÓN por mínimos cuadrados (reemplaza al centroide ponderado
-      // 1/d²). El centroide era un promedio de las POSICIONES de los beacons:
-      // andaba bien pegado a un beacon (ese beacon dominaba el peso) pero
-      // COLAPSABA al centro del layout cuando el usuario estaba en el medio,
-      // equidistante de varios. La multilateración usa las distancias como
-      // restricciones geométricas (circunferencias) y sí puede ubicar al
-      // usuario en cualquier parte del plano. Ver [Posicionador] para el detalle
-      // y las mediciones. Se sigue usando el txPower CALIBRADO por beacon.
+      // MULTILATERACIÓN por mínimos cuadrados: usa las distancias como
+      // restricciones geométricas (circunferencias) y puede ubicar al usuario
+      // en cualquier parte del plano. Un centroide ponderado (un promedio de
+      // las POSICIONES de los beacons) colapsa al centro cuando el usuario
+      // está equidistante de varios. Ver [Posicionador].
       final observaciones = <ObservacionRango>[];
       for (var b in activos) {
         // Modelo de rango AJUSTADO (txPower + n por beacon). Si un beacon no
@@ -1622,9 +1602,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       _factorMovimiento = _movimiento.factorMovimiento;
 
       // Δt REAL entre muestras: el scan BLE no entrega a ritmo constante.
-      // Se calcula ACÁ ARRIBA (antes se calculaba después de estimar) porque
-      // ahora también lo necesita la puerta direccional, que convierte el
-      // desplazamiento del ciclo en una velocidad en m/s.
+      // Se calcula antes de estimar porque también lo necesita la puerta
+      // direccional, que convierte el desplazamiento del ciclo en una
+      // velocidad en m/s.
       final ahoraMuestra = DateTime.now();
       final dt = _ultimaMuestraPos == null
           ? 0.0
@@ -1658,10 +1638,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       //     interiores el campo magnético está distorsionado por estructura
       //     metálica, ascensores y tableros. Un heading basura no "restringe"
       //     el movimiento: clava la posición sobre un eje EQUIVOCADO, que es
-      //     peor que no restringir nada. Esta condición no existía antes y es
-      //     una de las razones por las que el sistema andaba de forma errática:
-      //     bastaba pasar cerca de una columna con hierro para que el eje
-      //     privilegiado se fuera 40° y la posición quedara trabada de costado.
+      //     peor que no restringir nada: sin esta condición, pasar cerca de
+      //     una columna con hierro alcanza para que el eje privilegiado se
+      //     vaya 40° y la posición quede trabada de costado.
       //
       //  3. Hay acelerómetro. Sin él, [DetectorMovimiento] devuelve un factor
       //     fijo de 0.45 y no se puede distinguir "caminando" de "parado".
@@ -1673,19 +1652,16 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       // coordenadas normalizadas de pantalla (x→derecha, y→abajo), que es el
       // contrato de Posicionador.estimar / PuertaRumbo.aplicar.
       //
-      // FIX (bug vectorial): la dirección física del rumbo, en METROS, es
-      // (sin hp, -cos hp). Antes se pasaba ese versor físico tal cual, pero
-      // los tres consumidores (prior anisotrópico, puerta direccional y tope
-      // de paso) esperan una dirección en coordenadas NORMALIZADAS y la
-      // multiplican por (metrosX, metrosY) para volver al marco métrico. Con
-      // un plano rectangular (metrosX ≠ metrosY) esa doble conversión rotaba
-      // el eje privilegiado: en un plano de 100×25 m, mirar a 45° hacía que
-      // todo el filtro trabajara sobre un eje de 76° (31° de error). El eje
-      // "adelante" quedaba mal, el movimiento real se frenaba como si fuera
-      // lateral y el ruido lateral pasaba como si fuera marcha. Para expresar
-      // la dirección física en normalizado hay que dividir cada componente
-      // por la escala de su eje (la magnitud no importa: los consumidores
-      // renormalizan después de volver a metros).
+      // OJO CON LAS ESCALAS: la dirección física del rumbo, en METROS, es
+      // (sin hp, -cos hp). Los tres consumidores (prior anisotrópico, puerta
+      // direccional y tope de paso) esperan una dirección en coordenadas
+      // NORMALIZADAS y la multiplican por (metrosX, metrosY) para volver a
+      // metros. Pasarles el versor físico tal cual rotaría el eje en un plano
+      // rectangular: en uno de 100×25 m, mirar a 45° haría trabajar al filtro
+      // sobre un eje de 76° (31° de error), y el movimiento real se frenaría
+      // como si fuera lateral. Por eso cada componente se divide por la
+      // escala de su eje (la magnitud no importa: los consumidores
+      // renormalizan en metros).
       final calidadRumbo = _orientacion.calidadRumbo;
       _rumboActivo = _rumboActivo
           ? calidadRumbo >= _calidadRumboApagar
@@ -1715,7 +1691,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
       // Multilateración RECURSIVA: se le pasa la posición filtrada previa
       // como ancla temporal y arranque en caliente. Eso mata los saltos
-      // (un outlier de un frame ya no la mueve) y estabiliza geometrías
+      // (un outlier de un frame no la mueve) y estabiliza geometrías
       // malas, sin reintroducir el sesgo al centro. El rumbo sólo SESGA acá
       // (ver el comentario de _factorPerpMax en Posicionador); la decisión
       // dura la toma la puerta de abajo.
@@ -1938,11 +1914,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         nuevaPosicionFiltrada = filtrada;
       } else {
         // ── TOPE DE PASO POR CICLO, EN METROS Y ANISOTRÓPICO ───────────────
-        // Es la última defensa anti-spike, por debajo de la puerta. Antes era
-        // isotrópico y en unidades normalizadas, así que "deshacía" parte de la
-        // anisotropía que el rumbo había logrado más arriba: un pico lateral
-        // que el solver había frenado seguía teniendo permiso de moverse tanto
-        // de costado como hacia adelante.
+        // Es la última defensa anti-spike, por debajo de la puerta. Un tope
+        // isotrópico "desharía" parte de la anisotropía que el rumbo logró
+        // más arriba: un pico lateral que el solver frenó tendría permiso de
+        // moverse tanto de costado como hacia adelante.
         final dtPaso = (dt.isFinite && dt > 0) ? dt.clamp(0.05, 1.0) : 0.18;
         final velMaxMoviendo = max(
           _velMaxQuietoMs,
@@ -1989,15 +1964,13 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // termina de eliminar el parpadeo del ícono cuando la persona está
         // parada. Se desactiva apenas el acelerómetro detecta movimiento.
         //
-        // FIX (posición clavada en un lugar equivocado): antes se comparaba
-        // el PASO YA RECORTADO de este ciclo contra la zona muerta. Pero con
-        // el usuario quieto el tope de paso es 1,2 m/s × ~0,18 s ≈ 0,22 m, que
-        // es MENOR que los 0,35 m de la zona muerta: la condición se cumplía
-        // siempre y la posición no podía moverse nunca, por más lejos que el
-        // filtro dijera que estaba el usuario. Ahora se compara la distancia
-        // entre la posición mostrada y la salida del filtro (antes del tope):
-        // el ruido de un ciclo no la supera, pero un error sostenido sí, y
-        // entonces la posición avanza hacia ahí a la velocidad del tope.
+        // Se compara la distancia entre la posición mostrada y la salida del
+        // filtro ANTES del tope, no el paso ya recortado: con el usuario
+        // quieto el tope es 1,2 m/s × ~0,18 s ≈ 0,22 m, MENOR que los 0,35 m
+        // de la zona muerta, así que el paso recortado siempre caería adentro
+        // y la posición no se movería nunca, por más lejos que estuviera. El
+        // ruido de un ciclo no supera la zona muerta, pero un error sostenido
+        // sí, y la posición avanza hacia ahí a la velocidad del tope.
         if (fPos < 0.25) {
           final discrepancia = _distanciaMetros(_posicionFiltrada!, filtrada);
           if (discrepancia < _zonaMuertaQuietoMetros) {
@@ -2022,30 +1995,15 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       }
       _posicionPermitida = posicionPermitida;
 
-      // BUG ARQUITECTONICO (causaba TANTO el congelamiento como los saltos de
-      // 10 m -- son el mismo defecto visto en dos momentos distintos):
-      //
-      // Antes, para "confirmar" una posicion nueva se exigian 5 ciclos
-      // CONSECUTIVOS con delta de EMA < 1.25 m, y recien ahi _posicionConfirmada
-      // saltaba DIRECTO al valor del EMA en ese instante (sin interpolar desde
-      // el valor viejo). El EMA esta clampeado a 2 m/ciclo -- con ruido BLE
-      // moderado, es comun que se mueva entre 1.25 m y 2 m por ciclo de forma
-      // sostenida: siempre por encima del umbral de "estable", asi que los 5
-      // ciclos seguidos nunca se juntaban y la posicion quedaba congelada. Y
-      // cuando por fin habia 5 ciclos tranquilos, el salto directo al EMA
-      // actual podia ser de hasta 5 ciclos x 2 m = 10 m si venia congelada
-      // mientras la persona caminaba. Mismo bug, dos sintomas.
-      //
-      // FIX: la posicion filtrada (con su propio clamp de paso maximo por
-      // ciclo, que YA evita saltos bruscos por spikes de RSSI) alimenta la
-      // posicion directamente, todos los ciclos. Sin gate extra encima. Esto
-      // da seguimiento continuo y en tiempo real.
-      //
-      // NOTA: aquel gate era un intento de resolver por fuerza bruta lo que
-      // ahora resuelve el filtro adaptativo. Un umbral fijo de "estabilidad"
-      // no puede distinguir ruido de movimiento real porque en BLE ambos
-      // tienen la misma amplitud; el acelerometro si puede, y por eso el
-      // criterio de cuanto suavizar salio del propio pipeline BLE.
+      // La posición permitida (que ya pasó por el tope de paso contra los
+      // picos de RSSI) alimenta la posición todos los ciclos, sin otra
+      // compuerta encima. Una compuerta de "estabilidad" (exigir N ciclos
+      // seguidos con poco movimiento antes de aceptar la posición nueva)
+      // congela la posición cuando el ruido se mueve apenas por encima del
+      // umbral, y después salta de golpe todo lo acumulado. Un umbral fijo no
+      // puede separar ruido de movimiento real, que en BLE tienen la misma
+      // amplitud; el acelerómetro sí, y por eso cuánto suavizar lo decide él
+      // (ver [FiltroUnEuroPosicion]).
       final nuevaPosicionFinal = posicionPermitida;
 
       {
@@ -2065,9 +2023,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // filtro.
         //
         // Del otro lado de una pared angosta pide más: 5 ciclos caminando
-        // (~0,9 s) y 11 parado (~2 s). Es justo donde el ruido hacía saltar
-        // al usuario atrás de la pared desde que las zonas se bloquean por el
-        // centro de la celda. Sólo con la restricción de zonas activa: si está
+        // (~0,9 s) y 11 parado (~2 s). Es justo donde el ruido puede hacer
+        // saltar al usuario atrás de la pared (una pared angosta no bloquea
+        // ninguna celda). Sólo con la restricción de zonas activa: si está
         // apagada, la posición no sabe nada del plano.
         final ix = _grilla.indiceX(nuevaPosicionFinal.dx);
         final iy = _grilla.indiceY(nuevaPosicionFinal.dy);
@@ -2090,9 +2048,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
         // Además del tope de frecuencia, se redibuja SÓLO si cambió algo de
         // lo que se ve: la celda del usuario, el texto de estado o la
-        // cantidad de beacons visibles. Antes se redibujaba la pantalla
-        // entera 4 veces por segundo aunque la persona estuviera parada. Se
-        // compara contra lo último DIBUJADO (no contra el ciclo anterior):
+        // cantidad de beacons visibles. Se compara contra lo último DIBUJADO
+        // (no contra el ciclo anterior):
         // así un cambio que cae dentro del tope no se pierde, se dibuja en
         // el próximo ciclo. El giro del usuario lo refresca el timer de la
         // brújula.
@@ -2157,11 +2114,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         _seguirRuta();
       }
     } catch (e) {
-      // Antes esto se ignoraba en silencio. Si algo del pipeline de
-      // posicionamiento (trilateración, EMA, histéresis de celda) tira una
-      // excepción en un ciclo, ahora al menos queda logueado: sin esto era
-      // imposible distinguir "no llegan datos BLE" de "llegan pero el cálculo
-      // explota siempre" — ambos se ven igual desde la UI (ícono congelado).
+      // Si algo del pipeline de posicionamiento tira una excepción en un
+      // ciclo, queda en el log: sin esto no se podría distinguir "no llegan
+      // datos BLE" de "llegan pero el cálculo explota siempre", que en la
+      // pantalla se ven igual (ícono congelado).
       debugPrint('[Posicionamiento] Error en _calcularPosicionRobusta: $e');
     }
   }
@@ -2464,13 +2420,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         _estadoRuta = _textoEstadoRuta(camino);
       });
     } catch (e) {
-      // BUG ORIGINAL: este catch no hacía nada. Si encontrarCamino() (el A*
-      // que corre en un isolate vía compute()) tiraba cualquier excepción,
-      // _estadoRuta se quedaba pegado en "Calculando ruta..." para siempre.
-      // Ahora el reintento no depende de nada que haya que resetear acá: si
-      // no hay ruta, _seguirRuta vuelve a intentar pasado el cooldown; y si
-      // había una, sigue vigente y _celdaUltimoCalculo no se tocó, así que
-      // el próximo ciclo fuera de ruta recalcula.
+      // Si el A* (en su isolate) tira una excepción, se avisa en la pantalla
+      // y no hace falta resetear nada para reintentar: si no había ruta,
+      // _seguirRuta vuelve a intentar pasado el cooldown; si había una, sigue
+      // vigente y _celdaUltimoCalculo no se tocó, así que el próximo ciclo
+      // fuera de ruta recalcula.
       debugPrint('[Pathfinder] Error calculando ruta: $e');
       if (mounted) {
         setState(() {
@@ -2495,11 +2449,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   // ── SIN CAMINO HASTA EL OBJETIVO ──────────────────────────────────────────
   //
-  // Antes, si el A* no encontraba camino, la ruta quedaba en null y el
-  // guiado seguía apuntando al destino EN LÍNEA RECTA: indicaciones sin
-  // sentido (a través de paredes) hacia un lugar al que no se puede llegar,
-  // y un reintento cada 1,5 s que daba siempre lo mismo. Ahora se mira cuál
-  // de las dos puntas quedó encerrada
+  // Si el A* no encuentra camino, no se guía en línea recta al destino
+  // (serían indicaciones a través de paredes hacia un lugar al que no se
+  // puede llegar) ni se reintenta cada 1,5 s para obtener siempre lo mismo.
+  // Se mira cuál de las dos puntas quedó encerrada
   // ([ResolvedorCaminos.diagnosticarSinCamino]):
   //
   //  • El destino → no se puede llegar. Se dice y se suelta el destino.
@@ -3008,8 +2961,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   ///    puede ir a ninguno, se dice). Si queda uno, ese; si quedan varios,
   ///    se le ofrece el más cercano y, si dice que no, las otras opciones
   ///    (ver _ofrecerMasCercano).
-  ///  - Ninguno → queda la búsqueda aproximada de antes (por pedazos del
-  ///    nombre), que rescata lo que el reconocedor de voz escribió mal.
+  ///  - Ninguno → queda la búsqueda aproximada (por pedazos del nombre),
+  ///    que rescata lo que el reconocedor de voz escribió mal.
   Future<LugarInteres?> _resolverPorNombreOClave(String textoNorm) async {
     final alcanzables = _lugaresEdificio.where(_puedeLlegarA);
 
@@ -3146,9 +3099,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// [VozService.avisoSinConexion] y devuelve null.
   ///
   /// Sin espera entre la pregunta y la escucha: VozService.escuchar abre el
-  /// micrófono en cuanto termina la frase. Antes había 200 ms acá y otros
-  /// 200 ms allá, y un "sí" dicho enseguida caía antes de que el micrófono
-  /// se abriera.
+  /// micrófono en cuanto termina la frase. Con una espera de 200 ms acá y
+  /// otra allá, un "sí" dicho enseguida caería antes de que el micrófono se
+  /// abra.
   Future<String?> _preguntarYEscuchar(
     String frase, {
     bool Function(String norm)? entiende,
@@ -3551,10 +3504,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
     // ── DESTINO + PRIMERA INDICACIÓN EN UNA SOLA FRASE ──────────────────────
     //
-    // Antes se decía "<destino>. Calculando ruta." y la indicación quedaba a
-    // cargo del filtro de voz, que la dejaba para cuando terminara esa frase
-    // (y, por el bug de hablarSiCambio, en la práctica para 15 s después).
-    // La ruta se calcula en milisegundos, así que conviene esperarla un
+    // Con "<destino>. Calculando ruta." la indicación quedaría a cargo del
+    // filtro de voz, que la diría recién al terminar esa frase. La ruta se
+    // calcula en milisegundos, así que conviene esperarla un
     // instante y decir todo junto: el usuario escucha el destino que se
     // entendió y, pegado, para dónde tiene que ir.
     await Future.any<void>([
@@ -3693,7 +3645,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// [OrientadorLlegada]). [llegandoA]: "a Baño", "a la escalera".
   ///
   /// Sin brújula, o con el lugar prácticamente encima, no hay hacia dónde
-  /// girar: se anuncia la llegada enseguida, como antes.
+  /// girar: se anuncia la llegada enseguida.
   void _empezarOrientacion({
     required Offset desde,
     required Offset hacia,
@@ -3782,7 +3734,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Final de la ruta, si [objetivo] cae en una zona prohibida; si no, null.
   ///
   /// Un lugar dibujado adentro de una zona (un aula marcada como no
-  /// transitable, por ejemplo) no se puede pisar: la posición ya no entra en
+  /// transitable, por ejemplo) no se puede pisar: la posición no entra en
   /// las zonas prohibidas (ver [RestriccionZonas]) y, si el lugar está a más
   /// de [_radioLlegadaMetros] del borde, la llegada no se anunciaría nunca.
   /// Ahí cuenta como llegada estar en el final de la ruta, que es la celda
@@ -4261,10 +4213,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// esté a menos de [SeguidorRuta.toleranciaProyeccionMetros] de él (ver
   /// [SeguidorRuta.guia] para el porqué). Null sin ruta.
   ///
-  /// SIN RUTA NO HAY INDICACIÓN: antes se apuntaba desde la posición
-  /// directo al destino. Con un destino al que no se llega caminando eso
-  /// daba indicaciones sin sentido, a través de las paredes (ver "SIN CAMINO
-  /// HASTA EL OBJETIVO"). Y antes de la primera ruta no hace falta: se
+  /// SIN RUTA NO HAY INDICACIÓN: apuntar desde la posición directo al
+  /// destino daría, con un destino al que no se llega caminando,
+  /// indicaciones sin sentido a través de las paredes (ver "SIN CAMINO HASTA
+  /// EL OBJETIVO"). Y antes de la primera ruta no hace falta: se
   /// calcula en milisegundos y su primera indicación sale sin filtro.
   TramoGuiado? _tramoDeGuiado() {
     final pos = _posicionFinal;
@@ -4379,8 +4331,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   ///  - [umbralGiro] / [umbralAviso]: caminando, cada aviso sale cuando al
   ///    usuario le falta su anticipo en segundos para llegar a la esquina, al
   ///    ritmo al que viene. Quieto no hay ritmo: se usa la distancia. Las dos
-  ///    cosas no se mezclan (antes la distancia era un piso también
-  ///    caminando, y con anticipos cortos tapaba al tiempo).
+  ///    cosas no se mezclan: si la distancia fuera también un piso
+  ///    caminando, con anticipos cortos taparía al tiempo.
   ///  - [piso]: el aviso previo sólo se da desde acá. Para un giro, si
   ///    todavía falta un trecho hasta el punto donde se va a decir el giro;
   ///    para el final de la ruta, hasta que quede a tiro del anuncio de
@@ -4525,10 +4477,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
 
   // ── ESTÁS EN… ─────────────────────────────────────────────────────────────
   //
-  // "Estás en <punto clave>" chocaba con las indicaciones: los puntos clave
-  // suelen estar en las esquinas, y el anuncio salía justo cuando tocaba el
-  // "Girá a la izquierda", que tenía que esperarlo o lo cortaba a la mitad.
-  // Ahora las indicaciones tienen prioridad siempre:
+  // "Estás en <punto clave>" choca con las indicaciones: los puntos clave
+  // suelen estar en las esquinas, y el anuncio saldría justo cuando toca el
+  // "Girá a la izquierda". Por eso las indicaciones tienen prioridad
+  // siempre:
   //  • Se dice al final del ciclo, después de las indicaciones: si alguna
   //    habló en el mismo ciclo, el motor está ocupado y espera.
   //  • Guiando, tampoco arranca si una indicación toca mientras dura la
@@ -4774,12 +4726,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Zoom de la escala base: [_pixelesPorMetro] en pantalla, salvo que a esa
   /// escala el plano entero entre en el recuadro: ahí, el que lo llena.
   ///
-  /// ANTES era siempre zoom 1. Pero en un piso chico el plano se agranda
-  /// hasta llenar la PANTALLA ([_calcularTamPlano]), y el recuadro del mapa
-  /// es más chico que la pantalla (barra de arriba, márgenes, avisos). A zoom
-  /// 1 el plano quedaba un poco más grande que el recuadro: al llegar la
-  /// primera posición la vista pasaba del plano entero y centrado a uno
-  /// recortado y corrido hacia un costado.
+  /// No es siempre zoom 1: en un piso chico el plano se agranda hasta llenar
+  /// la PANTALLA ([_calcularTamPlano]), y el recuadro del mapa es más chico
+  /// que la pantalla (barra de arriba, márgenes, avisos). A zoom 1 el plano
+  /// quedaría un poco más grande que el recuadro, y al llegar la primera
+  /// posición la vista pasaría del plano entero y centrado a uno recortado y
+  /// corrido hacia un costado.
   double _zoomEscalaBase(Size viewport, Size plano) {
     final mx = _grilla.metrosX > 0 ? _grilla.metrosX : 1.0;
     final pixelesPorMetroPlano = plano.width / mx;

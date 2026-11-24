@@ -1,15 +1,13 @@
+// ZONAS PROHIBIDAS: BLOQUEO POR CENTRO, PAREDES Y SNAP DE LA POSICIÓN
+//
+// Todos los planos son cuadrados de 10 × 10 m. Las zonas se escriben en
+// metros (más fácil de leer) y se pasan a coordenadas normalizadas.
+
 import 'package:blindroute/grilla_nav.dart';
 import 'package:blindroute/pathfinder.dart';
 import 'package:blindroute/restriccion_zonas.dart';
 import 'package:blindroute/zona_model.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// ZONAS PROHIBIDAS: BLOQUEO POR CENTRO, PAREDES Y SNAP DE LA POSICIÓN
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Todos los planos son cuadrados de 10 × 10 m. Las zonas se escriben en
-// metros (más fácil de leer) y se pasan a coordenadas normalizadas.
 
 const double _lado = 10.0;
 

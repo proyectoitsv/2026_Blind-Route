@@ -1,3 +1,8 @@
+// Pisos de un edificio (app del administrador).
+//
+// Agregar un piso (número y plano), cambiarle el número, eliminarlo, abrir su
+// configuración o probar la navegación en él.
+
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -14,18 +19,16 @@ import 'supabase_service.dart';
 /// Pisos de un edificio (app del administrador). Tocar un piso abre su
 /// configuración.
 ///
-/// ─── Sistema de diseño (fase 5.4 del rediseño) ───
 /// Va envuelta en AmbienteDiseno. Cada piso es una TarjetaLista con dos
 /// botones redondos aparte, "Probar navegación" y "Cambiar número" (el
 /// lápiz), que TalkBack nombra con el piso ("Probar navegación en Planta
 /// baja"). Un piso sin número lo dice en ámbar debajo del nombre. Abajo,
-/// "Agregar piso" es el botón principal (antes, un botón flotante sin nombre
-/// para TalkBack).
+/// "Agregar piso" es el botón principal.
 ///
-/// El número se elige en una hoja (antes, un diálogo) con un botón por piso:
+/// El número se elige en una hoja con un botón por piso:
 /// los ya cargados, deshabilitados ("ya cargado"), y el del piso que se está
-/// cambiando, en acento ("el actual"). Un piso se sigue eliminando
-/// deslizándolo, con la misma confirmación en una hoja; con TalkBack, con la
+/// cambiando, en acento ("el actual"). Un piso se elimina deslizándolo, con
+/// una confirmación en una hoja; con TalkBack, con la
 /// acción "Eliminar" de la tarjeta. Los avisos son los del sistema de diseño
 /// (mostrarAviso).
 class ListaPisos extends StatefulWidget {
@@ -45,8 +48,8 @@ class ListaPisos extends StatefulWidget {
 class _ListaPisosState extends State<ListaPisos> {
   List<Map<String, dynamic>> _pisos = [];
 
-  /// Si ya se leyó la base una vez: antes, "No hay pisos agregados" se vería
-  /// (y TalkBack lo anunciaría) mientras se lee.
+  /// Si ya se leyó la base una vez: sin esto, "No hay pisos agregados" se
+  /// vería (y TalkBack lo anunciaría) mientras se lee.
   bool _leida = false;
 
   @override
@@ -144,11 +147,11 @@ class _ListaPisosState extends State<ListaPisos> {
     if (imagen == null) return;
 
     final directory = await getApplicationDocumentsDirectory();
-    // Nombre único para la copia. Antes se guardaba con el nombre original
-    // del archivo: si otro piso ya había usado una imagen con ese nombre
-    // ("planta_baja.png" en dos edificios), la copia nueva pisaba la
-    // anterior y los dos pisos mostraban el mismo plano. Se conserva la
-    // extensión: de ella sale el tipo de imagen al publicar.
+    // Nombre único para la copia: con el nombre original del archivo, si
+    // otro piso ya usó una imagen con ese nombre ("planta_baja.png" en dos
+    // edificios), la copia nueva pisaría la anterior y los dos pisos
+    // mostrarían el mismo plano. Se conserva la extensión: de ella sale el
+    // tipo de imagen al publicar.
     final nombreArchivo =
         'plano_${DateTime.now().microsecondsSinceEpoch}'
         '${p.extension(imagen.path).toLowerCase()}';

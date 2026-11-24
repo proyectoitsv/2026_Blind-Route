@@ -1,10 +1,4 @@
-import 'package:flutter/material.dart';
-
-import '../estilo.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Logotipo de BlindRoute
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // El nombre dibujado como en el kit de marca
 // (docs/marca/1_logo/logotipo/logotipo_para_fondo_oscuro.svg): las letras en
@@ -25,6 +19,10 @@ import '../estilo.dart';
 // Quieto: no se anima ni depende de «Reducir movimiento». No crece con la
 // letra del teléfono (es un dibujo). TalkBack no lo lee: quien lo usa le da
 // el nombre (BarraSuperior.logotipo dice «Blind Route»).
+
+import 'package:flutter/material.dart';
+
+import '../estilo.dart';
 
 /// El nombre de la app dibujado como en el kit de marca: las letras en
 /// texto principal y el punto de la i en acento.
@@ -177,7 +175,7 @@ class _PintorLogotipo extends CustomPainter {
       viejo.letras != letras || viejo.punto != punto;
 }
 
-/// El logotipo de la app de administración: el de siempre y, debajo, la
+/// El logotipo de la app de administración: el mismo y, debajo, la
 /// palabra «ADMINISTRADOR» de punta a punta, del borde de la B al de la e.
 ///
 /// Las letras de abajo van repartidas a lo ancho (una por una, con el mismo

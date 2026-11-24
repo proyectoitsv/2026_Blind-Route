@@ -1,11 +1,9 @@
-// ═══════════════════════════════════════════════════════════════════════════
 // Componentes de BlindRoute
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Widgets reutilizables con el estilo del editor con relieve, todos
 // accesibles: área táctil de 48 dp, semántica para TalkBack y nada roto con
 // la letra al 200 %. Se mueven según la tabla de movimiento
-// (movimiento.dart, fase 3) y, con movimiento reducido («Quitar animaciones»
+// (movimiento.dart) y, con movimiento reducido («Quitar animaciones»
 // del teléfono o «Reducir movimiento» de Ajustes), sin desplazamientos,
 // escalas ni resortes. Toman todo de los tokens de lib/design/ y los colores
 // de EstiloApp.de(context), así se ven igual bajo cualquier tema.
@@ -62,6 +60,7 @@
 //
 // Se ven todos en la galería (lib/design/galeria_componentes.dart), que se
 // abre con: flutter run --flavor user -t lib/main_galeria.dart
+
 export 'aviso.dart';
 export 'barras.dart';
 export 'boton_pulso.dart';

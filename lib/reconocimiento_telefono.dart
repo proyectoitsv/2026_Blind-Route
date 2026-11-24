@@ -1,10 +1,13 @@
+// Reconocimiento de voz en el teléfono, sin internet
+// (ReconocimientoEnTelefono).
+//
+// Pregunta al código de Android si el español está descargado para reconocer
+// sin conexión, pide la descarga, dice si hay internet y si el micrófono está
+// desactivado en el teléfono.
+
 import 'package:flutter/foundation.dart' show debugPrint, immutable;
 import 'package:flutter/services.dart';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Reconocer la voz en el teléfono, sin internet
-// ═══════════════════════════════════════════════════════════════════════════
-//
 // El reconocedor de Google manda el audio a sus servidores: sin conexión no
 // entiende el destino. Si el español está descargado en el teléfono, lo
 // reconoce ahí mismo. El plugin de voz no sabe consultarlo sin abrir el

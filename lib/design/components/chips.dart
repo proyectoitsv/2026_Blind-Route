@@ -1,15 +1,4 @@
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'presion.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Chips
-// ═══════════════════════════════════════════════════════════════════════════
 //
 //   · ChipApp: un dato o una etiqueta ("Descargado", "Piso 2"). No se toca,
 //     así que no va levantado: va hundido (el relieve chico), como grabado,
@@ -23,6 +12,15 @@ import 'presion.dart';
 // El dibujo mide 36 de alto; el área tocable de un ChipFiltro llega a 48
 // (arriba y abajo del dibujo también se toca). Con letra grande, el chip
 // crece con el texto.
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'presion.dart';
 
 /// Etiqueta de los chips: el subtítulo (15) en peso medio.
 final TextStyle _estiloEtiqueta = TipografiaApp.subtitulo.copyWith(

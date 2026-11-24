@@ -1,10 +1,4 @@
-import 'package:flutter/material.dart';
-
-import 'movimiento.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Transiciones entre pantallas
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // La de la tabla de movimiento: la pantalla nueva entra desde el costado
 // (24 dp) con un fundido en 260 ms; al volver, se va igual, al revés, en
@@ -15,8 +9,12 @@ import 'movimiento.dart';
 //     (TemaBlindRoute.oscuro), así lo toma cualquier MaterialPageRoute de una
 //     app con ese tema, como la galería.
 //   · RutaApp: una ruta con esta transición, para abrir pantallas desde las
-//     apps, cuyo MaterialApp sigue con el tema de antes (los entrypoints no
-//     se tocan). Es la que usan las pantallas migradas.
+//     apps, cuyo MaterialApp conserva el tema de Material. Es la que usan
+//     todas las pantallas.
+
+import 'package:flutter/material.dart';
+
+import 'movimiento.dart';
 
 /// La transición entre pantallas del sistema de diseño.
 class TransicionPaginaApp extends PageTransitionsBuilder {

@@ -1,3 +1,6 @@
+// Punto de entrada de la app del administrador: abre la base local, conecta
+// Supabase y arranca en el login.
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 

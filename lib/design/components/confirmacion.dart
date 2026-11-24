@@ -1,14 +1,4 @@
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../tipografia.dart';
-import 'botones.dart';
-import 'hoja_inferior.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Confirmación
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Antes de algo que no se deshace (quitar un mapa del teléfono, borrar): una
 // hoja inferior (mostrarHoja, con su movimiento, el velo y el gesto para
@@ -26,6 +16,14 @@ import 'hoja_inferior.dart';
 //
 // Devuelve true sólo si se confirmó: cerrarla de cualquier otra forma es que
 // no.
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../tipografia.dart';
+import 'botones.dart';
+import 'hoja_inferior.dart';
 
 /// Pide que se confirme una acción: abre una hoja con [titulo] y [mensaje],
 /// y los botones [cancelar] y [confirmar]. Devuelve si se confirmó.

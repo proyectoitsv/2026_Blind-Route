@@ -7,7 +7,7 @@
 //  y perfil A2DP sink. Todo lo que el celular reproduce (la voz de la app,
 //  música, lo que sea) sale por el parlante en tiempo real, sin que la app
 //  tenga que hacer nada. El micrófono es el del celular: este firmware NO usa
-//  el INMP441 (sigue en esp32_blindroute_audio, para cuando funcione).
+//  el INMP441 (lo usa esp32_blindroute_audio, que además tiene HFP y SPP).
 //
 //  ── CÓMO FLUYE EL AUDIO ───────────────────────────────────────────────────
 //  1. El celular manda SBC por A2DP. La pila Bluetooth del ESP32 lo decodifica

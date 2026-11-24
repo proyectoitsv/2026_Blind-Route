@@ -1,3 +1,6 @@
+// Numeración y nombres de los pisos (PisoUtil): 0 es planta baja, positivos
+// son pisos y negativos son subsuelos.
+
 /// Utilidades para trabajar con pisos identificados por NÚMERO.
 ///
 /// Convención de numeración (la misma en admin, usuario y nube):

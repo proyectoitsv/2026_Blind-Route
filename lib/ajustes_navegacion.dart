@@ -1,3 +1,10 @@
+// Ajustes de la navegación (AjustesNavegacion, ParametroAjuste).
+//
+// Los parámetros que el admin regula desde el panel de la navegación (ventanas
+// del RSSI, umbrales de movimiento, tolerancias de los puntos clave...). Se
+// guardan en el teléfono y viajan con el mapa publicado, así la app del
+// usuario navega ese edificio con los mismos valores.
+
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart'
@@ -123,9 +130,8 @@ enum OrigenAjuste {
 /// publicados: al renombrar un edificio, sus ajustes pasan al nombre nuevo
 /// (ver [renombrarEdificio]).
 ///
-/// Antes había "preselecciones" con nombre y calificación, guardadas en el
-/// teléfono. Se eliminaron: lo que quedó guardado de ellas
-/// (`nav_preselecciones`, `nav_preseleccion_activa`) no se lee más.
+/// Las claves `nav_preselecciones` y `nav_preseleccion_activa` pueden quedar
+/// guardadas en teléfonos con versiones viejas de la app; no se leen.
 ///
 /// Es un singleton: la pantalla de navegación se vuelve a crear en cada salto
 /// de piso y tiene que seguir usando los mismos valores.
@@ -207,11 +213,11 @@ class AjustesNavegacion {
   // QUIETO, todo está frenado a propósito para que el punto no tiemble
   // (ventana de señal larga, filtro lento, zona muerta). Cuando pasa a
   // CAMINANDO se abre todo junto, y el atraso acumulado sale de una vez. Estos
-  // son esos frenos. El comentario de cada uno dice cuánto valía antes de
-  // este ajuste, para poder volver.
+  // son esos frenos. El comentario de cada uno dice el valor de fábrica de la
+  // clase que lo usa, el que rige si el ajuste no se aplica.
 
   /// Energía del acelerómetro (m/s²) a partir de la cual se toma que camina
-  /// del todo ([DetectorMovimiento.umbralMoviendo]). Antes: 0,80.
+  /// del todo ([DetectorMovimiento.umbralMoviendo]). De fábrica: 0,80.
   final ParametroAjuste umbralCaminata = ParametroAjuste(
     clave: 'nav_umbral_caminata',
     nombre: 'Umbral de caminata',
@@ -228,12 +234,12 @@ class AjustesNavegacion {
 
   /// Segundos de lecturas de cada beacon que se promedian con el usuario
   /// quieto. Es también lo que guarda el buffer
-  /// ([ProcesadorSenal.configurarVentanas]). Antes eran 19 lecturas (~3 s).
+  /// ([ProcesadorSenal.configurarVentanas]). De fábrica: 3 s.
   ///
-  /// Las ventanas eran en LECTURAS y pasaron a SEGUNDOS: el atraso depende
-  /// del tiempo, y cuánto duran N lecturas depende de cada cuánto emite el
-  /// beacon. Por eso cambiaron también las claves: un valor guardado en
-  /// lecturas, con la clave vieja, no se lee como segundos (se ignora).
+  /// Las ventanas son de SEGUNDOS y no de lecturas: el atraso depende del
+  /// tiempo, y cuánto duran N lecturas depende de cada cuánto emite el beacon.
+  /// Las claves terminan en `_seg` para que un valor viejo guardado en
+  /// lecturas, con otra clave, no se lea como segundos.
   final ParametroAjuste ventanaSenalQuieto = ParametroAjuste(
     clave: 'nav_ventana_senal_quieto_seg',
     nombre: 'Ventana de señal, parado',
@@ -248,7 +254,7 @@ class AjustesNavegacion {
     porEdificio: true,
   );
 
-  /// Lo mismo caminando. Antes eran 7 lecturas (~1,1 s).
+  /// Lo mismo caminando. De fábrica: 1,1 s.
   final ParametroAjuste ventanaSenalCaminando = ParametroAjuste(
     clave: 'nav_ventana_senal_caminando_seg',
     nombre: 'Ventana de señal, caminando',
@@ -264,7 +270,7 @@ class AjustesNavegacion {
   );
 
   /// Frecuencia de corte del One Euro con el usuario quieto
-  /// ([FiltroUnEuroPosicion.cutoffQuieto]). Antes: 0,04 Hz.
+  /// ([FiltroUnEuroPosicion.cutoffQuieto]). De fábrica: 0,04 Hz.
   final ParametroAjuste filtroQuieto = ParametroAjuste(
     clave: 'nav_filtro_quieto_hz',
     nombre: 'Filtro, parado',
@@ -281,7 +287,7 @@ class AjustesNavegacion {
   );
 
   /// Frecuencia de corte del One Euro caminando
-  /// ([FiltroUnEuroPosicion.cutoffMoviendo]). Antes: 0,35 Hz.
+  /// ([FiltroUnEuroPosicion.cutoffMoviendo]). De fábrica: 0,35 Hz.
   final ParametroAjuste filtroCaminando = ParametroAjuste(
     clave: 'nav_filtro_caminando_hz',
     nombre: 'Filtro, caminando',
@@ -298,7 +304,7 @@ class AjustesNavegacion {
   );
 
   /// Término de velocidad del One Euro ([FiltroUnEuroPosicion.beta]).
-  /// Antes: 0,15.
+  /// De fábrica: 0,15.
   final ParametroAjuste empujeVelocidad = ParametroAjuste(
     clave: 'nav_empuje_velocidad',
     nombre: 'Empuje por velocidad',
@@ -315,7 +321,7 @@ class AjustesNavegacion {
   );
 
   /// Tope de velocidad del punto caminando (tope de paso por ciclo de la
-  /// pantalla de navegación). Antes: 3,0 m/s.
+  /// pantalla de navegación). De fábrica: 3,0 m/s.
   final ParametroAjuste velocidadMaxima = ParametroAjuste(
     clave: 'nav_velocidad_maxima_ms',
     nombre: 'Velocidad máxima del punto',
@@ -343,14 +349,13 @@ class AjustesNavegacion {
   // ── Puntos clave (ver "CORRECCION POR PUNTO CLAVE" en la navegación) ──────
   //
   // La señal no distingue estar EN el punto clave de estar a un par de
-  // metros: caminando hacia una esquina con punto clave, la posición podía
+  // metros: caminando hacia una esquina con punto clave, la posición puede
   // saltar a la esquina ~2 m antes y adelantar el "Girá". Qué tan cerca hay
   // que estar para que se reconozca lo deciden el radio y la coincidencia
-  // mínima, y se regulan probando en cada edificio. Los valores por defecto
-  // son los que tenía el código.
+  // mínima, y se regulan probando en cada edificio.
 
   /// Distancia máxima (m) entre la posición actual y el punto clave para
-  /// aplicarlo. Antes: 4 m fijos.
+  /// aplicarlo. De fábrica: 4 m.
   final ParametroAjuste fpRadio = ParametroAjuste(
     clave: 'nav_fp_radio_m',
     nombre: 'Radio del punto clave',
@@ -368,7 +373,7 @@ class AjustesNavegacion {
 
   /// Diferencia robusta máxima (dB) con el patrón guardado para que cuente
   /// como coincidencia ([ProcesadorSenal.compararFingerprints], `dbMalo`).
-  /// Antes: 10 dB fijos.
+  /// De fábrica: 10 dB.
   final ParametroAjuste fpCoincidenciaDb = ParametroAjuste(
     clave: 'nav_fp_coincidencia_db',
     nombre: 'Coincidencia mínima',
@@ -384,7 +389,7 @@ class AjustesNavegacion {
   );
 
   /// Cuánto sube por ciclo el peso de la corrección hacia el punto clave (y
-  /// cuánto baja al perder la coincidencia). Antes: 0,35 fijo.
+  /// cuánto baja al perder la coincidencia). De fábrica: 0,35.
   final ParametroAjuste fpFuerza = ParametroAjuste(
     clave: 'nav_fp_fuerza',
     nombre: 'Fuerza de la corrección',
@@ -400,8 +405,8 @@ class AjustesNavegacion {
     porEdificio: true,
   );
 
-  /// Ciclos seguidos que tiene que coincidir antes de aplicarse. Antes: 3
-  /// fijos.
+  /// Ciclos seguidos que tiene que coincidir antes de aplicarse. De
+  /// fábrica: 3.
   final ParametroAjuste fpCiclos = ParametroAjuste(
     clave: 'nav_fp_ciclos',
     nombre: 'Ciclos para confirmar',
@@ -419,7 +424,7 @@ class AjustesNavegacion {
 
   /// Cuánto puede mirar para otro lado (grados) respecto del rumbo con que
   /// se tomó el punto clave ([ProcesadorSenal.compararFingerprints],
-  /// `toleranciaRumbo`). Antes: 90° fijos.
+  /// `toleranciaRumbo`). De fábrica: 90°.
   final ParametroAjuste fpToleranciaRumbo = ParametroAjuste(
     clave: 'nav_fp_rumbo_grados',
     nombre: 'Tolerancia de rumbo',

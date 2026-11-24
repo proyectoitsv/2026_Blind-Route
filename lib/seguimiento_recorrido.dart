@@ -1,20 +1,13 @@
-import 'dart:ui' show Offset;
-
-import 'design/design.dart';
-import 'grilla_nav.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// De la ruta de la navegación al recorrido que se muestra
-// ═══════════════════════════════════════════════════════════════════════════
+// De la ruta de la navegación al recorrido que se muestra.
 //
 // La línea sobre el plano, "Tramo 2 de 3" y la línea de tiempo necesitan los
 // tramos de la ruta y en cuál va el usuario. La navegación no los cuenta: su
 // ruta es una lista de celdas que arranca en el usuario y a la que le va
 // sacando lo recorrido.
 //
-// Esta clase los arma SÓLO PARA MOSTRAR, mirando esa lista. No decide nada de
-// la guía ni le cambia nada: ni la voz ni el seguimiento de la ruta pasan por
-// acá.
+// SeguimientoRecorrido los arma SÓLO PARA MOSTRAR, mirando esa lista. No
+// decide nada de la guía ni le cambia nada: ni la voz ni el seguimiento de la
+// ruta pasan por acá.
 //
 //   · Un tramo es un tirón recto: de esquina a esquina, las mismas que la
 //     navegación usa para decir "Girá" (SeguidorRuta).
@@ -27,6 +20,11 @@ import 'grilla_nav.dart';
 // La lista de tramos es la misma (identical) mientras la ruta no cambie:
 // LineaRuta y LineaTiempo animan el avance sobre una misma lista y saltan
 // con una lista nueva.
+
+import 'dart:ui' show Offset;
+
+import 'design/design.dart';
+import 'grilla_nav.dart';
 
 /// Sigue la ruta de la navegación y da el [Recorrido] para mostrar.
 class SeguimientoRecorrido {

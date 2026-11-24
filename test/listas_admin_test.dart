@@ -1,26 +1,6 @@
-import 'package:blindroute/design/design.dart';
-import 'package:blindroute/lista_edificios.dart';
-import 'package:blindroute/lista_pisos.dart';
-import 'package:blindroute/pantalla_config.dart';
-import 'package:blindroute/pantalla_login_admin.dart';
-import 'package:blindroute/pantalla_mapas_admin.dart';
-import 'package:blindroute/pantalla_naveg.dart';
-import 'package:blindroute/piso_util.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter/semantics.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_test/flutter_test.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
-import 'ayudas_pantallas.dart';
-import 'base_falsa.dart';
-import 'nube_falsa.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// EDIFICIOS Y PISOS DEL ADMINISTRADOR (fase 5.4 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
+// EDIFICIOS Y PISOS DEL ADMINISTRADOR
 //
-// Las dos listas de verdad, con el MaterialApp de la app (el tema de antes,
+// Las dos listas de verdad, con el MaterialApp de la app (con su tema de Material,
 // como en main_admin.dart): qué dice TalkBack y en qué orden, la acción
 // «Eliminar» de cada tarjeta (con TalkBack no se puede deslizar), deslizar
 // para eliminar, las confirmaciones y los avisos, la hoja «Nuevo edificio»
@@ -38,6 +18,24 @@ import 'nube_falsa.dart';
 // una con su test): de esas se mira qué ruta se abre
 // y se saca antes de que se arme. La galería del teléfono se simula sobre el
 // canal de image_picker: se cancela.
+
+import 'package:blindroute/design/design.dart';
+import 'package:blindroute/lista_edificios.dart';
+import 'package:blindroute/lista_pisos.dart';
+import 'package:blindroute/pantalla_config.dart';
+import 'package:blindroute/pantalla_login_admin.dart';
+import 'package:blindroute/pantalla_mapas_admin.dart';
+import 'package:blindroute/pantalla_naveg.dart';
+import 'package:blindroute/piso_util.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'ayudas_pantallas.dart';
+import 'base_falsa.dart';
+import 'nube_falsa.dart';
 
 /// El canal de image_picker: la galería del teléfono.
 const MethodChannel _canalGaleria = MethodChannel(
@@ -204,7 +202,7 @@ void main() {
         'Mapas publicados en la nube',
         'Cerrar sesión',
         'Facultad de Ingeniería',
-        // El lápiz para cambiar el nombre (4057f16), antes del tacho.
+        // El lápiz para cambiar el nombre, antes del tacho.
         'Cambiar nombre de Facultad de Ingeniería',
         'Eliminar Facultad de Ingeniería',
         'Hospital Central',
@@ -232,8 +230,8 @@ void main() {
       expect(find.bySemanticsLabel(RegExp('Desliza')), findsNothing);
       // Es la pantalla de entrada: sin volver.
       expect(find.byTooltip('Volver'), findsNothing);
-      // «Agregar edificio», el único botón principal (antes, un «+» flotante
-      // sin nombre).
+      // «Agregar edificio», el único botón principal (con nombre, no un «+»
+      // flotante).
       expect(find.byType(BotonPrincipal), findsOneWidget);
       expect(find.byType(FloatingActionButton), findsNothing);
       expect(

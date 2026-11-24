@@ -1,3 +1,6 @@
+// Punto de entrada de la galería de componentes del sistema de diseño (sólo
+// para desarrollo).
+
 import 'package:flutter/material.dart';
 
 import 'design/galeria_componentes.dart';

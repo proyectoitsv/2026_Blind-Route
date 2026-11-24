@@ -1,14 +1,13 @@
-import 'package:flutter/material.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Formas de BlindRoute
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Radios, altos, área táctil y las medidas de los dibujos. El relieve (las
 // sombras) está en relieve.dart. Radios, sólo cuatro: 12 (campos, pistas y el
 // cuadro de los íconos), 14 (botones), 20 (tarjetas y grupos) y 24 (hojas y
 // barras flotantes); los chips, los botones de ícono y los cabezales,
 // redondos del todo.
+
+import 'package:flutter/material.dart';
+
 abstract final class FormasApp {
   // ── Radios ──────────────────────────────────────────────────────────────
 

@@ -1,3 +1,18 @@
+// COMPONENTES DEL SISTEMA DE DISEÑO
+//
+// Lo que tiene que cumplir cada componente para ser accesible: área táctil
+// de 48 dp, semántica para TalkBack, nada roto con la letra al 200 % (lineal,
+// más exigente que el 200 % de Android 14) y, con "Quitar animaciones", sin
+// resorte ni achique. También la paleta, con el
+// contraste anotado en colores.dart, el relieve (levantado y hundido, con las
+// medidas de CSS), la línea de ruta sobre el plano y la línea de tiempo.
+// Los cambios de estado se animan: donde importa el estado
+// final, se espera a que termine (pumpAndSettle). Los tiempos y las curvas
+// de cada animación se prueban en animaciones_test.dart.
+//
+// En los tests la letra es la de prueba de Flutter (cada letra, un cuadrado
+// de 1 em), más ancha que Inter: si acá no se desborda, en el teléfono menos.
+
 import 'dart:io';
 
 import 'package:blindroute/design/design.dart';
@@ -7,23 +22,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// COMPONENTES DEL SISTEMA DE DISEÑO (fases 2 y 3 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Lo que tiene que cumplir cada componente para ser accesible: área táctil
-// de 48 dp, semántica para TalkBack, nada roto con la letra al 200 % (lineal,
-// más exigente que el 200 % de Android 14) y, con "Quitar animaciones", sin
-// resorte ni achique. También la paleta de la v5 del prompt, con el
-// contraste anotado en colores.dart, el relieve (levantado y hundido, con las
-// medidas de CSS), la línea de ruta sobre el plano y la línea de tiempo.
-// Desde la fase 3 los cambios de estado se animan: donde importa el estado
-// final, se espera a que termine (pumpAndSettle). Los tiempos y las curvas
-// de cada animación se prueban en animaciones_test.dart.
-//
-// En los tests la letra es la de prueba de Flutter (cada letra, un cuadrado
-// de 1 em), más ancha que Inter: si acá no se desborda, en el teléfono menos.
 
 /// Contraste WCAG 2.x entre dos colores opacos.
 double contraste(Color a, Color b) {
@@ -110,7 +108,7 @@ void main() {
   // ── Paleta y relieve ────────────────────────────────────────────────────
 
   group('paleta y relieve', () {
-    test('los valores son los de la tabla del prompt', () {
+    test('los valores son los de la paleta', () {
       expect(ColoresApp.fondo, const Color(0xFF0B1020));
       expect(ColoresApp.superficie, const Color(0xFF151C32));
       expect(ColoresApp.hundido, ColoresApp.fondo);

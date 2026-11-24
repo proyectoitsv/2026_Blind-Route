@@ -1,16 +1,4 @@
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'cuadro_icono.dart';
-import 'presion.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Tarjeta de dato y grilla de tarjetas
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Una tarjeta levantada (radio 20). Arriba, el ícono en su cuadro hundido;
 // debajo, la etiqueta en texto secundario (10,41 sobre la superficie) con todo
@@ -34,6 +22,16 @@ import 'presion.dart';
 // La tarjeta se lee de una vez: "Señal, menos 67 dBm, buena". El número se
 // puede decir distinto de como se ve (valorSemantico): "1,2 m" se lee mejor
 // como "1,2 metros".
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'cuadro_icono.dart';
+import 'presion.dart';
 
 /// Color del texto de abajo de una [TarjetaDato] (y del subtítulo de una
 /// TarjetaLista). El verde no está: es sólo de la ruta. Lo bueno se dice con

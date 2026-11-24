@@ -1,13 +1,11 @@
-import 'package:blindroute/asistente_trazo.dart';
-import 'package:flutter_test/flutter_test.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // IMÁN DE TRAZO: TOLERANCIAS QUE ACHICAN CON EL ZOOM
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Plano de 10 × 10 m. Se dibuja una pared de 5 m × 20 cm: A(2; 2), B(7; 2) y
 // el tercer vértice C a 20 cm de B, hacia abajo. La guía de cierre compara C
 // con A (el primer vértice).
+
+import 'package:blindroute/asistente_trazo.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 const double _lado = 10.0;
 
@@ -32,7 +30,7 @@ Matcher _cercaDe(Offset esperado) => predicate<Offset>(
 
 void main() {
   test('sin saber el zoom, la guía de cierre aplasta una pared de 20 cm', () {
-    // Es el problema de antes: 20 cm está dentro de los 40 cm de alineación,
+    // Sin saber el zoom: 20 cm está dentro de los 40 cm de alineación,
     // así que C cae sobre la línea de A y la pared queda sin ancho.
     final r = _ajustarC(_n(7.003, 2.2));
     expect(r.punto, _cercaDe(_n(7, 2)));

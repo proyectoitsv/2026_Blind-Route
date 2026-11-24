@@ -1,3 +1,8 @@
+// Catálogo de rubros del teléfono (app del administrador).
+//
+// Crear rubros propios, cambiarles el nombre y las palabras con las que se
+// los pide por voz, y borrarlos.
+
 import 'package:flutter/material.dart';
 
 import 'buscador_lugares.dart';
@@ -57,11 +62,10 @@ IconData iconoRubro(String? id) {
 /// usuarios les llegan recién al REPUBLICAR el mapa: cada lugar publicado
 /// lleva una copia de las palabras de su rubro (ver rubros.dart).
 ///
-/// ─── Sistema de diseño (fase 5.6 del rediseño) ───
 /// Va envuelta en AmbienteDiseno, como la configuración del piso desde la
 /// que se abre. Cada rubro es una TarjetaLista (el ícono en su cuadro, el
 /// nombre y algunas de sus palabras) y "Nuevo rubro", el botón principal
-/// abajo (antes, un botón flotante). El editor sigue a pantalla completa:
+/// abajo. El editor va a pantalla completa:
 /// "Guardar" va en la barra, las palabras son chips con su botón para
 /// quitarlas, la confirmación es una hoja (mostrarConfirmacion) y los avisos
 /// son los del sistema de diseño (mostrarAviso).

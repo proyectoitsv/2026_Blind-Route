@@ -1,3 +1,5 @@
+// Ajustes de la app del usuario: la voz, «Reducir movimiento» y la vibración.
+
 import 'package:flutter/material.dart';
 
 import 'design/design.dart';
@@ -5,9 +7,8 @@ import 'pantalla_ajustes_voz.dart';
 
 /// Ajustes de la app del usuario: la voz, el movimiento y la vibración.
 ///
-/// Es la primera pantalla de las apps con el sistema de diseño (fase 3 del
-/// rediseño): va envuelta en AmbienteDiseno. Los ajustes de la voz siguen en
-/// su pantalla (pantalla_ajustes_voz.dart), que se abre desde acá.
+/// Va envuelta en AmbienteDiseno. Los ajustes de la voz están en su propia
+/// pantalla (pantalla_ajustes_voz.dart), que se abre desde acá.
 ///
 /// «Reducir movimiento» y «Vibración» son de cada persona y se guardan sólo
 /// en el teléfono (AjustesMovimiento). Al prender la vibración, el teléfono

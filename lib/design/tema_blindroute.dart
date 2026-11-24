@@ -1,15 +1,4 @@
-import 'package:flutter/material.dart';
-
-import 'colores.dart';
-import 'espaciado.dart';
-import 'estilo.dart';
-import 'formas.dart';
-import 'tipografia.dart';
-import 'transiciones.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Tema oscuro de BlindRoute
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Material 3 con identidad propia:
 //   · Sin Dynamic Color ni Material You: el esquema se arma a mano con la
@@ -48,8 +37,18 @@ import 'transiciones.dart';
 // ─── Entre pantallas ───
 // La transición de la tabla de movimiento (TransicionPaginaApp), en todas
 // las plataformas: la toma cualquier MaterialPageRoute de una app con este
-// tema (la galería). Las apps, que siguen con el tema de antes, abren las
-// pantallas migradas con RutaApp.
+// tema (la galería). Las apps, cuyo MaterialApp conserva el tema de
+// Material, abren las pantallas con RutaApp.
+
+import 'package:flutter/material.dart';
+
+import 'colores.dart';
+import 'espaciado.dart';
+import 'estilo.dart';
+import 'formas.dart';
+import 'tipografia.dart';
+import 'transiciones.dart';
+
 abstract final class TemaBlindRoute {
   /// El tema oscuro, el principal. Se arma una sola vez.
   static final ThemeData oscuro = _armar(EstiloApp.oscuro);

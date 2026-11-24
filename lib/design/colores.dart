@@ -1,13 +1,9 @@
-import 'package:flutter/painting.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Paleta de BlindRoute
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Fuente de verdad de los colores de las dos apps. Ninguna pantalla define
 // colores sueltos: usa estos o los mismos desde el tema (EstiloApp.de).
 //
-// ─── Dirección: editor con relieve (fase 2, v5 del prompt) ───
+// ─── Dirección: editor con relieve ───
 // Los paneles oscuros de un editor de precisión (orden, plano, línea de
 // tiempo, barra flotante) con controles en relieve: lo que se toca se ve
 // levantado o hundido. El plano y la ruta van hundidos, como grabados en la
@@ -24,14 +20,17 @@ import 'package:flutter/painting.dart';
 //
 // Contraste WCAG 2.x calculado con un script (luminancia relativa sRGB) y
 // truncado a dos decimales: nunca se redondea para arriba, así un 4,499 no
-// pasa por 4,5 (por eso algunos valores dan una centésima menos que en la
-// tabla del prompt, que los redondeaba). Los mínimos que rigen:
+// pasa por 4,5 (por eso algunos valores dan una centésima menos que con
+// redondeo). Los mínimos que rigen:
 //   · texto normal ≥ 4,5:1
 //   · texto importante (títulos, números clave) ≥ 7:1
 //   · íconos, bordes de controles y gráficos ≥ 3:1
 // El relieve solo no llega a 3:1 (la superficie da 1,12 contra el fondo): por
 // eso todo control interactivo lleva además el borde de 1 px. Antes de
 // cambiar o agregar un color, recalcular el contraste y anotarlo.
+
+import 'package:flutter/painting.dart';
+
 abstract final class ColoresApp {
   // ── Fondos ──────────────────────────────────────────────────────────────
 

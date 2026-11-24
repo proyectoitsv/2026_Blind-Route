@@ -1,3 +1,10 @@
+// Rutas sobre la grilla de un piso.
+//
+// ResolvedorCaminos prepara la grilla una vez por piso (celdas bloqueadas por
+// zonas y escaleras, paredes entre celdas, franja de borde, campo de costos y
+// áreas conectadas) y calcula cada ruta con A* en un isolate. Cuando no hay
+// camino, dice cuál de las dos puntas quedó encerrada.
+
 import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
@@ -6,10 +13,10 @@ import 'package:flutter/material.dart';
 import 'zona_model.dart';
 import 'grilla_nav.dart';
 
-// ─── MIN-HEAP (reemplaza HeapPriorityQueue de package:collection) ────────────
+// ─── COLA DE PRIORIDAD DEL A* ────────────────────────────────────────────────
 //
-// Implementación propia para no depender del paquete externo 'collection'.
-// Heap binario mínimo con comparador por f-score del nodo A*.
+// Heap binario mínimo: agregar y sacar el menor cuestan O(log n). Es propio
+// para no sumar la dependencia de package:collection por una sola clase.
 class _MinHeap<T> {
   final int Function(T a, T b) _cmp;
   final List<T> _data = [];
@@ -111,9 +118,9 @@ enum SinCamino {
 ///     bordea la zona y no el que bordea el plano.
 ///  3. **Centros de celda recortados**: la última celda de cada eje puede ser
 ///     parcial (la escala rara vez es múltiplo exacto del lado de celda) y su
-///     centro geométrico cae FUERA de `[0,1]`. Antes se devolvía tal cual: por
-///     eso la ruta llegaba a dibujarse literalmente fuera de la imagen del
-///     plano. Ahora se recorta igual que en `GrillaNav.centroX/centroY`.
+///     centro geométrico caería FUERA de `[0,1]`. Se recorta igual que en
+///     `GrillaNav.centroX/centroY`, así la ruta nunca se dibuja fuera del
+///     plano.
 ///
 /// ── ZONAS: CELDAS BLOQUEADAS Y PAREDES ────────────────────────────────────
 /// Las zonas no transitables afectan la grilla de dos maneras:
@@ -138,8 +145,8 @@ class ResolvedorCaminos {
   double get _pasoY => _grillaNav.tamCeldaY;
 
   // 1 = sin poda extra de ancho de pasillo. Con celdas de 1 m una persona ya
-  // cabe en una sola celda, así que no exigimos pasillos más anchos (eso
-  // bloquearía pasillos reales angostos en una grilla tan gruesa).
+  // cabe en una sola celda; exigir pasillos más anchos bloquearía pasillos
+  // reales angostos en una grilla tan gruesa.
   static const int _anchoPasillo = 1;
 
   // ── Parámetros de contención respecto del borde del plano ──────────────────
@@ -396,19 +403,18 @@ class ResolvedorCaminos {
   // ═══ BLOQUEO POR CENTRO ═══
   // Una celda queda bloqueada sólo si su CENTRO cae adentro de una zona.
   //
-  // Antes también se rasterizaba el contorno: toda celda tocada por una
-  // arista quedaba bloqueada. Con celdas de 1 m, la esquina de 20 cm de una
-  // zona bloqueaba la celda entera, y una zona dibujada justo sobre el borde
-  // entre dos celdas bloqueaba la fila de al lado completa. La posición
-  // saltaba a la celda vecina y la ruta se cortaba en pasillos que en la
-  // realidad tienen lugar de sobra.
+  // Bloquear toda celda que toque una arista no sirve: con celdas de 1 m, la
+  // esquina de 20 cm de una zona taparía la celda entera, y una zona dibujada
+  // justo sobre el borde entre dos celdas taparía la fila de al lado. La
+  // posición saltaría a la celda vecina y la ruta se cortaría en pasillos con
+  // lugar de sobra.
   //
-  // El contorno estaba para que una zona angosta (una pared de 20 cm, que no
-  // tapa ningún centro) no quedara "abierta" y el A* se colara a través de
-  // ella. Eso ahora lo resuelven las paredes ([_marcarParedes]): las celdas
-  // de los dos lados quedan libres, pero la conexión entre ellas se corta.
+  // Una zona angosta (una pared de 20 cm) no tapa ningún centro; para que el
+  // A* no se cuele a través de ella están las paredes ([_marcarParedes]): las
+  // celdas de los dos lados quedan libres, pero la conexión entre ellas se
+  // corta.
   //
-  // Un criterio por porcentaje de celda cubierta no serviría: depende de
+  // Un criterio por porcentaje de celda cubierta tampoco sirve: depende de
   // cuánto mide la celda y no de por dónde puede pasar una persona.
 
   void _marcarObstaculos() {
@@ -671,7 +677,7 @@ class ResolvedorCaminos {
     // Celdas libres pegadas a una pared: una zona angosta no bloquea ninguna
     // celda (no tapa ningún centro), así que sin esto la ruta no se despegaría
     // de ella. Cuentan como distancia 1, igual que las pegadas a una celda
-    // bloqueada. (Antes las bloqueaba el contorno y el despegue salía solo.)
+    // bloqueada.
     final pegadas = <int>[];
     for (int x = 0; x < _resX; x++) {
       for (int y = 0; y < _resY; y++) {
@@ -926,14 +932,35 @@ class _PathArgs {
   });
 }
 
-/// Función de nivel superior requerida por compute() — no puede ser un método.
-/// Ejecuta el A* completo dentro del isolate, sin tocar el hilo principal.
+/// A* completo, dentro del isolate. Es de nivel superior porque compute() no
+/// acepta métodos.
 ///
-/// Movimiento en 4 direcciones (N/S/E/O, sin diagonales) para que el camino
-/// siga las cuadrículas de la grilla, con penalización de giro para minimizar
-/// curvas y un campo de costos que empuja el camino hacia el interior del
-/// plano. Devuelve TODAS las celdas del camino (sin simplificar) para que el
-/// `MapaWidget` pueda pintar cada una.
+/// ── Cómo funciona ──────────────────────────────────────────────────────────
+///  • Cada celda guarda `g` (costo del mejor camino conocido desde el
+///    origen), `h` (estimación de lo que falta hasta el destino) y
+///    `f = g + h`. `padre` es la celda desde la que se llegó con ese `g`.
+///  • La lista abierta es un heap ordenado por `f`: siempre se expande la
+///    celda que, por lo que se sabe hasta ahí, está en el camino más barato.
+///  • Al expandir una celda se la marca `visitado` (su `g` ya no mejora) y se
+///    prueba pasar a cada vecina. Si `g` de la actual más el costo del paso es
+///    menor que el `g` de la vecina, se le actualizan `g`, `h` y `padre` y se
+///    la agrega al heap. La entrada vieja de esa vecina queda en el heap y se
+///    descarta cuando sale (`if (actual.visitado) continue`): es más barato
+///    que buscarla y reordenar.
+///  • Cuando sale el destino, su `g` es el costo mínimo y el camino se arma
+///    siguiendo los padres hacia atrás ([_reconstruir]).
+///  • `h` es la distancia Manhattan en celdas y nunca sobreestima (cada paso
+///    cuesta al menos 1), así que el A* no descarta el camino más corto. Con
+///    `h = 0` sería Dijkstra: el mismo resultado, explorando en círculo.
+///
+/// ── Costo de cada paso ─────────────────────────────────────────────────────
+/// 1 por avanzar una celda, más 4 si cambia de dirección, más el campo de
+/// costos de la celda a la que llega (borde del plano y cercanía a zonas).
+/// El giro depende de por dónde se llegó, pero el estado del A* es sólo la
+/// celda: el camino sale casi óptimo, no exacto, y para guiar a una persona
+/// alcanza. Se mueve en 4 direcciones (sin diagonales) para que la ruta siga
+/// la grilla, y devuelve TODAS sus celdas (sin simplificar) para que
+/// `MapaWidget` pinte cada una.
 ///
 /// Dos celdas libres vecinas sólo se conectan si no hay una pared entre ellas
 /// ([_hayPared]). Las paredes también están calculadas para las diagonales,
@@ -998,16 +1025,19 @@ List<Offset>? _aStarIsolate(_PathArgs args) {
   final nDestino = grilla[gx][gy];
 
   // Costos en "celdas" (cada celda ≈ tamCeldaMetros en ambos ejes): paso
-  // recto = 1. Penalización por cada giro de 90° = 4 celdas: A* prefiere un
-  // rodeo de hasta 4 celdas antes que sumar una curva → mínimas curvas.
+  // recto = 1, giro de 90° = 4. Un giro vale lo mismo que 4 celdas de rodeo:
+  // cada giro es una indicación más por voz y un punto donde la persona se
+  // puede pasar, así que conviene una ruta un poco más larga con menos
+  // curvas.
   const double costoPaso = 1.0;
   const double costoGiro = 4.0;
 
   // Heurística Manhattan en celdas (admisible: el costo real de cada paso es
-  // ≥ costoPaso) con desempate direccional. El término de producto cruzado
-  // favorece las celdas alineadas con la recta origen→destino: sin él TODOS
-  // los rodeos monótonos de igual longitud empatan, y el A* podía elegir
-  // arbitrariamente el que se iba contra el borde del plano.
+  // ≥ costoPaso) con desempate direccional. El producto cruzado mide cuánto
+  // se aparta la celda de la recta origen→destino: sin él TODOS los rodeos
+  // monótonos de igual longitud empatan, y el A* podría elegir cualquiera,
+  // incluso el que va contra el borde. El factor 0,001 lo deja como puro
+  // desempate: nunca alcanza para preferir un camino más largo.
   final dxTotal = (ix - gx).toDouble();
   final dyTotal = (iy - gy).toDouble();
   double heuristica(_Nodo a, _Nodo b) {
@@ -1084,8 +1114,8 @@ int _celdaLibreDe(Offset p, List<bool> obs, List<bool> borde, int resX,
   int clampY(int v) => v < 0 ? 0 : (v >= resY ? resY - 1 : v);
 
   // Índice de celda a partir del paso normalizado, igual que GrillaNav.indiceX.
-  // OJO: NO es (n * resX): la última celda de cada eje puede ser parcial, así
-  // que resX != 1 / pasoX y usar resX corría todas las celdas del camino.
+  // No sirve `p.dx * resX`: la última celda de cada eje puede ser parcial,
+  // así que resX ≠ 1 / pasoX y ese cálculo correría las celdas.
   final x0 = clampX((p.dx / pasoX).floor());
   final y0 = clampY((p.dy / pasoY).floor());
   final i = x0 * resY + y0;
@@ -1128,11 +1158,11 @@ double _penalizacionGiro(_Nodo actual, int dx2, int dy2, double costoGiro) {
 }
 
 /// Reconstruye el camino como centros de celda NORMALIZADOS y **recortados al
-/// plano**. La última celda de cada eje puede ser parcial: su centro
-/// geométrico `(i + 0.5) * paso` cae fuera de `[0,1]`, que es exactamente por
-/// lo que la ruta terminaba dibujándose fuera de los límites del mapa. Se usa
-/// el mismo recorte que `GrillaNav.centroX/centroY` para que el camino
-/// calculado y el pintado coincidan celda a celda.
+/// plano**, del origen al destino. La última celda de cada eje puede ser
+/// parcial: su centro geométrico `(i + 0.5) * paso` caería fuera de `[0,1]` y
+/// la ruta se dibujaría fuera del plano. Se usa el mismo recorte que
+/// `GrillaNav.centroX/centroY` para que el camino calculado y el pintado
+/// coincidan celda a celda.
 List<Offset> _reconstruir(_Nodo destino, double pasoX, double pasoY) {
   double centro(int i, double paso) {
     final inicio = i * paso;

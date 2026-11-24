@@ -1,3 +1,4 @@
+// Datos de conexión a Supabase (la nube de mapas publicados).
 
 class SupabaseConfig {
   /// URL del proyecto, del estilo `https://xxxxxxxx.supabase.co`.

@@ -1,3 +1,9 @@
+// El plano del piso y todo lo que se dibuja encima (MapaWidget).
+//
+// Lo usan la navegación y la configuración del piso: la imagen del plano, los
+// beacons, las zonas, los lugares, la grilla, la ruta, la posición del usuario
+// y, en la configuración, lo que se está dibujando y sus gestos.
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'dart:io';
@@ -10,10 +16,6 @@ import 'grilla_nav.dart';
 import 'asistente_trazo.dart';
 import 'design/design.dart';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// El plano y lo que se dibuja encima
-// ═══════════════════════════════════════════════════════════════════════════
-//
 // Lo comparten la navegación y la configuración del piso. El plano es una
 // imagen que carga el admin y suele ser clara, y los colores claros de la
 // paleta (cian, ámbar) se pierden sobre el blanco: por eso todo lo que va
@@ -27,8 +29,6 @@ import 'design/design.dart';
 //   · Verde y violeta, sólo en la ruta (LineaRuta).
 //
 // Cada cosa se distingue además por su forma: mira, alfiler, cuadrado, línea.
-// Sólo cambia el dibujo: las posiciones, las áreas para agarrar y el tamaño
-// de cada marcador sobre el plano son los de siempre.
 
 /// Contorno de un ícono sobre el plano: cuatro sombras sin desenfoque, un
 /// píxel alrededor. Hace legible el acento sobre un plano blanco.
@@ -294,7 +294,6 @@ class _MapaPainter extends CustomPainter {
     // --- Zonas no transitables ---
     // Item 6: rojo saturado (ColoresApp.mapaZonaRelleno) con alpha 0.45
     // y borde sólido 2.5 px para alta visibilidad en baja visión.
-    // Antes: Colors.red.withValues(alpha: 0.30) — poco contraste sobre plano.
     final paintRelleno = Paint()
       ..color = ColoresApp.mapaZonaRelleno.withValues(alpha: 0.45)
       ..style = PaintingStyle.fill;
@@ -1098,9 +1097,8 @@ class MapaWidget extends StatelessWidget {
                             : null,
                         child: GestureDetector(
                           behavior: HitTestBehavior.translucent,
-                          // Toque simple (antes era long-press): sólo llega con
-                          // el modo "Borrar" activo, así que no hay con qué
-                          // confundirlo.
+                          // Toque simple: sólo llega con el modo "Borrar"
+                          // activo, así que no hay con qué confundirlo.
                           onTap: modoEdicion && onTapBeacon != null
                               ? () => onTapBeacon!(b.mac)
                               : null,
@@ -1174,18 +1172,13 @@ class MapaWidget extends StatelessWidget {
 
                   // LUGAR COMÚN: pin de tamaño fijo con la punta en la posición.
                   //
-                  // FIX (pin corrido respecto del lugar real): el marcador es
-                  // una columna [ícono, etiqueta] y su ANCHO es el de la
-                  // etiqueta, con el ícono centrado adentro. Antes se ubicaba
-                  // con `left = x - 14`, que sólo deja la punta sobre la
-                  // posición si la columna mide 28 px (el ícono solo). Con
-                  // cualquier nombre más largo que eso el pin quedaba dibujado
-                  // a la derecha del lugar real, la mitad del ancho de la
-                  // etiqueta: unos 50 px con "restaurante burger king". Por eso
-                  // costaba arrastrarlos: se agarraba el pin que se veía, pero
-                  // el lugar "estaba" bastante más a la izquierda.
-                  // Ahora la columna se ancla en x y se corre media columna
-                  // hacia la izquierda, sea cual sea su ancho.
+                  // El marcador es una columna [ícono, etiqueta] y su ANCHO es
+                  // el de la etiqueta, con el ícono centrado adentro. Por eso
+                  // la columna se ancla en x y se corre media columna hacia la
+                  // izquierda, sea cual sea su ancho. Con un corrimiento fijo
+                  // (`left = x - 14`, el ícono solo), un nombre largo dejaría
+                  // el pin a la derecha del lugar real (unos 50 px con
+                  // "restaurante burger king") y costaría arrastrarlo.
                   final px =
                       offsetX + lugar.posicion.dx * tamanoRenderizado.width;
                   final py =

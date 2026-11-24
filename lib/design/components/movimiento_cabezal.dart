@@ -1,14 +1,4 @@
-import 'dart:math' as math;
-import 'dart:ui' show lerpDouble;
-
-import 'package:flutter/scheduler.dart';
-import 'package:flutter/widgets.dart';
-
-import '../movimiento.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Movimiento del cabezal
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Dónde se dibuja el cabezal de la ruta (sobre el plano o en la línea de
 // tiempo), como un solo número: la distancia en píxeles a lo largo de la ruta
@@ -28,6 +18,14 @@ import '../movimiento.dart';
 // Sin setState por cuadro: avisa a quien escucha (el painter del cabezal,
 // que repinta sólo su capa). En segundo plano no hay cuadros: al volver, el
 // primero trae todo el tiempo que pasó y el cabezal queda en su lugar final.
+
+import 'dart:math' as math;
+import 'dart:ui' show lerpDouble;
+
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/widgets.dart';
+
+import '../movimiento.dart';
 
 /// El movimiento del cabezal de la ruta: un valor (píxeles a lo largo de la
 /// ruta) que sigue a la posición. Lo usan la línea de ruta y la línea de

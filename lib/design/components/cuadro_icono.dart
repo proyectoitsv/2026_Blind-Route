@@ -1,12 +1,4 @@
-import 'package:flutter/material.dart';
-
-import '../estilo.dart';
-import '../formas.dart';
-import '../relieve.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Cuadro con ícono
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Un cuadro hundido de 40 dp (radio 12, el relieve chico) con el ícono chico
 // en acento adentro, como las herramientas de un editor. Es el ícono de una
@@ -16,6 +8,12 @@ import '../relieve.dart';
 // Contraste del ícono sobre el relleno hundido: acento 11,23 · error 6,82 ·
 // texto principal 17,77. El ícono queda a 10 dp del borde, lejos de la
 // sombra interior (llega a 6).
+
+import 'package:flutter/material.dart';
+
+import '../estilo.dart';
+import '../formas.dart';
+import '../relieve.dart';
 
 /// Cuadro hundido con un ícono adentro.
 class CuadroIcono extends StatelessWidget {

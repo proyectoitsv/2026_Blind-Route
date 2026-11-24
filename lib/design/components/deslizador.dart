@@ -1,16 +1,4 @@
-import 'dart:ui' show lerpDouble;
-
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Deslizador
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Para elegir un valor de un rango (el tamaño de la celda, la potencia mínima,
 // el ajuste fino de la brújula). Arriba van el nombre y el valor escrito, en
@@ -34,6 +22,16 @@ import '../tipografia.dart';
 //
 // ─── Letra grande ───
 // El valor baja debajo del nombre: así ninguno de los dos se parte.
+
+import 'dart:ui' show lerpDouble;
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
 
 /// Un deslizador: el nombre, el valor escrito y la pista con la perilla.
 class Deslizador extends StatelessWidget {

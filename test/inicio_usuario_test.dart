@@ -1,3 +1,23 @@
+// INICIO DE LA APP DEL USUARIO
+//
+// La pantalla con el sistema de diseño: el botón con pulso que ocupa la
+// primera vista, las dos filas debajo (a la vista desplazando), lo que dice
+// TalkBack y en qué orden, las guías
+// de área táctil, etiquetas y contraste, la letra al 200 % (con Inter de
+// verdad, ayudas_pantallas.dart) y adónde lleva cada cosa (cortando la voz
+// antes). Va con el MaterialApp de la app, con su tema de Material, como en
+// main_user.dart.
+//
+// ─── Lo que no anda en los tests ───
+// La voz se simula sobre el canal de flutter_tts: se anota lo que se le pide.
+// ModoAutomatico arranca el Bluetooth y PantallaMapasOnline consulta la nube
+// y la base local: de esas dos se mira qué ruta se abre y se saca antes de
+// que se arme.
+//
+// Las ondas del botón se repiten sin parar: con ellas, pumpAndSettle no
+// termina nunca. Los tests van con «Reducir movimiento» prendido, salvo el
+// de las ondas, que lo apaga.
+
 import 'dart:math' as math;
 
 import 'package:blindroute/design/design.dart';
@@ -10,27 +30,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ayudas_pantallas.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// INICIO DE LA APP DEL USUARIO (fase 5.1 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// La pantalla migrada al sistema de diseño: el botón con pulso que ocupa la
-// primera vista, las dos filas debajo (a la vista desplazando), lo que dice TalkBack y en qué orden, las guías
-// de área táctil, etiquetas y contraste, la letra al 200 % (con Inter de
-// verdad, ayudas_pantallas.dart) y adónde lleva cada cosa (cortando la voz
-// antes). Va con el MaterialApp de la app, con el tema de antes, como en
-// main_user.dart.
-//
-// ─── Lo que no anda en los tests ───
-// La voz se simula sobre el canal de flutter_tts: se anota lo que se le pide.
-// ModoAutomatico arranca el Bluetooth y PantallaMapasOnline consulta la nube
-// y la base local: de esas dos se mira qué ruta se abre y se saca antes de
-// que se arme.
-//
-// Las ondas del botón se repiten sin parar: con ellas, pumpAndSettle no
-// termina nunca. Los tests van con «Reducir movimiento» prendido, salvo el
-// de las ondas, que lo apaga.
 
 /// Arma el inicio como en la app, con la letra en [escala].
 Future<ObservadorRutas> _armar(WidgetTester tester, {double escala = 1}) =>

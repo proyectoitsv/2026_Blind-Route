@@ -1,3 +1,11 @@
+// Voz de la app: hablar (TTS) y escuchar (reconocimiento de voz).
+//
+// VozService es un singleton que comparten todas las pantallas. Ordena qué se
+// dice y cuándo: las indicaciones de guiado pasan por un filtro anti-rebote,
+// los giros urgentes cortan lo que suena y las frases secundarias ("Estás
+// en…") ceden ante cualquier otra. Para escuchar, cada pregunta es una sesión
+// que termina una sola vez, y el fin de lo dicho lo decide la app.
+
 import 'dart:async';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_tts/flutter_tts.dart';
@@ -27,8 +35,8 @@ class VozService {
   // ── DUEÑO ACTUAL ──────────────────────────────────────────────────────────
   // VozService es un singleton, así que `limpiar()` de una pantalla detiene el
   // TTS de TODAS. Flutter destruye la pantalla saliente después de construir la
-  // entrante, así que ese `limpiar()` tardío cortaba el anuncio de la pantalla
-  // nueva. Con un token de dueño, la limpieza tardía se vuelve inofensiva.
+  // entrante, así que ese `limpiar()` tardío cortaría el anuncio de la
+  // pantalla nueva. Con un token de dueño, la limpieza tardía es inofensiva.
   Object? _dueno;
 
   /// Registra a [dueno] como pantalla activa de voz.
@@ -134,15 +142,13 @@ class VozService {
   /// motor antes de devolver.
   ///
   /// POR QUÉ HAY QUE ESPERARLO: los handlers del motor son globales, no por
-  /// frase. Antes [hablar] hacía `stop()` y enseguida instalaba los handlers
-  /// de la frase NUEVA; el aviso de cancelación de la frase VIEJA llegaba un
-  /// instante después y lo recibía el handler nuevo, que entendía "terminé":
-  /// ponía `_hablando = false` y completaba el Future con la frase nueva
-  /// recién empezando. Con `_hablando` en false de forma espuria, la próxima
-  /// indicación de guiado la pisaba (el motor corta lo que suena al recibir
-  /// otro `speak`). Pasaba, por ejemplo, con "Ubicación lista." seguido de
-  /// "Ubicación lista. Vamos a la escalera.". Acá el aviso viejo lo consume
-  /// un handler temporal y recién después se instala el de la frase nueva.
+  /// frase. Si [hablar] hiciera `stop()` y enseguida instalara los handlers
+  /// de la frase NUEVA, el aviso de cancelación de la frase VIEJA llegaría un
+  /// instante después y lo recibiría el handler nuevo, que entendería
+  /// "terminé": pondría `_hablando = false` con la frase nueva recién
+  /// empezando, y la próxima indicación de guiado la pisaría (el motor corta
+  /// lo que suena al recibir otro `speak`). Acá el aviso viejo lo consume un
+  /// handler temporal y recién después se instala el de la frase nueva.
   Future<void> _cortarFraseEnCurso() async {
     if (!_hablando) {
       await _tts.stop();
@@ -217,11 +223,11 @@ class VozService {
     // mínimo 1500 ms, más 600 ms de margen para que el altavoz se apague
     // físicamente antes de abrir el micrófono.
     //
-    // Se escala con la velocidad elegida y el tope es largo a propósito:
-    // antes eran 12 s fijos, y una frase larga (la lista de opciones) o
-    // cualquiera de más de ~95 caracteres con la voz al 60 % se daba por
-    // terminada mientras todavía sonaba. El micrófono se abría con la app
-    // hablando y la frase siguiente la pisaba.
+    // Se escala con la velocidad elegida y el tope es largo a propósito: con
+    // un tope fijo de 12 s, una frase larga (la lista de opciones) o
+    // cualquiera de más de ~95 caracteres con la voz al 60 % se daría por
+    // terminada mientras todavía suena. El micrófono se abriría con la app
+    // hablando y la frase siguiente la pisaría.
     final msPorCaracter = 150 * 100 / _ajustes.velocidad.valor;
     final timeoutMs =
         (texto.length * msPorCaracter).round().clamp(1500, 40000) + 600;
@@ -237,9 +243,7 @@ class VozService {
   ///
   /// Devuelve `true` si el texto se mandó al motor y `false` si se descartó.
   /// El que llama TIENE que mirar ese resultado si necesita saber si la frase
-  /// se dijo: antes este método era `void` y [hablarSiCambio] daba por dicha
-  /// una indicación que en realidad se había descartado (ver el comentario
-  /// ahí), que es lo que demoraba ~15 s la primera indicación de cada ruta.
+  /// se dijo (ver [hablarSiCambio]).
   bool hablarSinEsperar(String texto) {
     if (!_ttsInicializado || texto.trim().isEmpty) return false;
     if (_hablando) {
@@ -272,12 +276,11 @@ class VozService {
   // ═══ FRASES SECUNDARIAS ═══
   //
   // "Estás en <punto clave>" es un dato útil, pero menos que cualquier
-  // indicación. Antes se decía con hablarSinEsperar como una indicación
-  // más: si caía justo antes del "Girá a la izquierda", el giro esperaba a
-  // que terminara o lo cortaba a la mitad, y el aviso previo ("En 5 metros…")
-  // directamente esperaba. Ahora es una frase SECUNDARIA: sólo arranca con
-  // el motor libre, y cualquier otra frase que llegue mientras suena la
-  // corta enseguida. Tampoco cuenta como "lo último que se dijo" para el
+  // indicación. Dicho como una indicación más, si cae justo antes del "Girá
+  // a la izquierda", el giro tendría que esperar a que termine o cortarlo a
+  // la mitad. Por eso es una frase SECUNDARIA: sólo arranca con el motor
+  // libre, y cualquier otra frase que llegue mientras suena la corta
+  // enseguida. Tampoco cuenta como "lo último que se dijo" para el
   // filtro de las indicaciones (separación entre indicaciones, repetición).
 
   /// true mientras suena una frase de [hablarSecundaria].
@@ -391,15 +394,13 @@ class VozService {
           ahora.difference(_ultimaVezHablado!) < _intervaloEntreDistintas) {
         return; // se dirá en el próximo ciclo, sin perder la candidata
       }
-      // FIX (primera indicación a los ~15 s): la clave se anota como dicha
-      // SÓLO si el motor aceptó la frase. Antes se anotaba siempre, y como
-      // hablarSinEsperar() descarta el texto cuando el TTS está ocupado, una
-      // indicación que caía mientras todavía sonaba "<destino>. Calculando
-      // ruta." quedaba registrada como dicha sin haber sonado nunca. A partir
-      // de ahí entraba en la rama de abajo ("misma indicación") y recién se
-      // decía cuando vencía _intervaloMinimo: 15 segundos. Ahora, si el motor
-      // está ocupado, la candidata queda viva y se reintenta en el próximo
-      // ciclo (~0,2 s), o sea apenas termina la frase en curso.
+      // La clave se anota como dicha SÓLO si el motor aceptó la frase:
+      // hablarSinEsperar() la descarta si el TTS está ocupado. Si se anotara
+      // igual, la indicación quedaría como dicha sin haber sonado, caería en
+      // la rama de abajo ("misma indicación") y recién se diría al vencer
+      // _intervaloMinimo (15 s). Así, con el motor ocupado la candidata queda
+      // viva y se reintenta en el próximo ciclo (~0,2 s), apenas termina la
+      // frase en curso.
       if (hablarSinEsperar(texto)) _ultimaClaveHablada = k;
       return;
     }
@@ -522,10 +523,10 @@ class VozService {
 
   // ═══ SIN MICRÓFONO ═══
   // Si el reconocedor no se pudo inicializar (permiso de micrófono negado, o
-  // el teléfono no tiene servicio de reconocimiento), escuchar() avisaba un
-  // error genérico y la pantalla contestaba "No te escuché. Intentá de
-  // nuevo." a cada toque, para siempre: nunca decía que el problema era el
-  // micrófono, ni volvía a probar si el permiso se daba después.
+  // el teléfono no tiene servicio de reconocimiento), hay que decir que el
+  // problema es el micrófono y volver a probar si el permiso se da después.
+  // Con un error genérico, la pantalla contestaría "No te escuché. Intentá de
+  // nuevo." a cada toque, para siempre.
 
   /// Motivo con el que termina (por onError) una escucha que no pudo ni
   /// empezar porque no hay reconocedor. Quien escucha dice
@@ -580,12 +581,11 @@ class VozService {
  
   /// Locale de español del reconocedor, averiguado UNA vez.
   ///
-  /// POR QUÉ: antes se averiguaba en cada escucha, con el micrófono todavía
-  /// cerrado y la pantalla ya diciendo "Escuchando". En Android es una
-  /// consulta de ida y vuelta al servicio de voz que puede tardar cientos de
-  /// milisegundos. Quien contestaba enseguida ("sí", "no", "bar") hablaba en
-  /// ese hueco y la palabra se perdía entera; en una frase larga sólo se
-  /// perdía el principio y no se notaba.
+  /// POR QUÉ: en Android es una consulta de ida y vuelta al servicio de voz
+  /// que puede tardar cientos de milisegundos. Hecha en cada escucha, con el
+  /// micrófono todavía cerrado y la pantalla ya diciendo "Escuchando", quien
+  /// contesta enseguida ("sí", "no", "bar") hablaría en ese hueco y la
+  /// palabra se perdería entera.
   Future<String?>? _localeEspanol;
 
   /// Devuelve el locale de español disponible en el dispositivo,
@@ -599,8 +599,8 @@ class VozService {
         if (locales.any((l) => l.localeId == id)) return id;
       }
       // Cualquier locale que empiece con "es". Si no hay ninguno, null: el
-      // reconocedor usa el idioma del sistema. (Antes se devolvía el primero
-      // de la lista, fuera el idioma que fuera.)
+      // reconocedor usa el idioma del sistema (no el primero de la lista,
+      // que puede ser cualquier idioma).
       for (final l in locales) {
         if (l.localeId.startsWith('es')) return l.localeId;
       }
@@ -613,22 +613,17 @@ class VozService {
   // ─── ESCUCHA: una sesión, un aviso ──────────────────────────────────────────
   //
   // Cada llamada a [escuchar] es una SESIÓN y termina exactamente una vez,
-  // avisando por onResultado o por onError. Antes eso no estaba garantizado:
+  // avisando por onResultado o por onError. Se cierra con lo primero que
+  // pase: un resultado final, un error del motor, el aviso de "terminé" sin
+  // resultado, que alguien la corte, o el timeout. Todo lo que llega después
+  // se ignora. Hace falta porque:
   //
-  //  • Cuando el usuario no decía nada, o no se le entendía, el motor avisa
-  //    con un ERROR (no con un resultado), y ese error sólo llegaba al
-  //    listener global de initialize(), que apagaba la bandera _escuchando y
-  //    nada más. El timeout de seguridad de escuchar() preguntaba justamente
-  //    por esa bandera, así que tampoco avisaba. Resultado: ni onResultado
-  //    ni onError; quien había preguntado algo ("¿Vamos ahí?") se quedaba
-  //    esperando para siempre y la pantalla quedaba "escuchando" hasta que
-  //    el usuario la tocaba.
-  //  • El timeout de seguridad de una escucha vieja podía dispararse durante
-  //    una escucha NUEVA y cortarla (miraba la bandera global, no su sesión).
-  //
-  // Ahora la sesión se cierra con lo primero que pase: un resultado final,
-  // un error del motor, el aviso de "terminé" sin resultado, que alguien la
-  // corte, o el timeout. Todo lo que llega después se ignora.
+  //  • Cuando el usuario no dice nada, o no se le entiende, el motor avisa
+  //    con un ERROR (no con un resultado), y ese error llega al listener
+  //    global de initialize(), no al que preguntó. Sin la sesión, quien
+  //    preguntó algo ("¿Vamos ahí?") se quedaría esperando para siempre.
+  //  • El timeout de una escucha vieja no puede cortar una escucha NUEVA:
+  //    cada uno mira su propia sesión, no una bandera global.
 
   // ═══ CUÁNDO TERMINÓ DE HABLAR: LO DECIDE LA APP ═══
   // Medido en el teléfono: para decir "casa", el texto llegaba 5,3 s después
@@ -638,7 +633,7 @@ class VozService {
   // por TERMINADO lo que dijo. Después de cortar, además, espera el texto
   // final de Android, y si no llega, 2 s más antes de usar el último parcial.
   //
-  // Ahora el plugin sólo se queda con la espera para empezar
+  // Por eso el plugin sólo se queda con la espera para empezar
   // ([_esperaParaEmpezar]). El final lo marca la app: con un rato sin un
   // texto parcial nuevo, se corta la escucha y vale el último parcial. El
   // rato es corto si lo dicho ya se entiende ([_silencioAlTerminar]) y más
@@ -676,12 +671,12 @@ class VozService {
   // Al inicializar se averigua, SIN abrir el micrófono, si está descargado
   // (ver reconocimiento_telefono.dart). Si lo está, se escucha en el
   // teléfono. Si se puede descargar, se pide la descarga una vez por
-  // ejecución y se avisa; mientras tanto, por internet. Antes se probaba
-  // abriendo el micrófono en el teléfono y esperando el error: en ese Pixel
-  // daba error_language_unavailable, y el cambio a internet dejaba el
-  // micrófono cerrado ~0,4 s, en los que se perdía la palabra de quien
-  // contestaba enseguida. Ese paso a internet ([escuchar]) queda como
-  // resguardo, por si el teléfono dice que lo tiene y después no arranca.
+  // ejecución y se avisa; mientras tanto, por internet. No se averigua
+  // abriendo el micrófono y esperando el error (en un Pixel da
+  // error_language_unavailable): el cambio a internet deja el micrófono
+  // cerrado ~0,4 s, en los que se pierde la palabra de quien contesta
+  // enseguida. Ese paso a internet ([escuchar]) queda como resguardo, por si
+  // el teléfono dice que lo tiene y después no arranca.
   //
   // Sin el español descargado y sin conexión, no se escucha: se avisa
   // ([avisoSinConexion]) y se puede elegir el destino de la lista.
@@ -829,7 +824,7 @@ class VozService {
   /// a la menos probable, y con palabras cortas la correcta muchas veces no
   /// es la primera ("sí" sale "c", "no" sale "nos"). Si se pasa, se entrega
   /// la primera interpretación que [entiende] da por buena (recibe el texto
-  /// en minúsculas); si ninguna, la más probable, como antes.
+  /// en minúsculas); si ninguna, la más probable.
   Future<void> escuchar({
     required void Function(String texto) onResultado,
     void Function(String error)? onError,
@@ -883,10 +878,10 @@ class VozService {
 
     // El micrófono se abre YA, sin pausa: quien pregunta esperó a que el
     // motor de voz avisara que terminó la frase (ver [hablar]), y ese aviso
-    // llega con el audio ya reproducido. Antes había acá 200 ms "para que se
-    // apague el altavoz": sumados a lo que tarda el reconocedor en arrancar,
-    // quien contestaba enseguida hablaba con el micrófono todavía cerrado y
-    // la palabra se perdía.
+    // llega con el audio ya reproducido. Una pausa de 200 ms "para que se
+    // apague el altavoz", sumada a lo que tarda el reconocedor en arrancar,
+    // haría que quien contesta enseguida hable con el micrófono todavía
+    // cerrado.
     _escuchando = true;
     onEscuchando?.call(true);
     final reloj = Stopwatch()..start();

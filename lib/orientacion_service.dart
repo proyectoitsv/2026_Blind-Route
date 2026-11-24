@@ -1,3 +1,10 @@
+// Rumbo del teléfono (brújula).
+//
+// OrientacionService lee la brújula, suaviza el heading con una media circular,
+// estima la velocidad de giro y cuánto confiar en el rumbo (en interiores el
+// campo magnético se deforma). Lo usan la puerta direccional del
+// posicionamiento, las indicaciones de giro y la orientación al llegar.
+
 import 'dart:collection';
 import 'dart:math';
 import 'dart:ui' show Offset;
@@ -33,15 +40,13 @@ class OrientacionService {
 
   // ── Actualización de datos ──────────────────────────────────────────────────
 
-  /// Actualiza el heading con la brujula.
+  /// Actualiza el heading con la brújula.
   ///
-  /// NOTA (cambio respecto de la version anterior): antes habia un deadband de
-  /// 0.5 grados que descartaba la muestra ENTERA — no entraba a la ventana ni
-  /// actualizaba nada. Con el usuario quieto y apuntando estable eso dejaba la
-  /// ventana congelada con muestras viejas, y cualquier medida derivada de ella
-  /// (calidad, velocidad angular) quedaba mirando el pasado. Ahora la ventana se
-  /// alimenta SIEMPRE; el antitiliteo de la UI ya lo resuelve el chequeo de 1
-  /// grado del timer de refresco en la pantalla de navegacion.
+  /// Toda muestra entra a la ventana, aunque difiera en menos de un grado de
+  /// la anterior. Descartar las muestras casi iguales congelaría la ventana
+  /// con el usuario quieto, y la calidad y la velocidad angular quedarían
+  /// mirando el pasado. El antititileo de la UI lo resuelve el chequeo de 1
+  /// grado del timer de refresco de la pantalla de navegación.
   void actualizarHeadingBrujula(double heading) {
     final double headingNorm = ((heading % 360) + 360) % 360;
 
@@ -136,22 +141,21 @@ class OrientacionService {
   /// Se usa la longitud resultante R de la media circular (R ≈ exp(−σ²/2)).
   /// La ventana tiene que estar llena para que el numero signifique algo.
   ///
-  /// RECALIBRADO: los umbrales anteriores (rMalo=0.97, rBueno=0.999) estaban
-  /// pensados para un telefono apoyado (±2–3° de ruido). Con el telefono EN LA
-  /// MANO y caminando, el heading oscila ±10–20° por el braceo y los pasos:
-  ///   ±10° → R=0.985 (calidad vieja 0.51)   ±15° → R=0.966 (calidad vieja 0!)
-  /// Con calidad 0 el rumbo quedaba por debajo de _calidadRumboMinima y TODA
-  /// la restriccion direccional se apagaba justo mientras el usuario caminaba
-  /// — que es cuando mas se la necesita. Los umbrales nuevos toleran el ruido
-  /// de mano (±10° → 1.0, ±15° → 0.78, ±20° → 0.48) y siguen rechazando la
-  /// dispersion realmente mala (±25° o mas → ~0).
+  /// Umbrales: con el teléfono EN LA MANO y caminando, el heading oscila
+  /// ±10–20° por el braceo y los pasos (±10° → R=0.985, ±15° → R=0.966).
+  /// Umbrales pensados para un teléfono apoyado (rMalo=0.97, rBueno=0.999,
+  /// ±2–3° de ruido) darían calidad 0 al caminar, el rumbo quedaría por
+  /// debajo de _calidadRumboMinima y TODA la restricción direccional se
+  /// apagaría justo cuando más se la necesita. Estos toleran el ruido de mano
+  /// (±10° → 1.0, ±15° → 0.78, ±20° → 0.48) y siguen rechazando la
+  /// dispersión realmente mala (±25° o más → ~0).
   ///
   /// Nota: durante un giro genuino R tambien baja, y eso esta bien — es
   /// exactamente cuando conviene no restringir.
   double get calidadRumbo {
     if (_historialHeading.length < _ventanaHeading) return 0.0;
-    const double rMalo = 0.90;   // antes 0.97
-    const double rBueno = 0.985; // antes 0.999
+    const double rMalo = 0.90;
+    const double rBueno = 0.985;
     return ((_resultante - rMalo) / (rBueno - rMalo)).clamp(0.0, 1.0);
   }
 

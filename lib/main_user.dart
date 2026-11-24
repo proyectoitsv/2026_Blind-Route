@@ -1,3 +1,6 @@
+// Punto de entrada de la app del usuario: conecta Supabase (si está
+// configurado) y arranca en la pantalla principal.
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 

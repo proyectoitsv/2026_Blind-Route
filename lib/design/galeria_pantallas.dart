@@ -1,26 +1,24 @@
-import 'dart:async';
-
-import 'package:flutter/material.dart';
-
-import 'design.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Pantallas de referencia de la galería (sólo para debug)
-// ═══════════════════════════════════════════════════════════════════════════
 //
-// Las dos pantallas de la sección 4 del prompt, armadas con los componentes
-// y datos de ejemplo: muestran cómo se combinan antes de migrar las pantallas
-// de verdad (fase 5). No tienen lógica de la app: lo que se toca sólo avisa.
+// Dos pantallas de referencia armadas con los componentes y datos de
+// ejemplo: muestran cómo se combinan. No tienen lógica de la app: lo que se
+// toca sólo avisa.
 //   · Navegación: barra con botones redondos, la instrucción levantada, el
 //     plano hundido con la ruta, la línea de tiempo y la barra de acciones
 //     con "Repetir" en acento. Tiene una simulación del recorrido (el botón
-//     de reproducir de arriba) para ver el movimiento de la fase 3: el
+//     de reproducir de arriba) para ver el movimiento: el
 //     cabezal sigue la posición, al cambiar de tramo recorre la ruta (con
 //     una vibración suave) y al llegar aparece el aviso con un fundido (con
 //     una vibración media).
 //   · Elegir destino: título centrado, buscador hundido, chips, tarjetas de
 //     destino y el botón "Ir a…" en acento.
 // Las abre la galería (galeria_componentes.dart).
+
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+import 'design.dart';
 
 /// Una ruta de ejemplo en un piso: tres tramos hasta el Aula 12. Los puntos
 /// van sobre el plano de ejemplo ([PlanoEjemplo]).

@@ -1,3 +1,8 @@
+// Ajustes de la voz de la app del usuario (AjustesVoz).
+//
+// Velocidad, volumen, tono y cada cuánto se repite una indicación. Son gustos
+// de cada persona: se guardan sólo en su teléfono.
+
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
@@ -5,10 +10,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ajustes_navegacion.dart' show ParametroAjuste;
 
-/// ═══════════════════════════════════════════════════════════════════════════
-/// AJUSTES DE LA VOZ (app del usuario)
-/// ═══════════════════════════════════════════════════════════════════════════
-///
 /// Cómo le gusta a cada persona que le hable la app: velocidad, volumen, tono
 /// y cada cuánto se repite una indicación que no cambió. A diferencia de los
 /// ajustes de navegación (ajustes_navegacion.dart) no dependen del edificio

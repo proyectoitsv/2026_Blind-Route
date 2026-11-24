@@ -1,9 +1,11 @@
+// Búsqueda de lugares a partir de lo que dijo el usuario.
+//
+// BuscadorLugares normaliza el texto (tildes, eñes, plurales) y busca por
+// nombre, por rubro y por palabras clave. Devuelve los candidatos; qué hacer
+// con ellos (ir, preguntar cuál) lo decide la pantalla de navegación.
+
 import 'poi_model.dart';
 
-/// ═══════════════════════════════════════════════════════════════════════════
-/// BÚSQUEDA DE LUGARES POR VOZ: NOMBRE, RUBRO Y PALABRAS CLAVE
-/// ═══════════════════════════════════════════════════════════════════════════
-///
 /// Dado lo que dijo el usuario, devuelve qué lugares pueden ser. La pantalla
 /// de navegación decide qué hacer con el resultado: si es uno, va; si son
 /// varios, le lee las opciones para que elija.
@@ -51,8 +53,8 @@ class BuscadorLugares {
         .replaceAll(RegExp(r'[íìï]'), 'i')
         .replaceAll(RegExp(r'[óòö]'), 'o')
         .replaceAll(RegExp(r'[úùü]'), 'u')
-        // La ñ se pasa a n ANTES de limpiar: si no, "baño" quedaba como
-        // "bao" (la ñ caía en el filtro de caracteres).
+        // La ñ se pasa a n ANTES de limpiar: si no, "baño" quedaría como
+        // "bao" (la ñ cae en el filtro de caracteres).
         .replaceAll('ñ', 'n')
         .replaceAll(RegExp(r'[^a-z0-9 ]'), '')
         .trim();

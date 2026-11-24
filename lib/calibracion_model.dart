@@ -1,8 +1,20 @@
+// Una calibración o un punto clave tomado en una celda (CalibracionRegistro).
+//
+// Las calibraciones alimentan el modelo de distancia de cada beacon; los
+// puntos clave (fingerprints) guardan el patrón de RSSI de una celda singular
+// para reconocerla después.
+
 import 'dart:convert';
 
 /// Registro de una calibración tomada por el operador parado en una celda
-/// concreta de la grilla. Guarda las lecturas BLE del momento y el txPower
-/// ajustado por beacon, derivado de la distancia real celda↔beacon.
+/// concreta de la grilla.
+///
+/// - `lecturasBle`: el RSSI de cada beacon en esa celda (la media truncada de
+///   una toma de 10 s). Es lo que usa ProcesadorSenal.ajustarModelosRango
+///   para ajustar n y el RSSI a 1 m de cada beacon.
+/// - `txPowerAjustado`: el RSSI a 1 m que sale de esta sola calibración con n
+///   fijo. Sólo se usa si un beacon no tiene ningún punto útil para el
+///   ajuste.
 ///
 /// Se persiste en la tabla `calibraciones` (ver [DatabaseHelper]). Los dos
 /// campos JSON (`lecturasBle`, `txPowerAjustado`) se serializan a TEXT.

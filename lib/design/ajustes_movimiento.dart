@@ -1,11 +1,4 @@
-import 'dart:convert';
-
-import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Ajustes de movimiento y vibración
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Dos gustos de cada persona, que se cambian en Ajustes (pantalla_ajustes.dart,
 // en la app del usuario) y se guardan sólo en su teléfono, sin nube, como los
@@ -19,7 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 //
 // ─── Cómo llega a los componentes ───
 // Los componentes preguntan sólo MovimientoApp.reducido(context). Las
-// pantallas migradas, la galería y las hojas van envueltas en AmbienteDiseno,
+// pantallas, la galería y las hojas van envueltas en AmbienteDiseno,
 // que suma este ajuste al MediaQuery (disableAnimations): así el cambio rige
 // al instante. MovimientoApp.reducido también lo lee directo, para lo que
 // todavía no está envuelto (el mapa de la navegación); las transiciones de
@@ -29,6 +22,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 // Es un singleton y avisa cuando cambia (ChangeNotifier). Lee lo guardado la
 // primera vez que alguien pregunta: hasta entonces valen los de fábrica (la
 // lectura tarda milisegundos).
+
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 class AjustesMovimiento extends ChangeNotifier {
   AjustesMovimiento._();
 

@@ -1,3 +1,11 @@
+// Posición del usuario a partir de las distancias a los beacons.
+//
+// Posicionador resuelve la multilateración (Gauss-Newton con pesos de Huber,
+// amortiguación Levenberg-Marquardt y un ancla hacia la posición anterior).
+// PuertaRumbo filtra después el desplazamiento: deja pasar el movimiento hacia
+// donde la persona mira y frena el lateral salvo que sea fuerte y sostenido.
+// ObservacionRango es la entrada: un beacon y la distancia estimada a él.
+
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -17,8 +25,8 @@ class ObservacionRango {
   /// cercano pese más que uno lejano.
   final double confianza;
 
-  /// Altura del beacon menos la del teléfono (m). 0 = a la misma altura, que
-  /// es lo que se suponía antes de conocer las alturas.
+  /// Altura del beacon menos la del teléfono (m). 0 = a la misma altura (o
+  /// beacon sin altura cargada).
   ///
   /// Con un beacon en el techo, [distancia] nunca baja de esta diferencia:
   /// parado justo debajo, el rango es ~1,4 m. Si el solver tratara ese rango
@@ -37,11 +45,11 @@ class ObservacionRango {
 /// Estima la posición del usuario (normalizada) por **multilateración** de los
 /// rangos a los beacons.
 ///
-/// ── POR QUÉ ESTO REEMPLAZA AL CENTROIDE PONDERADO ──────────────────────────
-/// El método anterior calculaba `posición = Σ(pos_beaconᵢ · wᵢ) / Σwᵢ`, con
-/// `wᵢ = 1/dᵢ²`. Eso es un **promedio de las posiciones de los beacons**: por
-/// más que se afine el peso, el resultado NUNCA puede salirse del interior de
-/// la nube de beacons, y de hecho tiende a su centro.
+/// ── POR QUÉ MULTILATERACIÓN Y NO UN CENTROIDE PONDERADO ────────────────────
+/// Un centroide (`posición = Σ(pos_beaconᵢ · wᵢ) / Σwᵢ`, con `wᵢ = 1/dᵢ²`) es
+/// un **promedio de las posiciones de los beacons**: por más que se afine el
+/// peso, el resultado NUNCA puede salirse del interior de la nube de beacons,
+/// y de hecho tiende a su centro.
 ///
 /// La multilateración usa las distancias como **restricciones geométricas**
 /// (circunferencias de radio dᵢ centradas en cada beacon) y busca el punto que
@@ -49,6 +57,13 @@ class ObservacionRango {
 /// parte del plano —bordes y esquinas incluidos— y no colapsa al centro.
 ///
 /// ── CÓMO ────────────────────────────────────────────────────────────────
+/// Cada iteración, para cada beacon: calcula el rango que tendría la posición
+/// actual, el residuo `r = rango predicho − distancia medida` y la dirección
+/// beacon→posición (la fila del jacobiano: cuánto cambia el rango al moverse
+/// en x y en y). Con eso arma el sistema 2×2 `(JᵀWJ + ancla + λI)·paso = JᵀWr`,
+/// lo resuelve y mueve la posición. Repite hasta que el paso baje de 1 mm o
+/// se cumplan [maxIter] iteraciones (suele bastar con 3 o 4).
+///
 /// • Se resuelve en **metros**, no en normalizado: las distancias del modelo
 ///   log solo tienen sentido geométrico en un marco métrico, y los ejes pueden
 ///   tener escalas muy distintas (metrosX ≠ metrosY).
@@ -61,7 +76,7 @@ class ObservacionRango {
 /// • **Rango en 3D**: la incógnita es la posición sobre el plano (x, y), pero
 ///   el rango predicho es `√(Δx² + Δy² + Δz²)`, con Δz la
 ///   [ObservacionRango.alturaRelativa] del beacon. Con Δz = 0 es el cálculo
-///   2D de siempre. Justo debajo de un beacon alto el jacobiano tiende a 0:
+///   en 2D. Justo debajo de un beacon alto el jacobiano tiende a 0:
 ///   ahí el rango casi no cambia al moverse unos centímetros, y el solver lo
 ///   sabe (le da poco peso a esa dirección en vez de forzar un círculo).
 class Posicionador {
@@ -90,8 +105,8 @@ class Posicionador {
 
   /// ── SESGO ANISOTRÓPICO POR RUMBO (brújula) ───────────────────────────────
   ///
-  /// OJO con qué hace y qué NO hace este término, porque la versión anterior le
-  /// pedía algo que un prior cuadrático no puede dar.
+  /// Ojo con qué hace y qué NO hace este término: un prior cuadrático no puede
+  /// separar ruido de movimiento.
   ///
   /// El ancla es un término cuadrático alrededor de la posición previa. Su
   /// efecto sobre el desplazamiento de un ciclo es una **ganancia lineal**:
@@ -110,10 +125,9 @@ class Posicionador {
   /// El factor se aplica SOLO en la dirección perpendicular y **escala con el
   /// movimiento**: con el usuario detenido no existe una "dirección de marcha"
   /// que privilegiar (todo desplazamiento es ruido en cualquier eje) y el ancla
-  /// vuelve a ser isotrópica. La versión anterior hacía justo lo contrario
-  /// —ablandaba el eje longitudinal a 1.8 con el usuario quieto, contra 3.0 del
-  /// ancla isotrópica—, así que activar la brújula dejaba la posición MÁS
-  /// suelta hacia adelante y atrás que no tenerla.
+  /// vuelve a ser isotrópica. A lo largo del rumbo la rigidez nunca baja de la
+  /// isotrópica: con brújula, la posición no puede quedar más suelta hacia
+  /// adelante y atrás que sin ella.
   ///
   /// Se lo mantiene deliberadamente moderado (×2.5 como máximo): si se lo sube
   /// mucho, el solver borra la evidencia lateral y [PuertaRumbo] se queda ciega
@@ -155,20 +169,17 @@ class Posicionador {
     final centroide =
         sw > 0 ? Offset(sx / sw, sy / sw) : const Offset(0.5, 0.5);
 
-    // ── POR QUE YA NO SE INTERPOLA HACIA EL CENTROIDE ───────────────────────
-    // Con menos de 3 rangos la multilateracion es ambigua POR SI SOLA, pero el
-    // ancla temporal la regulariza: dos circunferencias mas un prior cuadratico
-    // alrededor de la posicion previa es un problema bien puesto (2 ecuaciones
-    // + 2 de regularizacion para 2 incognitas). Antes, en cambio, se
-    // interpolaba hacia el CENTROIDE, y un centroide es una combinacion CONVEXA
-    // de las posiciones de los beacons: el resultado no puede salir de la
-    // envolvente de la nube ni acercarse a un beacon mas de lo que permitan los
-    // pesos de los demas. Ese camino se tomaba justo en el borde de la
-    // cobertura —donde los beacons lejanos caen por debajo del umbral de RSSI y
-    // quedan 2 visibles—, o sea EXACTAMENTE cuando el usuario sale de la nube,
-    // que es uno de los dos sintomas reportados. Ahora el solver corre siempre
-    // que haya una posicion previa que lo ancle, y el centroide queda solo como
-    // arranque del primer frame.
+    // ── CON MENOS DE 3 RANGOS NO SE CAE AL CENTROIDE ────────────────────────
+    // Con menos de 3 rangos la multilateración es ambigua POR SÍ SOLA, pero el
+    // ancla temporal la regulariza: dos circunferencias más un prior cuadrático
+    // alrededor de la posición previa es un problema bien puesto (2 ecuaciones
+    // + 2 de regularización para 2 incógnitas). Caer al centroide sería peor:
+    // es una combinación CONVEXA de las posiciones de los beacons, no puede
+    // salir de la nube ni acercarse a un beacon más de lo que permitan los
+    // pesos de los demás. Y quedan 2 visibles justo en el borde de la
+    // cobertura, o sea cuando el usuario sale de la nube. Por eso el solver
+    // corre siempre que haya una posición previa que lo ancle, y el centroide
+    // queda sólo como arranque del primer frame.
     if (obs.length < 3 && posPrevia == null) return centroide;
 
     final mx = (metrosX.isFinite && metrosX > 0) ? metrosX : 1.0;
@@ -294,11 +305,10 @@ class Posicionador {
 /// Acá vive de verdad la regla "la persona se mueve hacia donde mira; lo demás
 /// es ruido, salvo que sea fuerte y persistente".
 ///
-/// ── POR QUÉ NO ALCANZABA CON EL PRIOR DEL SOLVER ───────────────────────────
+/// ── POR QUÉ NO ALCANZA CON EL PRIOR DEL SOLVER ─────────────────────────────
 /// Un prior cuadrático (ver [Posicionador]) es un pasa-bajos: aplica la misma
 /// ganancia `1/(1+k)` al ruido y al movimiento real. No tiene memoria, así que
-/// no puede evaluar "persistencia", que es justamente la palabra clave del
-/// requisito.
+/// no puede medir si un desplazamiento es persistente.
 ///
 /// ── EL DISCRIMINADOR QUE SÍ SIRVE: EL SIGNO ────────────────────────────────
 /// El ruido BLE lateral **cambia de signo** ciclo a ciclo (es aproximadamente
@@ -320,9 +330,9 @@ class Posicionador {
 ///
 /// ── ASIMETRÍA ADELANTE / ATRÁS ─────────────────────────────────────────────
 /// El prior del solver es simétrico por construcción (`h·hᵀ` no distingue `+h`
-/// de `−h`), así que en la versión anterior "caminar hacia atrás" quedaba tan
-/// permitido como caminar hacia adelante. La gente casi nunca camina de
-/// espaldas: el retroceso a lo largo del eje se deja pasar sólo al 15 %.
+/// de `−h`): para él, "caminar hacia atrás" vale lo mismo que hacia adelante.
+/// La gente casi nunca camina de espaldas: el retroceso a lo largo del eje se
+/// deja pasar sólo al 15 %.
 ///
 /// ── GIROS ──────────────────────────────────────────────────────────────────
 /// La restricción se apaga mientras la persona gira rápido: durante un giro el
@@ -336,45 +346,43 @@ class Posicionador {
 /// tiene sentido hablar de "dirección de marcha" de alguien que no marcha.
 class PuertaRumbo {
   /// Fracción del desplazamiento HACIA ATRÁS (contra el rumbo) que se deja
-  /// pasar cuando la anisotropía está al máximo. RECALIBRADO 0.35 → 0.15: al
-  /// ser una ganancia POR CICLO sobre un lazo recursivo, 0.35 dejaba pasar un
-  /// sesgo sostenido hacia atrás en ~1 s. Con 0.15 tarda ~4 s; caminar de
-  /// espaldas de verdad sigue pasando, solo con más latencia.
+  /// pasar cuando la anisotropía está al máximo. Es una ganancia POR CICLO
+  /// sobre un lazo recursivo: con 0.35, un sesgo sostenido hacia atrás pasaría
+  /// en ~1 s; con 0.15 tarda ~4 s. Caminar de espaldas de verdad sigue
+  /// pasando, sólo con más latencia.
   static const double _facAtras = 0.15;
 
   /// Fracción del desplazamiento LATERAL que se deja pasar con la puerta
-  /// cerrada y la anisotropía al máximo. RECALIBRADO 0.10 → 0.03: con 0.10 un
-  /// sesgo lateral FIJO (multipath/geometría de beacons) igual convergía en
-  /// ~3-5 s aunque la puerta nunca abriera. En esta app el usuario camina
+  /// cerrada y la anisotropía al máximo. Con 0.10, un sesgo lateral FIJO
+  /// (multipath o geometría de los beacons) igual convergería en ~3-5 s aunque
+  /// la puerta nunca abriera. En esta app el usuario camina
   /// mirando hacia donde va, así que "lateral en el marco del rumbo" es casi
   /// siempre sesgo; se lo frena fuerte y el eje se corrige solo al girar
   /// (el marco rota con la brújula).
   static const double _gLateralCerrada = 0.03;
 
-  /// Constante de tiempo del acumulador de evidencia lateral (s).
-  /// RECALIBRADO 2.0 → 3.5: la ventana de mediana del RSSI correlaciona el
-  /// ruido de posición durante ~1 s, así que con τ=2 s una racha correlacionada
-  /// alcanzaba para inflar la EMA hasta 0.6-0.8 m/s (visto en campo caminando
-  /// en línea recta). Con 3.5 s la racha se diluye antes de llegar al umbral.
+  /// Constante de tiempo del acumulador de evidencia lateral (s). La ventana
+  /// de mediana del RSSI correlaciona el ruido de posición durante ~1 s: con
+  /// τ = 2 s una racha correlacionada alcanza para inflar la EMA hasta
+  /// 0.6-0.8 m/s caminando en línea recta. Con 3.5 s la racha se diluye antes
+  /// de llegar al umbral.
   static const double _tauEvidenciaSeg = 3.5;
 
-  /// Deriva lateral sostenida (m/s) necesaria para ABRIR la puerta.
-  /// RECALIBRADO 0.55 → 0.90: en campo, un sesgo lateral fijo de multipath
-  /// producía evidencia de 0.6-0.8 m/s caminando EN LÍNEA RECTA (con el signo
-  /// invirtiéndose en cada media vuelta — la firma de un sesgo fijo al mapa,
-  /// no de movimiento real). El umbral tiene que quedar por encima de ese
-  /// piso de sesgo del venue; un desplazamiento lateral humano real
-  /// (~1-1.2 m/s) sigue superándolo.
+  /// Deriva lateral sostenida (m/s) necesaria para ABRIR la puerta. Un sesgo
+  /// lateral fijo de multipath da evidencia de 0.6-0.8 m/s caminando EN LÍNEA
+  /// RECTA (con el signo invertido en cada media vuelta: la firma de un sesgo
+  /// fijo al mapa, no de movimiento real). El umbral queda por encima de ese
+  /// piso; un desplazamiento lateral humano real (~1-1.2 m/s) lo supera.
   static const double _umbralAbrirMs = 0.90;
 
   /// Umbral de CIERRE, más bajo que el de apertura (histéresis anti-titileo).
   static const double _umbralCerrarMs = 0.45;
 
   /// Ciclos consecutivos con el desplazamiento lateral en el MISMO sentido que
-  /// la evidencia acumulada. RECALIBRADO 5 → 12 (~2.2 s a 5.5 Hz): la mediana
-  /// del RSSI correlaciona el ruido ~1 s, así que 5 ciclos (0.9 s) los cumplía
-  /// una simple racha de ruido correlacionado. La consistencia exigida tiene
-  /// que ser claramente MÁS LARGA que esa correlación para significar algo.
+  /// la evidencia acumulada: 12 son ~2.2 s a 5.5 Hz. La mediana del RSSI
+  /// correlaciona el ruido ~1 s, así que 5 ciclos (0.9 s) los cumpliría una
+  /// simple racha de ruido correlacionado. La consistencia exigida tiene que
+  /// ser claramente MÁS LARGA que esa correlación para significar algo.
   static const int _minCiclosConsistentes = 12;
 
   /// Desplazamiento lateral (m) por debajo del cual el ciclo no cuenta como
@@ -463,12 +471,11 @@ class PuertaRumbo {
     }
 
     final umbral = _abierta ? _umbralCerrarMs : _umbralAbrirMs;
-    // La exigencia de ciclos consecutivos aplica SOLO para ABRIR. Antes se
-    // exigía también para mantener abierta, y como un único ciclo con
-    // |l| < _pisoCicloMetros (o con el signo invertido por ruido) resetea el
-    // contador a 0, la puerta se cerraba de golpe en plena marcha lateral y
-    // tardaba otros ~0.9 s en reabrir: exactamente el titileo que la
-    // histéresis de umbrales (0.90/0.45) debía evitar. El cierre lo gobierna
+    // Los ciclos consecutivos se exigen SÓLO para ABRIR. Un único ciclo con
+    // |l| < _pisoCicloMetros (o con el signo invertido por ruido) vuelve el
+    // contador a 0: si también hiciera falta para mantenerla abierta, la
+    // puerta se cerraría de golpe en plena marcha lateral, justo el titileo
+    // que la histéresis de umbrales (0.90/0.45) evita. El cierre lo gobierna
     // la EMA de evidencia (τ = 3.5 s), que decae sola al terminar el
     // desplazamiento lateral real.
     final abiertaAhora = _evidenciaLateral.abs() > umbral &&

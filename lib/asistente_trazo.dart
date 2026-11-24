@@ -1,3 +1,9 @@
+// Imán de ángulos para dibujar sobre el plano (app del administrador).
+//
+// AsistenteTrazo corrige el punto que se está dibujando (la línea de escala o
+// el borde de una zona) para que el trazo quede exactamente recto cuando está
+// cerca de 0°, 90°, 180°, 270° o 45°, y devuelve las guías para dibujarlas.
+
 import 'dart:math';
 import 'dart:ui';
 
@@ -40,7 +46,7 @@ class AsistenteTrazo {
   // píxel ([ajustar], `metrosPorPixel`), las tolerancias se toman en
   // píxeles, que es lo que puede precisar el dedo: con zoom se dibuja más
   // fino. Nunca pasan de los valores en metros, así que sin zoom el imán
-  // anda igual que antes.
+  // usa los de metros.
 
   /// Tolerancia de alineación, en píxeles de pantalla.
   static const double toleranciaAlineacionPx = 12.0;

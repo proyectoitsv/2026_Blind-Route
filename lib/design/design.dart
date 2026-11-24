@@ -1,6 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════════
 // Sistema de diseño de BlindRoute
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Un solo import para pantallas y componentes:
 //   import 'design/design.dart';
@@ -16,8 +14,8 @@
 //                        curvas y resorte) y si hay que reducirlo
 //   ajustes_movimiento.dart  AjustesMovimiento: «Reducir movimiento» y
 //                        «Vibración», guardados en el teléfono
-//   ambiente_diseno.dart AmbienteDiseno: el envoltorio de una pantalla
-//                        migrada (tema nuevo y movimiento reducido)
+//   ambiente_diseno.dart AmbienteDiseno: el envoltorio de cada pantalla
+//                        (tema y movimiento reducido)
 //   transiciones.dart    TransicionPaginaApp y RutaApp: entre pantallas
 //   haptica.dart         HapticaApp: las vibraciones, con su interruptor
 //   tema_blindroute.dart TemaBlindRoute.oscuro: el ThemeData
@@ -28,6 +26,7 @@
 //
 // Los componentes importan los archivos de tokens uno por uno, no este
 // archivo, para que no haya imports en círculo.
+
 export 'ajustes_movimiento.dart';
 export 'ambiente_diseno.dart';
 export 'colores.dart';

@@ -1,3 +1,11 @@
+// Seguimiento de la ruta mientras se camina.
+//
+// SeguidorRuta ubica al usuario sobre la ruta vigente (hasta qué celda llegó y
+// cuánto se desvió), decide si un camino recalculado reemplaza al anterior y
+// arma la indicación del próximo tramo. Es pura geometría sobre la lista de
+// celdas: el estado (cuánto hace que está fuera de ruta) vive en la pantalla
+// de navegación.
+
 import 'dart:math';
 import 'dart:ui';
 import 'grilla_nav.dart';
@@ -79,26 +87,23 @@ class DecisionRuta {
   });
 }
 
-/// ═══════════════════════════════════════════════════════════════════════════
-/// SEGUIMIENTO DE RUTA
-/// ═══════════════════════════════════════════════════════════════════════════
+/// Decide cuándo recalcular la ruta y desde dónde dar la indicación. Una
+/// regla simple como "recalcular cuando el usuario se movió más de 0.10 del
+/// plano" tiene tres problemas:
 ///
-/// Reemplaza la regla anterior "recalcular cuando el usuario se movió más de
-/// 0.10 del plano". Esa regla tenía tres problemas:
-///
-///  1. El umbral estaba en unidades NORMALIZADAS: 0.10 son 1,2 m en un plano
+///  1. El umbral está en unidades NORMALIZADAS: 0.10 son 1,2 m en un plano
 ///     de 12 m y 5 m en uno de 50 m. En un plano chico, correrse una celda no
-///     recalculaba; en uno grande se podía ir 5 m fuera del camino sin que
-///     pasara nada.
-///  2. No miraba si el usuario estaba SOBRE la ruta o no. Caminando bien por
-///     el camino se recalculaba igual, cada tanto, sin necesidad; y parado a
-///     una celda del camino no se recalculaba nunca.
-///  3. Entre recálculos, la indicación apuntaba desde la posición real a la
+///     recalcula; en uno grande se puede ir 5 m fuera del camino sin que
+///     pase nada.
+///  2. No mira si el usuario está SOBRE la ruta o no. Caminando bien por el
+///     camino se recalcula igual, cada tanto, sin necesidad; y parado a una
+///     celda del camino no se recalcula nunca.
+///  3. Entre recálculos, la indicación apunta desde la posición real a la
 ///     próxima esquina de la ruta vieja. A una celda de distancia eso es una
 ///     diagonal: "Girá a la izquierda, 1 metro" para volver a un camino que
 ///     ya no tiene sentido seguir.
 ///
-/// Ahora hay tres reglas:
+/// Por eso hay tres reglas:
 ///
 ///  • EN RUTA → no se recalcula nada. El camino se va consumiendo a medida
 ///    que el usuario avanza ([ubicar] dice hasta dónde llegó).

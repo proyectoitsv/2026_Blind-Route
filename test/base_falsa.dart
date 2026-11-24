@@ -1,10 +1,4 @@
-import 'package:flutter/services.dart';
-import 'package:flutter_test/flutter_test.dart';
-import 'package:sqflite/sqflite.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // LA BASE DE PRUEBA
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // La base del teléfono (DatabaseHelper, con sqflite) en memoria, para los
 // tests de las pantallas que la leen y la escriben (las listas de edificios y
@@ -20,7 +14,7 @@ import 'package:sqflite/sqflite.dart';
 // rechaza con un error que lo nombra: así un pedido nuevo no pasa en
 // silencio.
 //
-// La versión del esquema se contesta 17, la de DatabaseHelper: así sqflite
+// La versión del esquema se contesta 18, la de DatabaseHelper: así sqflite
 // no crea las tablas (acá no hace falta) ni migra nada.
 //
 // Sin paquetes nuevos (sqflite_common_ffi no es una dependencia) ni imports
@@ -28,6 +22,10 @@ import 'package:sqflite/sqflite.dart';
 // exporta package:sqflite.
 //
 // No termina en _test.dart: flutter test no lo corre solo.
+
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite/sqflite.dart';
 
 /// La base de prueba, una para todo el archivo de tests.
 final BaseFalsa baseFalsa = BaseFalsa();
@@ -138,7 +136,7 @@ class BaseFalsa {
   Map<String, Object?> _consultar(String sql, _Valores valores) {
     if (sql == 'PRAGMA user_version') {
       return _resultado([
-        {'user_version': 17},
+        {'user_version': 18},
       ]);
     }
     for (final armada in armadas.entries) {

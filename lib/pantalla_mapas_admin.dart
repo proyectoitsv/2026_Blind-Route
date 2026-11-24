@@ -1,3 +1,9 @@
+// Mapas publicados en la nube, de todos los administradores (app del
+// administrador).
+//
+// Lista los mapas del servidor, los propios primero, y deja eliminar los
+// propios (el servidor rechaza el resto).
+
 import 'package:flutter/material.dart';
 
 import 'design/design.dart';
@@ -10,7 +16,6 @@ import 'supabase_service.dart';
 /// - Los mapas de la cuenta logueada aparecen primero, marcados como "Tuyo".
 /// - Sólo se pueden borrar los propios (el servidor rechaza el resto).
 ///
-/// ─── Sistema de diseño (fase 5.5 del rediseño) ───
 /// Va envuelta en AmbienteDiseno, como el catálogo del usuario
 /// (pantalla_mapas_online.dart), que es su modelo: la barra con "Volver a
 /// cargar la lista" (con TalkBack no se puede tirar hacia abajo), los dos
@@ -277,8 +282,8 @@ class _PantallaMapasAdminState extends State<PantallaMapasAdmin> {
 //
 // Abajo, en uno propio, "Eliminar" (secundario, en rojo, nunca en cian). En
 // uno de otro administrador, en lugar del botón, una línea con el candado
-// que dice por qué no se puede eliminar (antes, sólo el candado, que TalkBack
-// no leía). Mientras se elimina, en lugar del botón va un recuadro hundido y
+// que dice por qué no se puede eliminar (el candado solo, TalkBack no lo
+// lee). Mientras se elimina, en lugar del botón va un recuadro hundido y
 // quieto que dice "Eliminando…" y que TalkBack anuncia.
 //
 // ─── TalkBack ───
@@ -438,8 +443,8 @@ class _SinPermiso extends StatelessWidget {
   }
 }
 
-/// La miniatura del plano: un cuadro hundido con la imagen de la nube (la
-/// misma de antes, achicada en memoria) o, mientras llega (o si no llega), el
+/// La miniatura del plano: un cuadro hundido con la imagen de la nube
+/// (achicada en memoria) o, mientras llega (o si no llega), el
 /// ícono de un mapa, sin nada que gire. Decorativa.
 class _Miniatura extends StatelessWidget {
   const _Miniatura({required this.url});
@@ -474,8 +479,8 @@ class _Miniatura extends StatelessWidget {
                   fit: BoxFit.cover,
                   cacheWidth: 112,
                   gaplessPlayback: true,
-                  // El ícono hasta que el plano se puede mostrar (antes, una
-                  // ruedita mientras llegaba, y nada hasta el primer dato).
+                  // El ícono hasta que el plano se puede mostrar, sin nada
+                  // que gire.
                   frameBuilder: (context, child, cuadro, sincronico) =>
                       cuadro == null ? icono : child,
                   errorBuilder: (context, error, stack) => icono,

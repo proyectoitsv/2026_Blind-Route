@@ -1,3 +1,8 @@
+// Edificios cargados en el teléfono (app del administrador).
+//
+// Es la pantalla que sigue al login: agregar, renombrar y eliminar edificios,
+// y entrar a sus pisos. Desde la barra se abren los mapas publicados.
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -13,18 +18,17 @@ import 'supabase_service.dart';
 /// Edificios cargados en este teléfono (app del administrador): la pantalla
 /// a la que se llega después del login. Tocar un edificio abre sus pisos.
 ///
-/// ─── Sistema de diseño (fase 5.4 del rediseño) ───
 /// Va envuelta en AmbienteDiseno. Arriba, la barra con "Mapas publicados en
 /// la nube" y "Cerrar sesión" (con la nube configurada); cada edificio es una
-/// TarjetaLista y, abajo, "Agregar edificio" es el botón principal (antes, un
-/// botón flotante con un "+" sin nombre para TalkBack).
+/// TarjetaLista y, abajo, "Agregar edificio" es el botón principal (con
+/// nombre para TalkBack, no un "+" flotante).
 ///
-/// Un edificio se sigue eliminando deslizándolo hacia la izquierda, con la
-/// misma confirmación, ahora en una hoja (mostrarConfirmacion). Con TalkBack,
+/// Un edificio se elimina deslizándolo hacia la izquierda, con una
+/// confirmación en una hoja (mostrarConfirmacion). Con TalkBack,
 /// que no deja deslizar, la tarjeta tiene la acción "Eliminar", que hace lo
 /// mismo; por eso TalkBack no lee "Desliza para eliminar". "Nuevo edificio"
 /// es una hoja con el nombre (CampoTexto): si se guarda vacío, lo dice
-/// debajo del campo (antes no pasaba nada). Los avisos son los del sistema de
+/// debajo del campo. Los avisos son los del sistema de
 /// diseño (mostrarAviso).
 ///
 /// Cada tarjeta tiene un lápiz ("Cambiar nombre de…", con el nombre del
@@ -368,8 +372,7 @@ class _ListaEdificiosState extends State<ListaEdificios> {
   }
 }
 
-/// El botón principal de la pantalla, abajo, sobre el fondo: lo que antes
-/// era el botón flotante.
+/// El botón principal de la pantalla, abajo, sobre el fondo.
 class _BarraAgregar extends StatelessWidget {
   const _BarraAgregar({
     required this.texto,

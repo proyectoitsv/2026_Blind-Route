@@ -1,12 +1,4 @@
-import 'package:blindroute/grilla_nav.dart';
-import 'package:blindroute/histeresis_celda.dart';
-import 'package:blindroute/pathfinder.dart';
-import 'package:blindroute/zona_model.dart';
-import 'package:flutter_test/flutter_test.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // HISTÉRESIS DE CELDA FRENTE A UNA PARED ANGOSTA
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Planos cuadrados de 10 × 10 m, como en zonas_test.dart. La pared es de
 // 20 cm, vertical, de x = 5,0 a 5,2 m: con celdas de 1 m deja libres las
@@ -14,6 +6,12 @@ import 'package:flutter_test/flutter_test.dart';
 //
 // Los ciclos son los de la pantalla de navegación caminando: 1 del mismo
 // lado, 5 del otro lado de una pared.
+
+import 'package:blindroute/grilla_nav.dart';
+import 'package:blindroute/histeresis_celda.dart';
+import 'package:blindroute/pathfinder.dart';
+import 'package:blindroute/zona_model.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 const double _lado = 10.0;
 

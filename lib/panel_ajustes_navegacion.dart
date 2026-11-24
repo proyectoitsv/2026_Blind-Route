@@ -1,3 +1,9 @@
+// Panel de ajustes de la navegación (sólo en la app del administrador).
+//
+// Hoja que se abre desde la navegación para regular los parámetros mientras
+// se camina el edificio. Cada cambio rige al instante, se guarda en el
+// teléfono y se sube a la nube.
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -7,12 +13,6 @@ import 'ajustes_navegacion.dart';
 import 'supabase_service.dart';
 import 'design/design.dart';
 
-// ─── PANEL DE AJUSTES DE NAVEGACIÓN (sólo app del administrador) ────────────
-//
-// Hoja inferior de la pantalla de navegación para regular los ajustes
-// ([AjustesNavegacion]) caminando. Cada cambio rige al instante, se guarda en
-// el teléfono y se sube a la nube apenas se suelta el control.
-//
 // Dos alcances, los dos para cualquier admin mientras se calibra (ver
 // "TRES CAPAS" en ajustes_navegacion.dart):
 //   • ESTE EDIFICIO: sólo los parámetros que dependen del edificio; los

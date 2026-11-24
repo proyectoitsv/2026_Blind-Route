@@ -1,23 +1,4 @@
-import 'dart:math' as math;
-import 'dart:ui' show SemanticsRole;
-
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../movimiento.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'botones.dart';
-import 'logotipo.dart';
-import 'panel_relieve.dart';
-import 'presion.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Barra superior y barras flotantes
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Se usan con
 //   Scaffold(
@@ -45,6 +26,23 @@ import 'presion.dart';
 // Volver, Cerrar y "pestaña 2 de 3" son propios: los de Material saldrían en
 // inglés con TalkBack, porque la app no tiene las traducciones de Material.
 
+import 'dart:math' as math;
+import 'dart:ui' show SemanticsRole;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../movimiento.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'botones.dart';
+import 'logotipo.dart';
+import 'panel_relieve.dart';
+import 'presion.dart';
+
 // ─── BARRA SUPERIOR ─────────────────────────────────────────────────────────
 
 /// Barra superior: volver, el título centrado y acciones, todo sobre el
@@ -65,7 +63,7 @@ class BarraSuperior extends StatelessWidget implements PreferredSizeWidget {
 
   /// La barra del inicio: el logotipo centrado en lugar del título, como el
   /// nombre de Instagram. TalkBack lo lee como
-  /// el título de siempre («Blind Route», cabecera que nombra la pantalla).
+  /// el título («Blind Route», cabecera que nombra la pantalla).
   /// El logotipo no crece con la letra, así que la barra tampoco. Abajo,
   /// una línea fina la separa del resto.
   ///

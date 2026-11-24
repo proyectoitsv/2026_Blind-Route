@@ -1,3 +1,21 @@
+// CATÁLOGO DE MAPAS DEL USUARIO
+//
+// La tarjeta de cada mapa en sus tres estados (nuevo, actualizable,
+// descargado) y mientras se descarga, se actualiza o se quita: qué botones
+// tiene, qué dice TalkBack (las etiquetas de siempre), que nada gira, y la
+// letra al 200 % con Inter de verdad (ayudas_pantallas.dart), con los botones
+// apilados cuando no entran. Y la pantalla entera sin la nube, que es como
+// queda en los tests: el error de conexión, con «Reintentar» y «Volver a
+// cargar la lista». Va con el MaterialApp de la app, con su tema de Material,
+// como en main_user.dart.
+//
+// ─── Lo que no anda en los tests ───
+// La nube (Supabase sin iniciar) y la base local. La pantalla de verdad queda
+// en el error de conexión; la lista se prueba con TarjetaMapa y mapas de
+// ejemplo. La carga falla enseguida, antes del cuadro siguiente, así que
+// «Cargando mapas…» no llega a verse: que «Reintentar» volvió a cargar se ve
+// en que el error es otro (un texto nuevo, aunque diga lo mismo).
+
 import 'package:blindroute/design/design.dart';
 import 'package:blindroute/pantalla_mapas_online.dart';
 import 'package:blindroute/supabase_service.dart';
@@ -7,26 +25,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ayudas_pantallas.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// CATÁLOGO DE MAPAS DEL USUARIO (fase 5.2 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// La tarjeta de cada mapa en sus tres estados (nuevo, actualizable,
-// descargado) y mientras se descarga, se actualiza o se quita: qué botones
-// tiene, qué dice TalkBack (las etiquetas de siempre), que nada gira, y la
-// letra al 200 % con Inter de verdad (ayudas_pantallas.dart), con los botones
-// apilados cuando no entran. Y la pantalla entera sin la nube, que es como
-// queda en los tests: el error de conexión, con «Reintentar» y «Volver a
-// cargar la lista». Va con el MaterialApp de la app, con el tema de antes,
-// como en main_user.dart.
-//
-// ─── Lo que no anda en los tests ───
-// La nube (Supabase sin iniciar) y la base local. La pantalla de verdad queda
-// en el error de conexión; la lista se prueba con TarjetaMapa y mapas de
-// ejemplo. La carga falla enseguida, antes del cuadro siguiente, así que
-// «Cargando mapas…» no llega a verse: que «Reintentar» volvió a cargar se ve
-// en que el error es otro (un texto nuevo, aunque diga lo mismo).
 
 /// Un mapa de ejemplo.
 MapaPublicadoResumen _mapa(String piso) => MapaPublicadoResumen(
@@ -137,7 +135,7 @@ void main() {
         _tarjeta(EstadoMapa.descargado, piso: 'Piso 2'),
       ]);
       expect(find.text('Actualizable'), findsOneWidget);
-      // La marca de antes se leía como «ya está al día».
+      // «Actualizado» se leería como «ya está al día».
       expect(find.text('Actualizado'), findsNothing);
       expect(find.text('Descargado'), findsOneWidget);
       expect(ordenTalkBack(tester), [

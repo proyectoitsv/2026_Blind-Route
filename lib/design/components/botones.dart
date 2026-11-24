@@ -1,19 +1,4 @@
-import 'dart:math' as math;
-
-import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'cuadro_icono.dart';
-import 'presion.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Botones
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Sobre los botones de Material (FilledButton), que ya traen la semántica de
 // botón, el foco y el área táctil: el botón de Material va transparente y el
@@ -30,6 +15,19 @@ import 'presion.dart';
 //
 // Con letra grande, el texto se parte en renglones y el botón crece: los
 // altos son mínimos, nunca fijos.
+
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'cuadro_icono.dart';
+import 'presion.dart';
 
 /// Relleno de los botones grandes: el texto nunca toca el borde, ni partido
 /// en varios renglones, y queda lejos de la sombra interior al presionar.

@@ -1,11 +1,4 @@
-import 'package:flutter/material.dart';
-
-import 'design.dart';
-import 'galeria_pantallas.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Galería de componentes (sólo para debug)
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Todos los componentes de lib/design/components/ con datos de ejemplo, para
 // verlos y probarlos con TalkBack y letra grande sin tocar las pantallas de
@@ -26,6 +19,11 @@ import 'galeria_pantallas.dart';
 // Ajustes en la app: la galería se instala en lugar de la app del usuario y
 // comparte lo guardado). Sirve para mirar rápido; la prueba de verdad es con
 // los ajustes del teléfono y TalkBack.
+
+import 'package:flutter/material.dart';
+
+import 'design.dart';
+import 'galeria_pantallas.dart';
 
 /// Lo que fuerza la vista previa de la galería.
 @immutable

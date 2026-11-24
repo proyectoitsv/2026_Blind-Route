@@ -1,18 +1,4 @@
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../movimiento.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'cuadro_icono.dart';
-import 'panel_relieve.dart';
-import 'presion.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Encabezado de sección y grupo de filas
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Un grupo de filas es una tarjeta levantada (radio 20) con filas de 52 dp
 // como mínimo, separadas por una línea fina (el separador, decorativo) que
@@ -40,6 +26,18 @@ import 'presion.dart';
 // título de la sección es un encabezado, para saltar de sección en sección.
 // Si lo que se ve no alcanza como frase, la fila lleva una etiqueta propia
 // (etiquetaSemantica) y TalkBack dice sólo esa.
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../movimiento.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'cuadro_icono.dart';
+import 'panel_relieve.dart';
+import 'presion.dart';
 
 /// Título de una sección de la pantalla (20, semibold), con una acción
 /// opcional a la derecha. TalkBack lo anuncia como encabezado.

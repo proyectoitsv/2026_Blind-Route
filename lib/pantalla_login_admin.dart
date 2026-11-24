@@ -1,3 +1,5 @@
+// Login de la app del administrador (Supabase Auth, email y contraseña).
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -10,7 +12,6 @@ import 'supabase_config.dart';
 /// registros públicos DESACTIVADOS. Sin una sesión válida, el servidor rechaza
 /// cualquier publicación aunque alguien tenga el APK y la anon key.
 ///
-/// ─── Sistema de diseño (fase 5.3 del rediseño) ───
 /// Va envuelta en AmbienteDiseno. Arriba, el ícono de administrador en un
 /// cuadro hundido, "Acceso de administrador" y una frase en gris; después,
 /// Email y Contraseña (CampoTexto, con la etiqueta arriba) y "Ingresar", el
@@ -18,7 +19,7 @@ import 'supabase_config.dart';
 /// completa y, al entrar, ofrece guardar la contraseña. En el teclado,
 /// "Siguiente" pasa del email a la contraseña y "Listo" ingresa.
 ///
-/// Los errores van debajo de los campos (antes, en un SnackBar), en rojo y
+/// Los errores van debajo de los campos, en rojo y
 /// con un ícono, y TalkBack los anuncia: "Completa el email." y "Completa la
 /// contraseña." debajo del que falte, y el de Supabase debajo de la
 /// contraseña. Escribir en un campo le borra el error.

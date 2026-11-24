@@ -1,20 +1,4 @@
-import 'package:flutter/material.dart';
-import 'package:flutter/semantics.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../movimiento.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'botones.dart';
-import 'cuadro_icono.dart';
-import 'presion.dart';
-import 'tarjeta_dato.dart' show TonoDato;
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Tarjeta de una lista
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Un elemento de una lista que lleva a otra pantalla (un edificio, un piso):
 // una tarjeta levantada (radio 20) con el borde de 1 px de lo que se toca, el
@@ -53,6 +37,20 @@ import 'tarjeta_dato.dart' show TonoDato;
 // sirve tal cual (el subtítulo "Desliza para eliminar", con TalkBack, no se
 // puede hacer), lleva una etiqueta propia (etiquetaSemantica) y TalkBack dice
 // sólo esa.
+
+import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../movimiento.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'botones.dart';
+import 'cuadro_icono.dart';
+import 'presion.dart';
+import 'tarjeta_dato.dart' show TonoDato;
 
 /// Un elemento de una lista: un edificio, un piso.
 class TarjetaLista extends StatelessWidget {

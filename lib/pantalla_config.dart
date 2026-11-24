@@ -1,3 +1,11 @@
+// Configuración de un piso (app del administrador).
+//
+// Sobre el plano del piso se ubican los beacons (con su altura), se dibujan
+// las zonas prohibidas, se cargan los lugares y las escaleras, se mide la
+// escala, se toman las calibraciones y los puntos clave y se fija hacia dónde
+// apunta el norte. Desde acá también se publica el piso en la nube. Cada modo
+// tiene su panel debajo del plano.
+
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -25,7 +33,6 @@ enum _ModoEdicion { beacons, zonas, lugares, escala, calibracion, brujula }
 /// Configuración de un piso (app del administrador): beacons, zonas
 /// prohibidas, lugares, escala, calibración y brújula, sobre el plano.
 ///
-/// ─── Sistema de diseño (fase 5.6 del rediseño) ───
 /// Va envuelta en AmbienteDiseno: la barra con las acciones de la nube, los
 /// modos en una fila de chips, el plano hundido y, debajo, el panel de cada
 /// modo. Ver "UI" más abajo.
@@ -90,7 +97,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   final TextEditingController _etiquetaCalCtrl = TextEditingController();
 
   /// Si la lista de calibraciones guardadas está a la vista (arranca
-  /// plegada, como antes).
+  /// plegada).
   bool _verCalibraciones = false;
 
   /// Una clave por chip de modo, para centrar el elegido en la fila.
@@ -133,21 +140,28 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// teléfono se movió.
   static const double _consistenciaMinTomaRumbo = 0.97;
 
-  // ── Calibración de posición: toma continua de N muestras ─────────────────
-  // Mientras el operador esté parado en la celda seleccionada, el sistema
-  // acumula muestras BLE por beacon durante _duracionTomaSeg segundos y luego
-  // promedía con la misma mediana truncada que el modo navegación.
+  // ── Calibración de posición: una toma por celda ───────────────────────────
+  // Cómo se calibra:
+  //   1. El admin elige una celda en el plano y se para en su centro, con el
+  //      teléfono a la altura del pecho (ProcesadorSenal.alturaTelefonoM).
+  //   2. Inicia la toma: durante [_duracionCalibracion] se acumula cada
+  //      lectura NUEVA de cada beacon del piso ([_acumCal]).
+  //   3. Al terminar, cada beacon queda con un solo RSSI: la media truncada
+  //      de sus lecturas, igual que en la navegación. Los que se oyeron menos
+  //      de [_minMuestrasCalibracion] veces se descartan.
+  //   4. Se guarda la celda con esos RSSI ([_guardarCalibracionAcumulada]).
+  // Con varias calibraciones a distancias distintas de cada beacon, la
+  // navegación ajusta su modelo de distancia (ver
+  // ProcesadorSenal.ajustarModelosRango). Un PUNTO CLAVE es lo mismo, con una
+  // toma más larga, una etiqueta y el rumbo del teléfono.
   bool _tomandoMuestras = false;
   int _muestrasAcumuladas = 0;
 
-  /// BUG CORREGIDO: antes la toma terminaba a los 30
-  /// "ciclos de scan", con el comentario "~5 s a 6 Hz". Pero el scan corre con
-  /// `continuousUpdates: true`, y ese callback NO dispara a 6 Hz: dispara cada
-  /// vez que llega un lote de advertisements, que en un ambiente con trafico
-  /// BLE son decenas por segundo. Por eso la toma terminaba en ~1 s en vez de
-  /// los 5 s previstos, y con muchas menos muestras independientes de las que
-  /// se creia. La duracion ahora se mide en TIEMPO REAL, que es lo unico que
-  /// no depende del ambiente.
+  /// Inicio de la toma en curso. La duración se mide en TIEMPO REAL y no en
+  /// callbacks del scan: con `continuousUpdates: true` el callback dispara
+  /// con cada lote de advertisements, decenas de veces por segundo en un
+  /// lugar con tráfico BLE, así que "N callbacks" duraría distinto en cada
+  /// ambiente.
   DateTime? _inicioToma;
 
   /// Duracion de una calibracion comun. Alimenta el ajuste del modelo de rango.
@@ -251,10 +265,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   static const double _umbralMovimientoBeacon = 0.012;
 
   // ── MODO BORRAR ───────────────────────────────────────────────────────────
-  // Antes se borraba tocando el elemento (o con long-press en los beacons), y
-  // el mismo toque servía para agregar: al querer poner dos cosas pegadas, el
-  // toque caía sobre la anterior y se ofrecía borrarla. Ahora las dos cosas
-  // están separadas:
+  // Agregar y borrar están separados: si el mismo toque sirviera para las
+  // dos cosas, al querer poner dos elementos pegados el toque caería sobre el
+  // anterior y se ofrecería borrarlo.
   //   · modo normal → tocar AGREGA y arrastrar MUEVE; nada se borra tocando.
   //   · modo borrar (botón "Borrar" sobre el mapa) → tocar un elemento lo
   //     elimina; no se agrega ni se mueve nada.
@@ -297,10 +310,10 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   // ── Zoom del mapa de edición ──────────────────────────────────────────────
   // Para dibujar detalles chicos (una pared de 20 cm) hace falta acercarse
   // mucho, y que lo que depende del dedo se mida en la PANTALLA y no en el
-  // plano: el radio para agarrar un vértice y las tolerancias del imán. Antes
-  // se medían en el plano y no achicaban con el zoom: tocar a menos de ~2 m de
-  // un vértice (en un plano de 40 m) lo agarraba en vez de crear otro, y la
-  // guía de cierre tiraba todo lo que estuviera a menos de 40 cm.
+  // plano: el radio para agarrar un vértice y las tolerancias del imán.
+  // Medidas en el plano no achicarían con el zoom: tocar a menos de ~2 m de
+  // un vértice (en un plano de 40 m) lo agarraría en vez de crear otro, y la
+  // guía de cierre tiraría todo lo que estuviera a menos de 40 cm.
 
   final TransformationController _transformMapa = TransformationController();
 
@@ -316,8 +329,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   static const double _pixelesPorMetroMaxEdicion = 200;
 
   /// Radio de agarre de un vértice o de un punto de escala, en píxeles de
-  /// pantalla. Nunca más que el radio normalizado de siempre, así que sin
-  /// zoom se agarra igual que antes.
+  /// pantalla. Nunca más que el radio en coordenadas normalizadas, que es el
+  /// que rige sin zoom.
   static const double _radioAgarrePx = 22;
 
   void _alCambiarZoom() {
@@ -350,7 +363,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   }
 
   /// Zoom máximo: el que lleva el plano a [_pixelesPorMetroMaxEdicion], y
-  /// nunca menos que el 2,5 de siempre (el de InteractiveViewer).
+  /// nunca menos que 2,5 (el de InteractiveViewer).
   double get _zoomMaximo {
     final plano = _tamPlanoBase;
     if (plano == null || plano.width <= 0 || _escalaX <= 0) return 2.5;
@@ -360,7 +373,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   /// Qué tan lejos está [b] de [a] para agarrarlo, en "radios de agarre" (1
   /// o menos es adentro). Se mide en píxeles de pantalla; [radioNormalizado]
-  /// es el radio de siempre en coordenadas normalizadas, que queda de tope.
+  /// es el radio en coordenadas normalizadas, que queda de tope.
   double _distanciaEnRadios(Offset a, Offset b, double radioNormalizado) {
     final plano = _tamPlanoBase;
     final zoom = _transformMapa.value.getMaxScaleOnAxis();
@@ -691,8 +704,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// No se usa la distancia en coordenadas normalizadas directamente porque
   /// 0.05 "de ancho" y 0.05 "de alto" sólo miden lo mismo en pantalla si el
   /// piso es cuadrado: en un plano de 30 × 12 m, 0.05 de alto son menos de la
-  /// mitad de píxeles que 0.05 de ancho, y el radio de agarre quedaba chato.
-  /// En un piso cuadrado da exactamente lo mismo que antes.
+  /// mitad de píxeles que 0.05 de ancho, y el radio de agarre quedaría chato.
+  /// En un piso cuadrado da lo mismo que la distancia normalizada.
   double _distanciaAgarre(Offset a, Offset b) {
     final lado = max(_grilla.metrosX, _grilla.metrosY);
     if (lado <= 0) return (a - b).distance;
@@ -925,13 +938,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   ///
   /// flutter_blue_plus entrega en cada callback la lista ACUMULADA de
   /// dispositivos, y cada uno trae su ÚLTIMA lectura aunque no haya vuelto a
-  /// emitir. Antes se tomaba la lista entera en cada callback, así que la
-  /// misma lectura entraba muchas veces: a la ventana del punto de posición y
-  /// a la toma de calibración. En la toma eso inflaba la cantidad de muestras
-  /// y hacía pesar más a las lecturas que tardaban en renovarse (y cuántas
-  /// copias entraban dependía de cuántos dispositivos BLE hubiera alrededor).
-  /// Ahora una lectura cuenta sólo si es posterior a la última de ese beacon,
-  /// igual que en la navegación: calibración y navegación miden lo mismo.
+  /// emitir. Una lectura cuenta sólo si es posterior a la última de ese
+  /// beacon, igual que en la navegación, así calibración y navegación miden
+  /// lo mismo. Tomar la lista entera en cada callback metería la misma
+  /// lectura muchas veces en la toma: inflaría la cantidad de muestras y
+  /// haría pesar más a las lecturas que tardan en renovarse (y cuántas
+  /// copias entran dependería de cuántos dispositivos BLE haya alrededor).
   final Map<String, DateTime> _ultimaLecturaBeacon = {};
 
   void _actualizarSenales(List<ScanResult> resultados) {
@@ -1098,7 +1110,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   }
 
   /// El nombre de la zona que se cierra, en una hoja. null: se canceló (y la
-  /// zona en curso se descarta, como antes).
+  /// zona en curso se descarta).
   Future<String?> _pedirNombreZona() => mostrarHoja<String>(
     context,
     titulo: 'Nombre de la zona',
@@ -1154,10 +1166,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       return;
     }
 
-    // 2) (Ya no existe.) Antes, sin zona en curso, un toque dentro de una
-    //    zona guardada significaba "borrar esa zona" y no se podía empezar
-    //    un polígono nuevo ahí. Borrar ahora es un modo aparte (botón
-    //    "Borrar"), así que una zona puede arrancar pegada a otra o encima.
+    // 2) Un toque dentro de una zona guardada no la borra (borrar es un modo
+    //    aparte, botón "Borrar"): una zona puede arrancar pegada a otra o
+    //    encima.
 
     // 3) Vértice nuevo, enganchado al dedo para poder corregirlo en el mismo
     //    gesto sin tener que soltarlo y volver a agarrarlo.
@@ -1444,8 +1455,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   /// Pide confirmar y elimina el lugar de la base. Devuelve si se eliminó.
   /// Lo usan el modo borrar y la tarjeta del lugar en la lista (el tacho,
-  /// deslizarla y la acción "Eliminar" de TalkBack): ya no hay que
-  /// distinguirlo de un arrastre.
+  /// deslizarla y la acción "Eliminar" de TalkBack).
   Future<bool> _eliminarLugar(LugarInteres lugar) async {
     try {
       final confirmar = await mostrarConfirmacion(
@@ -1588,10 +1598,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// Cambia el offset de la brújula y lo guarda enseguida, como el resto de
   /// la configuración del piso. Devuelve si se pudo guardar.
   ///
-  /// BUG CORREGIDO: antes el offset sólo se guardaba con un botón aparte. Si
-  /// se salía sin tocarlo, el cambio se perdía sin aviso y al volver a entrar
-  /// estaba el viejo; y "Publicar" subía el valor de pantalla, no el guardado,
-  /// así que la nube y el teléfono podían quedar distintos.
+  /// Se guarda en cada cambio, sin botón aparte: así no se pierde al salir y
+  /// "Publicar" sube lo mismo que quedó guardado en el teléfono.
   Future<bool> _fijarRotacion(double grados) async {
     final v = ((grados.roundToDouble() % 360) + 360) % 360;
     if (mounted) setState(() => _rotacionMapa = v);
@@ -1670,28 +1678,21 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
-  /// Registra una calibración en la celda seleccionada usando las muestras
-  /// acumuladas. Calcula la mediana truncada por beacon (igual que
-  /// [ProcesadorSenal.filtrarYPromediar]) para obtener un RSSI representativo
-  /// y luego deriva el txPower con el modelo log-distancia.
-  /// BUG CORREGIDO (la calibracion "se trababa" tras cargar varias):
-  /// [_guardarCalibracionAcumulada] se llama desde el callback de scan SIN
-  /// await y no tenia guardia de reentrada. `_tomandoMuestras` recien pasaba a
-  /// false DESPUES de los dos awaits (insert + relectura de la tabla), asi que
-  /// durante esa ventana cada nuevo callback —decenas por segundo con
-  /// `continuousUpdates`— volvia a entrar y disparaba OTRO insert de la misma
-  /// medicion. Una sola toma generaba decenas de filas duplicadas.
+  /// Registra una calibración en la celda seleccionada con las muestras
+  /// acumuladas. Por beacon: descarta el 20 % de cada punta de sus lecturas
+  /// y promedia el resto (igual que [ProcesadorSenal.filtrarYPromediar]).
+  /// Guarda ese RSSI y, además, el txPower que sale de esta sola toma con n
+  /// fijo y la distancia 3D celda↔beacon (el respaldo de
+  /// [ProcesadorSenal.txPowerCalibrado]).
   ///
-  /// Y el problema se realimentaba: cuantas mas filas tenia la tabla, mas
-  /// tardaba `obtenerCalibracionesPorPiso`, mas larga era la ventana de
-  /// reentrada y mas duplicados se insertaban. Con la cola de sqflite saturada
-  /// y el hilo de UI decodificando cientos de filas JSON por segundo, la
-  /// pantalla se congelaba y la toma nunca llegaba a "guardada". Por eso
-  /// aparecia recien "tras haber cargado unas cuantas".
-  ///
-  /// Se arregla con dos cosas: una guardia [_guardandoCalibracion] y, sobre
-  /// todo, apagar `_tomandoMuestras` de forma SINCRONICA antes del primer
-  /// await, que es lo que cierra la ventana de raiz.
+  /// REENTRADA: se llama desde el callback del scan SIN await, y ese callback
+  /// dispara decenas de veces por segundo. Si `_tomandoMuestras` se apagara
+  /// después de los awaits (insertar + releer la tabla), cada callback de esa
+  /// ventana guardaría OTRA vez la misma toma. Y se realimenta: con más filas
+  /// la relectura tarda más, la ventana se alarga y entran más duplicados,
+  /// hasta congelar la pantalla. Por eso hay una guardia
+  /// ([_guardandoCalibracion]) y, sobre todo, `_tomandoMuestras` se apaga de
+  /// forma SINCRÓNICA antes del primer await.
   bool _guardandoCalibracion = false;
 
   Future<void> _guardarCalibracionAcumulada() async {
@@ -1714,11 +1715,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     for (final entry in _acumCal.entries) {
       final mac = entry.key;
       final muestras = entry.value;
-      // Ahora son lecturas reales (sin las copias que antes inflaban la
-      // cuenta): un beacon oído menos de [_minMuestrasCalibracion] veces en
-      // toda la toma está en el límite del alcance y su promedio es ruido.
-      // Antes cualquier beacon que figurara en la lista sumaba decenas de
-      // copias, y pasaba aunque se hubiera oído una sola vez.
+      // Un beacon oído menos de [_minMuestrasCalibracion] veces en toda la
+      // toma está en el límite del alcance y su promedio es ruido.
       if (muestras.length < _minMuestrasCalibracion) continue;
 
       // Mediana truncada al 20% en cada extremo (igual que ProcesadorSenal).
@@ -1819,8 +1817,9 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
-  /// Elimina las filas duplicadas que dejo el bug de reentrada descrito en
-  /// [_guardarCalibracionAcumulada].
+  /// Elimina calibraciones duplicadas: la misma toma guardada más de una vez
+  /// (ver REENTRADA en [_guardarCalibracionAcumulada]). Pueden venir de bases
+  /// cargadas con versiones viejas de la app.
   ///
   /// Los duplicados son identicos en celda y en lecturas (salen del mismo
   /// `_acumCal`), solo cambia el id y el timestamp por milisegundos. Se conserva
@@ -1922,10 +1921,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   // -- Escala (puntos desplazables, como las zonas) --------------------------
   //
-  // Antes el largo y el ancho se marcaban ARRASTRANDO una línea elástica y
-  // los metros se pedían apenas se soltaba el dedo: no había forma de afinar
-  // un extremo antes de cargar la medida. Ahora es el mismo sistema que el de
-  // las zonas prohibidas:
+  // El largo y el ancho se marcan con puntos que se pueden afinar antes de
+  // cargar la medida, con el mismo sistema que las zonas prohibidas:
   //   1. Tocar → primer punto, enganchado al dedo para afinarlo sin soltar.
   //   2. Tocar → segundo punto (imantado al primero). "Medida del largo".
   //   3. Tocar → tercer punto (imantado al segundo, perpendicular al largo).
@@ -2162,11 +2159,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   // guarda la CELDA donde se tomó (columna y fila), no el punto del plano.
   // Con otra grilla, esa misma columna y fila cae en otro lugar: con celdas
   // de 1 m la celda (10, 4) está a 10,5 m del borde, y con celdas de 0,5 m,
-  // a 5,25 m. Antes el cambio se hacía sin avisar y todas las calibraciones
-  // y puntos clave quedaban corridos: el ajuste de distancias de cada beacon
-  // y la corrección por punto clave pasaban a trabajar con datos falsos.
-  // Ahora, si hay calibraciones, se pide confirmar y se borran: hay que
-  // volver a tomarlas con la grilla nueva.
+  // a 5,25 m. Si se cambiara sin avisar, todas las calibraciones y puntos
+  // clave quedarían corridos: el ajuste de distancias de cada beacon y la
+  // corrección por punto clave trabajarían con datos falsos. Por eso, si hay
+  // calibraciones, se pide confirmar y se borran: hay que volver a tomarlas
+  // con la grilla nueva.
 
   /// true mientras se está preguntando: el deslizador avisa cada paso, y no
   /// hay que abrir una hoja por cada uno.
@@ -2253,30 +2250,26 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   // -- UI --------------------------------------------------------------------
   //
-  // ─── Sistema de diseño (fase 5.6 del rediseño) ───
   // La pantalla va envuelta en AmbienteDiseno. De arriba a abajo:
   //   · la barra, con "Publicar el mapa en la nube" y, si está publicado,
   //     "Eliminar el mapa de la nube". Mientras tanto, sin la ruedita: las
   //     dos acciones se apagan y sobre el plano aparece "Publicando…" (o
   //     "Eliminando de la nube…"), que TalkBack anuncia;
-  //   · los seis modos, en una fila de chips que se desplaza (antes, un
-  //     SegmentedButton);
+  //   · los seis modos, en una fila de chips que se desplaza;
   //   · el plano, hundido y con borde (rojo y de 2 px en el modo borrar), con
-  //     el botón "Borrar" / "Listo" encima. Lo que se dibuja adentro
-  //     (MapaWidget) no cambió: se comparte con la navegación y se migra en
-  //     la 5.7;
+  //     el botón "Borrar" / "Listo" encima. Lo que se dibuja adentro es
+  //     MapaWidget, el mismo de la navegación;
   //   · debajo, un panel que se desplaza solo: la ayuda del modo y sus
   //     controles. La ayuda va acá, abajo del plano, para que el plano no se
   //     corra cuando cambia su texto.
-  // El plano mide 380 como antes; sólo se achica si no entra (con el teclado
-  // abierto o con letra grande), así el panel siempre tiene lugar. Su alto no
-  // depende de lo que diga la ayuda: no cambia mientras se dibuja.
+  // El plano mide 380; sólo se achica si no entra (con el teclado abierto o
+  // con letra grande), así el panel siempre tiene lugar. Su alto no depende
+  // de lo que diga la ayuda: no cambia mientras se dibuja.
   //
-  // Los diálogos pasaron a hojas (mostrarHoja), las confirmaciones a
-  // mostrarConfirmacion y los avisos a mostrarAviso. La lógica, los gestos
-  // del plano y los textos de la toma no cambiaron.
+  // Las preguntas van en hojas (mostrarHoja), las confirmaciones con
+  // mostrarConfirmacion y los avisos con mostrarAviso.
 
-  /// Alto del plano con lugar de sobra: el de siempre.
+  /// Alto del plano con lugar de sobra.
   static const double _altoPlano = 380;
 
   /// Lo mínimo que se le deja al plano (con el teclado abierto).
@@ -2296,8 +2289,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     (modo: _ModoEdicion.brujula, texto: 'Brújula'),
   ];
 
-  /// Pasa a [nuevoModo]. Es lo que hacía el SegmentedButton de antes al
-  /// elegir otro segmento (tocar el elegido no hace nada).
+  /// Pasa a [nuevoModo] (tocar el chip ya elegido no hace nada).
   void _cambiarModo(_ModoEdicion nuevoModo) {
     if (!mounted || nuevoModo == _modo) return;
     // Detener brújula si salimos del modo brujula.
@@ -2354,8 +2346,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   }
 
   /// Deja el chip elegido en el medio de la fila, con sus vecinos a la vista.
-  /// El de antes, al perder el tilde, se achica y corre a los que le siguen:
-  /// sin esto, un chip tocado contra el borde quedaba cortado.
+  /// El que estaba elegido, al perder el tilde, se achica y corre a los que
+  /// le siguen: sin esto, un chip tocado contra el borde quedaría cortado.
   void _centrarChipModo(_ModoEdicion modo) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final chip = _clavesChipModo[modo]!.currentContext;
@@ -2569,16 +2561,15 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   }
 
   /// El plano, hundido: la sombra interior y el borde van encima de la
-  /// imagen. En el modo borrar, el borde pasa al rojo de 2 px (antes, un
-  /// marco rojo encima), que deja a la vista el modo aunque no se mire el
-  /// botón.
+  /// imagen. En el modo borrar, el borde pasa al rojo de 2 px, que deja a la
+  /// vista el modo aunque no se mire el botón.
   Widget _plano(EstiloApp e) {
     final borrando = _borrando;
     return Stack(
       fit: StackFit.expand,
       children: [
-        // Para TalkBack, el plano tiene nombre (antes, un área que se tocaba
-        // sin nombre); los nombres de los lugares de adentro se leen con él.
+        // Para TalkBack, el plano tiene nombre; los nombres de los lugares de
+        // adentro se leen con él.
         Semantics(
           container: true,
           label: 'Plano del piso',
@@ -2785,7 +2776,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   /// Botón sobre el plano que entra y sale del modo borrar: "Borrar" con el
   /// tacho en rojo y, adentro del modo, "Listo". TalkBack lo lee como un
-  /// interruptor, con los nombres de antes.
+  /// interruptor.
   Widget _botonBorrar() {
     // Con una zona a medio dibujar no se entra a borrar: primero hay que
     // cerrarla o descartarla, para no perder los puntos marcados.
@@ -3156,7 +3147,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   ///
   /// La altura importa porque la señal viaja en 3D y el plano es 2D: ver
   /// "ALTURAS" en ProcesadorSenal. Sin indicar, se toma a la altura del
-  /// teléfono, que es lo que se suponía antes.
+  /// teléfono.
   List<Widget> _alturasBeacons(EstiloApp e) {
     String altura(BeaconMarcado b) => b.altura == null
         ? 'Altura sin indicar'
@@ -3465,7 +3456,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     ];
   }
 
-  /// Las calibraciones guardadas: plegadas al entrar, como antes. "Ver" las
+  /// Las calibraciones guardadas: plegadas al entrar. "Ver" las
   /// muestra con "Quitar duplicados" y "Borrar todas" arriba, y cada una con
   /// su tacho.
   List<Widget> _calibracionesGuardadas(EstiloApp e) {
@@ -3848,8 +3839,9 @@ class _FlechaBrujulaState extends State<_FlechaBrujula> {
                 : AnimatedRotation(
                     turns: _vueltas,
                     // La brújula cambia decenas de veces por segundo: como
-                    // mucho 120 ms, lo de un cambio frecuente (sección 5.1 del
-                    // prompt). Con movimiento reducido, sigue al dato directo.
+                    // mucho 120 ms, lo de un cambio frecuente (ver
+                    // MovimientoApp). Con movimiento reducido, sigue al dato
+                    // directo.
                     duration: MovimientoApp.duracion(
                       context,
                       MovimientoApp.cambioProgreso,
@@ -4020,7 +4012,7 @@ class _HojaNombreZonaState extends State<_HojaNombreZona> {
 
 /// La hoja de los metros del largo o del ancho de la escala. Devuelve los
 /// metros, o null si se cancela. Si lo escrito no es un número mayor que 0,
-/// lo dice debajo del campo (antes no pasaba nada).
+/// lo dice debajo del campo.
 class _HojaMetros extends StatefulWidget {
   const _HojaMetros({required this.mensaje});
 
@@ -4207,10 +4199,9 @@ class _DatosNuevoLugar {
 /// Conexiones posibles de una escalera desde el piso donde se carga.
 enum _SentidoEscalera { sube, baja, ambas }
 
-/// La hoja de un lugar, una escalera o un ascensor (antes, un diálogo): lo
-/// mismo que antes, con los componentes del sistema de diseño. El tipo es un
-/// control segmentado; el rubro, una fila que abre la lista de rubros en otra
-/// hoja (antes, un desplegable); escalera o ascensor, para dónde va y hacia
+/// La hoja de un lugar, una escalera o un ascensor. El tipo es un control
+/// segmentado; el rubro, una fila que abre la lista de rubros en otra hoja;
+/// escalera o ascensor, para dónde va y hacia
 /// dónde da la entrada, chips que se eligen. Lo que falta para guardar, en
 /// ámbar debajo.
 class _HojaLugar extends StatefulWidget {

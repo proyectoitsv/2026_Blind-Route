@@ -1,3 +1,11 @@
+// ¿La persona está quieta o caminando? Lo decide el acelerómetro.
+//
+// DetectorMovimiento lee la aceleración sin gravedad, suaviza su energía y la
+// convierte en un factor continuo de 0 (quieto) a 1 (caminando). No toca la
+// posición: ese factor lo usan el filtro One Euro (cuánto suavizar), la
+// ventana del RSSI (cuántos segundos promediar) y el ancla del Posicionador
+// (cuánto tirar hacia la posición anterior).
+
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -23,14 +31,12 @@ enum EstadoMovimiento { desconocido, quieto, moviendo }
 class DetectorMovimiento {
   /// Energía (m/s²) por debajo de la cual se considera al usuario detenido.
   ///
-  /// MEDIDO EN EL AULA: con estos umbrales en 0.18 / 0.60, el teléfono EN LA
-  /// MANO daba "en movimiento" todo el tiempo, incluso con la persona parada.
-  /// Con el régimen de "quieto" nunca activo, la zona muerta y la histéresis
-  /// de celda larga no entraban nunca en juego. El ajuste es chico a
-  /// propósito (0.18→0.25 y 0.60→0.80): corre el punto medio lo justo para
-  /// que la mano quieta cuente como quieta, sin arriesgar latencia al
-  /// caminar. Si al caminar el log muestra mov menor a 0.8, bajar
-  /// umbralMoviendo a 0.70.
+  /// Con umbrales de 0.18 / 0.60, el teléfono EN LA MANO da "en movimiento"
+  /// todo el tiempo, incluso con la persona parada, y entonces la zona muerta
+  /// y la histéresis de celda larga nunca entran en juego. 0.25 / 0.80 corre
+  /// el punto medio lo justo para que la mano quieta cuente como quieta, sin
+  /// sumar latencia al caminar. Si al caminar el log muestra mov menor a 0.8,
+  /// conviene bajar umbralMoviendo a 0.70.
   static const double umbralQuieto = 0.25;
 
   /// Energía (m/s²) por encima de la cual se considera que camina. Caminando
@@ -49,8 +55,9 @@ class DetectorMovimiento {
   /// Calma sostenida necesaria para declarar "quieto".
   static const int _esperaQuietoMs = 800;
 
-  /// Factor que se usa cuando el sensor no está disponible: valor intermedio,
-  /// que deja el filtro con un comportamiento parecido al EMA anterior.
+  /// Factor que se usa cuando el sensor no está disponible: un valor
+  /// intermedio, que deja el suavizado a mitad de camino entre quieto y
+  /// caminando.
   static const double factorSinSensor = 0.45;
 
   StreamSubscription<UserAccelerometerEvent>? _sub;

@@ -1,3 +1,6 @@
+// Beacon ubicado en el plano de un piso (BeaconMarcado): posición, nombre,
+// MAC, altura de instalación y el último RSSI filtrado.
+
 import 'package:flutter/material.dart';
 
 /// Beacon BLE ya ubicado en el plano de un piso. La posición se guarda
@@ -19,7 +22,7 @@ class BeaconMarcado {
   /// debajo. Sin la altura, la distancia de la calibración y la del
   /// posicionamiento salen del plano y el modelo de rango se deforma (ver
   /// ProcesadorSenal.alturaRelativa). Null equivale a "a la altura del
-  /// teléfono", que es lo que se suponía antes: los mapas viejos no cambian.
+  /// teléfono": así se leen los mapas guardados antes de existir el campo.
   double? altura;
 
   /// Último RSSI filtrado (dBm). Se actualiza en cada ciclo de escaneo.

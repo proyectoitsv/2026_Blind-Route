@@ -1,3 +1,20 @@
+// MAPAS PUBLICADOS DEL ADMINISTRADOR
+//
+// La tarjeta de cada mapa (propio, de otro administrador y mientras se
+// elimina, con su miniatura) y la pantalla de verdad, con Supabase iniciado
+// como en main_admin.dart, la sesión de prueba y el MaterialApp de la app
+// (con su tema de Material): «Tus mapas» primero, qué dice TalkBack y en qué orden,
+// «Cargando mapas…», sin conexión con «Reintentar», sin mapas, eliminar (la
+// confirmación, «Eliminando…», el aviso y la lista otra vez), el error si la
+// nube no deja, y la letra al 200 % con Inter de verdad
+// (ayudas_pantallas.dart).
+//
+// ─── La nube ───
+// La de prueba (nube_falsa.dart), con un catálogo en memoria (abajo) que
+// contesta como Supabase: la lista de los mapas, las miniaturas (que no
+// llegan: se ve el ícono) y, al eliminar uno, dónde está su imagen, la imagen
+// borrada y la fila borrada.
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -10,25 +27,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'ayudas_pantallas.dart';
 import 'nube_falsa.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// MAPAS PUBLICADOS DEL ADMINISTRADOR (fase 5.5 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// La tarjeta de cada mapa (propio, de otro administrador y mientras se
-// elimina, con su miniatura) y la pantalla de verdad, con Supabase iniciado
-// como en main_admin.dart, la sesión de prueba y el MaterialApp de la app
-// (el tema de antes): «Tus mapas» primero, qué dice TalkBack y en qué orden,
-// «Cargando mapas…», sin conexión con «Reintentar», sin mapas, eliminar (la
-// confirmación, «Eliminando…», el aviso y la lista otra vez), el error si la
-// nube no deja, y la letra al 200 % con Inter de verdad
-// (ayudas_pantallas.dart).
-//
-// ─── La nube ───
-// La de prueba (nube_falsa.dart), con un catálogo en memoria (abajo) que
-// contesta como Supabase: la lista de los mapas, las miniaturas (que no
-// llegan: se ve el ícono) y, al eliminar uno, dónde está su imagen, la imagen
-// borrada y la fila borrada.
 
 /// Una fila de mapas_publicados como la devuelve Supabase.
 Map<String, Object?> _fila(

@@ -1,18 +1,17 @@
-import 'package:flutter/material.dart';
-
-import 'colores.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Colores del tema (ThemeExtension)
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Los colores de ColoresApp, por rol, colgados del tema. Las pantallas y los
 // componentes los leen con EstiloApp.de(context) y no con ColoresApp
-// directo: así un tema claro o un acento alternativo (fase 6) es otra
+// directo: así un tema claro o un acento alternativo sería otra
 // instancia de esta clase, y ninguna pantalla se toca de nuevo.
 //
 // ColoresApp queda para lo que no tiene contexto: painters del mapa y valores
 // constantes. Los contrastes de cada color están anotados allá.
+
+import 'package:flutter/material.dart';
+
+import 'colores.dart';
+
 @immutable
 class EstiloApp extends ThemeExtension<EstiloApp> {
   const EstiloApp({
@@ -152,7 +151,7 @@ class EstiloApp extends ThemeExtension<EstiloApp> {
     );
   }
 
-  // Interpola al cambiar de tema (por ejemplo, oscuro → claro en la fase 6),
+  // Interpola al cambiar de tema (por ejemplo, de oscuro a claro),
   // como hace Material con sus propios colores.
   @override
   EstiloApp lerp(covariant ThemeExtension<EstiloApp>? other, double t) {

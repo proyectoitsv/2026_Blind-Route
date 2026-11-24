@@ -1,23 +1,4 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:blindroute/design/design.dart';
-import 'package:blindroute/pantalla_config.dart';
-import 'package:blindroute/pantalla_rubros.dart';
-import 'package:blindroute/rubros.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter/semantics.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_test/flutter_test.dart';
-
-import 'ayudas_pantallas.dart';
-import 'base_falsa.dart';
-import 'nube_falsa.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// CONFIGURACIÓN DEL PISO Y RUBROS (fase 5.6 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
+// CONFIGURACIÓN DEL PISO Y RUBROS
 //
 // La configuración de un piso de verdad, con el MaterialApp de la app (el
 // tema de antes, como en main_admin.dart): la barra, los seis modos en chips,
@@ -38,6 +19,23 @@ import 'nube_falsa.dart';
 //
 // ─── El plano ───
 // Un PNG de 1 × 1 en un archivo temporal: MapaWidget lo lee de verdad.
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:blindroute/design/design.dart';
+import 'package:blindroute/pantalla_config.dart';
+import 'package:blindroute/pantalla_rubros.dart';
+import 'package:blindroute/rubros.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'ayudas_pantallas.dart';
+import 'base_falsa.dart';
+import 'nube_falsa.dart';
 
 /// Un PNG de 1 × 1, transparente.
 const String _png1x1 =
@@ -362,6 +360,12 @@ void main() {
         'Escáner detenido',
         'Escanear',
         'Filtrar por nombre o potencia\nLos más fuertes, primero',
+        // La altura de los beacons ya ubicados (los que entran en pantalla).
+        'Altura de los beacons',
+        'Desde el piso hasta el beacon. Toca uno para cambiarla. Sin '
+            'indicar, se toma a la altura del teléfono (1,2 m).',
+        'Holy-IOT-B1, altura sin indicar',
+        'Holy-IOT-B2, altura sin indicar',
       ]);
       expect(
         _nodo(tester, find.text('Configuración del piso')),
@@ -380,8 +384,8 @@ void main() {
         _nodo(tester, find.bySemanticsLabel('Escáner detenido')),
         isSemantics(isLiveRegion: true),
       );
-      // «Escanear», el único botón principal; nada gira (antes, la ruedita
-      // mientras publicaba y mientras esperaba la brújula).
+      // «Escanear», el único botón principal; nada gira (ni al publicar ni
+      // mientras se espera la brújula).
       expect(find.byType(BotonPrincipal), findsOneWidget);
       expect(find.byType(ProgressIndicator), findsNothing);
       expect(find.byType(SegmentedButton<Object>), findsNothing);
@@ -393,6 +397,60 @@ void main() {
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
       await expectLater(tester, meetsGuideline(textContrastGuideline));
+      semantica.dispose();
+    });
+
+    testWidgets('beacons: la altura de cada uno se cambia en una hoja (un '
+        'deslizador que TalkBack dice en metros); «Usar en todos» la copia a '
+        'los demás y se guarda en la base', (tester) async {
+      final semantica = tester.ensureSemantics();
+      _cargarPiso();
+      await _armar(tester);
+      await _verEnPanel(tester, find.text('Holy-IOT-B1'));
+      expect(find.text('Altura sin indicar\nMAC …2B:01'), findsOneWidget);
+      await tester.tap(find.text('Holy-IOT-B1'));
+      await tester.pumpAndSettle();
+      expect(
+        _nodo(tester, find.text('Altura de Holy-IOT-B1')),
+        isSemantics(isHeader: true),
+      );
+      // Sin altura, arranca en la del teléfono.
+      expect(
+        _nodo(tester, find.bySemanticsLabel('Altura')),
+        isSemantics(isSlider: true, value: '1,2 metros'),
+      );
+      for (var i = 0; i < 13; i++) {
+        tester.semantics.increase(find.semantics.byLabel('Altura'));
+        await tester.pumpAndSettle();
+      }
+      expect(find.text('2,5 m'), findsOneWidget);
+      await tester.tap(find.text('Usar en todos los beacons del piso'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Guardar'));
+      await tester.pumpAndSettle();
+      expect(find.text('Altura de Holy-IOT-B1'), findsNothing);
+      expect(
+        [for (final f in baseFalsa.filas('beacons')) f['altura']],
+        [2.5, 2.5, 2.5, 2.5],
+      );
+      expect(find.text('Altura: 2,5 m\nMAC …2B:01'), findsOneWidget);
+
+      // Uno solo, sin «Usar en todos»: los demás quedan como estaban.
+      await _verEnPanel(tester, find.text('Holy-IOT-B2'));
+      await tester.tap(find.text('Holy-IOT-B2'));
+      await tester.pumpAndSettle();
+      for (var i = 0; i < 5; i++) {
+        tester.semantics.increase(find.semantics.byLabel('Altura'));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.text('Guardar'));
+      await tester.pumpAndSettle();
+      final alturas = {
+        for (final f in baseFalsa.filas('beacons')) f['mac']: f['altura'],
+      };
+      expect(alturas['C3:00:00:1A:2B:01'], 2.5);
+      expect(alturas['C3:00:00:1A:2B:02'], 3.0);
+      expect(alturas['C3:00:00:1A:2B:03'], 2.5);
       semantica.dispose();
     });
 
@@ -411,8 +469,8 @@ void main() {
         _nodo(tester, find.widgetWithText(ChipFiltro, 'Beacons')),
         isSemantics(isSelected: false, isInMutuallyExclusiveGroup: true),
       );
-      // Tocado contra el borde, el chip no queda cortado: el de antes, al
-      // perder el tilde, lo corre hacia afuera.
+      // Tocado contra el borde, el chip no queda cortado: el que estaba
+      // elegido, al perder el tilde, lo corre hacia afuera.
       expect(
         tester.getRect(find.widgetWithText(ChipFiltro, 'Zonas')).left,
         greaterThanOrEqualTo(0),
@@ -420,11 +478,10 @@ void main() {
       await _tocarPlano(tester, 0.2, 0.2);
       await _tocarPlano(tester, 0.4, 0.2);
       expect(_ayuda(tester), startsWith('2 puntos.'));
-      // Como el SegmentedButton de antes: tocar el modo elegido no hace nada.
+      // Tocar el modo elegido no hace nada.
       await _elegirModo(tester, 'Zonas');
       expect(_ayuda(tester), startsWith('2 puntos.'));
-      // Otro modo, otro panel (y la zona a medio dibujar se descarta, como
-      // antes).
+      // Otro modo, otro panel (y la zona a medio dibujar se descarta).
       await _elegirModo(tester, 'Escala');
       expect(_ayuda(tester), startsWith('Escala actual: 30,0 × 20,0 m'));
       await _elegirModo(tester, 'Zonas');
@@ -578,7 +635,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('m'), findsOneWidget);
-      // Vacío: el error debajo del campo (antes no pasaba nada).
+      // Vacío: el error debajo del campo.
       await tester.tap(find.text('Guardar'));
       await tester.pumpAndSettle();
       expect(find.text('Escribe un número mayor que 0.'), findsOneWidget);
@@ -1210,6 +1267,12 @@ void main() {
       await tester.tap(find.text('Filtrar por nombre o potencia'));
       await tester.pumpAndSettle();
       await revisar('Filtro');
+      await cancelar();
+      // La altura de un beacon.
+      await _verEnPanel(tester, find.text('Holy-IOT-B1'));
+      await tester.tap(find.text('Holy-IOT-B1'));
+      await tester.pumpAndSettle();
+      await revisar('Altura');
       await cancelar();
       // Un lugar y una escalera.
       await _elegirModo(tester, 'Lugares');

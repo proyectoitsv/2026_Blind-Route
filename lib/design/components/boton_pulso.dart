@@ -1,17 +1,4 @@
-import 'dart:math' as math;
-
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../movimiento.dart';
-import '../tipografia.dart';
-import 'presion.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Botón con pulso
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // La acción principal del inicio: un círculo de acento en el medio, sin
 // tarjeta ni bordes alrededor, que cada tanto larga ondas que se abren y se
@@ -23,6 +10,17 @@ import 'presion.dart';
 // mueven y queda un anillo quieto. El ticker se apaga solo cuando otra
 // pantalla tapa a esta (TickerMode). Las ondas se pintan en su propia capa:
 // cada cuadro repinta sólo eso.
+
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../movimiento.dart';
+import '../tipografia.dart';
+import 'presion.dart';
 
 /// El botón con pulso: un círculo de acento con el ícono en oscuro, el
 /// título debajo y una aclaración para quien ve (TalkBack no la lee: ya dice

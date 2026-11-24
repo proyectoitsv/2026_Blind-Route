@@ -1,10 +1,11 @@
+// AJUSTES DE NAVEGACIÓN EN CAPAS: EDIFICIO → GENERAL → CÓDIGO
+//
+// Qué valor rige cada parámetro (el del edificio, el general o el del
+// código), cómo se guarda en el teléfono y qué se sube a la nube.
+
 import 'package:blindroute/ajustes_navegacion.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// AJUSTES DE NAVEGACIÓN EN CAPAS: EDIFICIO → GENERAL → CÓDIGO
-// ═══════════════════════════════════════════════════════════════════════════
 
 /// Deja terminar los guardados en el teléfono, que no se esperan.
 Future<void> _esperarGuardado() =>

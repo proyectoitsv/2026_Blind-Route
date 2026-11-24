@@ -1,21 +1,7 @@
-import 'dart:async';
-
-import 'package:blindroute/design/design.dart';
-import 'package:blindroute/lista_edificios.dart';
-import 'package:blindroute/pantalla_login_admin.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter_test/flutter_test.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
-import 'ayudas_pantallas.dart';
-import 'nube_falsa.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// LOGIN DEL ADMINISTRADOR (fase 5.3 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
+// LOGIN DEL ADMINISTRADOR
 //
 // La pantalla de verdad, con Supabase iniciado como en main_admin.dart y el
-// MaterialApp de la app, con el tema de antes: qué dice TalkBack y en qué
+// MaterialApp de la app, con su tema de Material: qué dice TalkBack y en qué
 // orden, la letra al 200 % con Inter de verdad (ayudas_pantallas.dart), los
 // errores debajo de cada campo, «Ingresando…» mientras espera a la nube, el
 // teclado («Siguiente» y «Listo»), la entrada a la lista de edificios y el
@@ -32,6 +18,18 @@ import 'nube_falsa.dart';
 // Al entrar se abre ListaEdificios, que lee la base del teléfono (en los
 // tests no anda). Ahí el test mira la ruta que se abre y no deja dibujar otro
 // cuadro: la lista no llega a armarse.
+
+import 'dart:async';
+
+import 'package:blindroute/design/design.dart';
+import 'package:blindroute/lista_edificios.dart';
+import 'package:blindroute/pantalla_login_admin.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'ayudas_pantallas.dart';
+import 'nube_falsa.dart';
 
 /// Escribe el email y la contraseña.
 Future<void> _escribir(

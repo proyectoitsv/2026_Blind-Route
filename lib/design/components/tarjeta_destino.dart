@@ -1,17 +1,4 @@
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../movimiento.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'cuadro_icono.dart';
-import 'presion.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Tarjeta de destino
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Un lugar para elegir de una lista (al elegir el destino): una tarjeta
 // levantada (radio 20) con el ícono en un cuadro hundido, el nombre en texto
@@ -32,6 +19,17 @@ import 'presion.dart';
 // ─── TalkBack ───
 // Se lee de una vez ("Aula 12, Piso 1 · a 25 m"), como una opción de un
 // grupo en el que se elige una sola, elegida o no.
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../movimiento.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'cuadro_icono.dart';
+import 'presion.dart';
 
 /// Tarjeta de un lugar que se elige como destino.
 class TarjetaDestino extends StatelessWidget {

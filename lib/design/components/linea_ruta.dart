@@ -1,17 +1,4 @@
-import 'dart:math' as math;
-import 'dart:ui' show PathMetric, lerpDouble;
-
-import 'package:flutter/material.dart';
-
-import '../estilo.dart';
-import '../formas.dart';
-import '../movimiento.dart';
-import '../relieve.dart';
-import 'movimiento_cabezal.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Línea de ruta (la ruta sobre el plano)
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // La ruta dibujada sobre el plano hundido, como grabada: una ranura oscura
 // (ColoresApp.rutaRanura) debajo del trazo y, encima, cada tramo según su
@@ -32,7 +19,7 @@ import 'movimiento_cabezal.dart';
 // la línea), como las posiciones de la app sobre la imagen del plano: la
 // línea se pone encima del plano, del mismo tamaño.
 //
-// ─── Movimiento (fase 3) ───
+// ─── Movimiento ───
 //   · Cabezal: con cada posición, suavizado de τ = 80 ms; al cambiar de
 //     tramo, recorre la ruta a lo largo de la línea (PathMetrics) en 350 ms
 //     (MovimientoCabezal). Al llegar, se queda en el destino.
@@ -47,6 +34,17 @@ import 'movimiento_cabezal.dart';
 // ─── TalkBack ───
 // Se lee de una vez, como un resumen: "Tramo 2 de 3, 8 metros, escalera al
 // piso 2" (los metros son los que faltan para terminar el tramo).
+
+import 'dart:math' as math;
+import 'dart:ui' show PathMetric, lerpDouble;
+
+import 'package:flutter/material.dart';
+
+import '../estilo.dart';
+import '../formas.dart';
+import '../movimiento.dart';
+import '../relieve.dart';
+import 'movimiento_cabezal.dart';
 
 /// Qué hay al final de un tramo.
 enum MarcaTramo {

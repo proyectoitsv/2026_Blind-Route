@@ -1,8 +1,8 @@
-import 'package:blindroute/reconocimiento_telefono.dart';
-import 'package:flutter_test/flutter_test.dart';
-
 // Qué idioma se usa para reconocer la voz en el teléfono, con lo que
 // responde Android (ver reconocimiento_telefono.dart).
+
+import 'package:blindroute/reconocimiento_telefono.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 ConsultaIdioma _elegir({
   List<String> descargados = const [],

@@ -1,19 +1,4 @@
-import 'dart:math' as math;
-
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../movimiento.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'linea_ruta.dart';
-import 'movimiento_cabezal.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Línea de tiempo de la ruta
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // La ruta como la línea de tiempo de un editor: una pista hundida (el
 // relieve chico) con un segmento por tramo, las escaleras, los ascensores y
@@ -33,7 +18,7 @@ import 'movimiento_cabezal.dart';
 // pista, sobre el tramo actual. El número de arriba queda a 8 dp de la
 // pista: la sombra del cabezal no le llega.
 //
-// ─── Movimiento (fase 3) ───
+// ─── Movimiento ───
 //   · El cabezal sigue la posición con el suavizado de τ = 80 ms y, al
 //     cambiar de tramo, recorre la pista en 350 ms (MovimientoCabezal), en su
 //     propia capa.
@@ -53,6 +38,19 @@ import 'movimiento_cabezal.dart';
 // "Tramo 2 de 3 · faltan 8 m" y "Escalera al piso 2". Si al lado ya hay una
 // línea de ruta que dice lo mismo, conviene sacarla de TalkBack
 // (ExcludeSemantics) para no repetir.
+
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../movimiento.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'linea_ruta.dart';
+import 'movimiento_cabezal.dart';
 
 /// La ruta como una línea de tiempo.
 class LineaTiempo extends StatelessWidget {

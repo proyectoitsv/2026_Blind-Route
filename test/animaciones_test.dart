@@ -1,18 +1,6 @@
-import 'dart:math' as math;
-
-import 'package:blindroute/design/design.dart';
-import 'package:blindroute/design/galeria_pantallas.dart';
-import 'package:blindroute/pantalla_ajustes.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// ANIMACIONES DEL SISTEMA DE DISEÑO (fase 3 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
+// ANIMACIONES DEL SISTEMA DE DISEÑO
 //
-// La tabla de movimiento de la v5 del prompt (sección 5), en código: cuánto
+// La tabla de movimiento (movimiento.dart), en código: cuánto
 // dura cada animación y con qué curva, que el estado final sea el mismo con
 // y sin movimiento reducido, que una animación interrumpida siga desde donde
 // está (sin saltos) y termine en su estado final, que el cabezal siga la
@@ -26,6 +14,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 // final, pero Flutter la da por terminada (y saca lo que se iba) recién en
 // el cuadro siguiente. Una pantalla nueva pasa su primer cuadro fuera de
 // escena (Flutter mide ahí los "hero"): se mira desde el segundo.
+
+import 'dart:math' as math;
+
+import 'package:blindroute/design/design.dart';
+import 'package:blindroute/design/galeria_pantallas.dart';
+import 'package:blindroute/pantalla_ajustes.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Arma [hijo] en un teléfono de 360 × 780 dp con el tema nuevo. [enLista]:
 /// adentro de una lista, donde un toque se confirma a los 100 ms (o al
@@ -1036,7 +1034,7 @@ void main() {
       tester.view.physicalSize = const Size(1080, 2340);
       tester.view.devicePixelRatio = 3;
       addTearDown(tester.view.reset);
-      // Como en la app: el MaterialApp con el tema de antes.
+      // Como en la app: el MaterialApp con su tema de Material.
       await tester.pumpWidget(
         MaterialApp(
           theme: ThemeData(primarySwatch: Colors.indigo),

@@ -1,3 +1,14 @@
+// Suavizado de la posición: filtro One Euro adaptado al BLE.
+//
+// FiltroUnEuroPosicion recibe en cada ciclo la posición que calcula el
+// Posicionador y la suaviza: con la persona quieta la deja casi clavada y
+// caminando la sigue rápido. No mide el movimiento por su cuenta: cuánto
+// suavizar lo decide el factor que le pasa DetectorMovimiento.
+//
+// La diferencia entre los dos: DetectorMovimiento dice SI la persona se mueve
+// (lee el acelerómetro, no toca la posición); este filtro decide CUÁNTO seguir
+// a la posición nueva según eso.
+
 import 'dart:collection';
 import 'dart:math';
 import 'dart:ui';
@@ -44,7 +55,7 @@ class _PasaBajos {
 ///
 /// Se conserva la estructura del One Euro: α depende del Δt real de cada
 /// muestra, así que el filtro se comporta igual aunque los callbacks BLE
-/// lleguen a ritmo irregular (que es exactamente lo que pasa).
+/// lleguen a ritmo irregular, como llegan.
 class FiltroUnEuroPosicion {
   /// Frecuencia de corte (Hz) con el usuario detenido. Valor bajo = la
   /// posición queda prácticamente clavada. 0,04 Hz deja ~9 cm de jitter por

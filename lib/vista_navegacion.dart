@@ -1,12 +1,14 @@
+// Lo que se ve en la navegación (VistaNavegacion y sus partes).
+//
+// Sólo dibuja: recibe de pantalla_naveg.dart lo que hay que mostrar (piso,
+// destino, indicación, plano con la ruta, línea de tiempo, estado de la señal)
+// y le avisa los toques. No decide nada.
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import 'design/design.dart';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Lo que se ve en la navegación (fase 5.7 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
-//
 // La pantalla de navegación (pantalla_naveg.dart) tiene la lógica: la
 // posición, la ruta, la voz. Acá está lo que se ve, y no decide nada: recibe
 // lo que hay que mostrar y avisa los toques.
@@ -23,8 +25,8 @@ import 'design/design.dart';
 // como toque.
 //
 // ─── TalkBack y la voz ───
-// La guía la da la voz. TalkBack dice lo mismo que antes, cuando se llega con
-// el foco: sólo se anuncian solas las llegadas (y el cartel de otro piso). La
+// La guía la da la voz. TalkBack lee cada cosa cuando se llega con el foco:
+// sólo se anuncian solas las llegadas (y el cartel de otro piso). La
 // orientación al llegar cambia mientras la persona gira y el estado de la
 // señal cambia todo el tiempo: anunciados, pisarían a la voz.
 

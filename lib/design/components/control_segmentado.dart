@@ -1,20 +1,4 @@
-import 'dart:math' as math;
-
-import 'package:flutter/material.dart';
-import 'package:flutter/physics.dart';
-import 'package:flutter/rendering.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../movimiento.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'presion.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Control segmentado
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Elegir una entre pocas opciones (2 a 4): una pista hundida, con el borde
 // de los controles, y una pieza levantada (el relieve chico) con borde de
@@ -48,6 +32,20 @@ import 'presion.dart';
 // ─── TalkBack ───
 // Cada opción es un botón seleccionado o no, de un grupo en el que se elige
 // una sola, como en el SegmentedButton de Material.
+
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
+import 'package:flutter/rendering.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../movimiento.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'presion.dart';
 
 /// Una opción de un [ControlSegmentado].
 @immutable

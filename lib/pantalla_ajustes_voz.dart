@@ -1,3 +1,7 @@
+// Ajustes de la voz de la app del usuario: velocidad, volumen, tono y
+// repetición de las indicaciones, con una frase de prueba al soltar cada
+// control.
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';

@@ -1,10 +1,11 @@
+// AJUSTES DE LA VOZ
+//
+// Los valores de fábrica, el paso de porcentajes a valores del motor de voz
+// y lo que se guarda en el teléfono.
+
 import 'package:blindroute/ajustes_voz.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// AJUSTES DE LA VOZ
-// ═══════════════════════════════════════════════════════════════════════════
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));

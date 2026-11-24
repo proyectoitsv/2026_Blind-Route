@@ -1,12 +1,14 @@
+// Saca la posición del usuario de las zonas prohibidas.
+//
+// RestriccionZonas recibe la posición medida y, si cayó adentro de una zona
+// no transitable, la lleva al centro de la celda libre más conveniente (del
+// lado de la pared donde estaba).
+
 import 'dart:math';
 import 'dart:ui';
 
 import 'grilla_nav.dart';
 
-/// ═══════════════════════════════════════════════════════════════════════════
-/// POSICIÓN FUERA DE LAS ZONAS PROHIBIDAS
-/// ═══════════════════════════════════════════════════════════════════════════
-///
 /// La multilateración no sabe nada del plano: con el error del BLE (1,5 m o
 /// más) la posición cae seguido adentro de una zona no transitable (un aula
 /// cerrada, una columna, un cantero), donde el usuario no puede estar. Y todo
@@ -39,12 +41,12 @@ import 'grilla_nav.dart';
 /// que esté. Por eso no puede dejar al usuario encerrado del lado
 /// equivocado: alcanza con que la medición salga de la zona.
 ///
-/// POR QUÉ AL CENTRO: la posición del usuario es una celda. Antes se
-/// devolvía el punto de la celda más cercano a la medición, para que la
-/// posición se deslizara pegada al borde de la zona. Pero ahora una celda
-/// libre puede tener parte de una zona adentro (sólo su centro tiene que
-/// quedar afuera), y ese punto podía caer en la zona. El centro de una celda
-/// libre está afuera de toda zona por definición.
+/// POR QUÉ AL CENTRO: la posición del usuario es una celda. Devolver el punto
+/// de la celda más cercano a la medición (para que la posición se deslice
+/// pegada al borde de la zona) no sirve: una celda libre puede tener parte de
+/// una zona adentro (sólo su centro tiene que quedar afuera), y ese punto
+/// podría caer en la zona. El centro de una celda libre está afuera de toda
+/// zona por definición.
 class RestriccionZonas {
   final GrillaNav grilla;
 

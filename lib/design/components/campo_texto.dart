@@ -1,18 +1,4 @@
-import 'dart:math' as math;
-
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-import 'botones.dart';
-import 'presion.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Campo de texto y buscador
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Hundido (el relieve común), con el borde de 1 px de los controles (5,05
 // sobre el fondo) y el texto de ayuda en texto secundario (11,68 sobre lo
@@ -58,6 +44,18 @@ import 'presion.dart';
 // pantalla, lo lee justo después del campo. Quien usa el campo decide cuándo
 // se va (en general, al escribir en él). El campo arma siempre lo mismo, con
 // o sin error: el error que aparece o se va no le corta la escritura.
+
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
+import 'botones.dart';
+import 'presion.dart';
 
 /// Campo de texto hundido, con su etiqueta arriba.
 class CampoTexto extends StatefulWidget {

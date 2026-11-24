@@ -1,14 +1,4 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:blindroute/supabase_config.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // LA NUBE DE PRUEBA
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Supabase de verdad (supabase_flutter, como en main_admin.dart) hablando con
 // una nube de prueba en lugar de la de verdad, para los tests de las
@@ -27,6 +17,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 // mapas publicados): con los bytes de una imagen o con un error.
 //
 // No termina en _test.dart: flutter test no lo corre solo.
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:blindroute/supabase_config.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Lo que contesta la nube de prueba a un pedido: el estado HTTP y el
 /// cuerpo, un texto (JSON) o los bytes de un archivo.

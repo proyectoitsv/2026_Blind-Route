@@ -1,3 +1,12 @@
+// Procesamiento de la señal de los beacons.
+//
+// ProcesadorSenal suaviza el RSSI de cada beacon (media truncada en una
+// ventana de tiempo que se acorta al caminar), lo convierte en distancia con el
+// modelo log-distancia, ajusta ese modelo para cada beacon con las
+// calibraciones (n y RSSI a 1 m, por mínimos cuadrados) y compara la lectura en
+// vivo contra los puntos clave (fingerprints). ModeloRangoBeacon es el modelo
+// ajustado de un beacon; CoincidenciaFingerprint, el resultado de comparar.
+
 import 'dart:math';
 import 'dart:ui' show Offset;
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -5,33 +14,30 @@ import 'calibracion_model.dart';
 import 'grilla_nav.dart';
 
 /// Modelo log-distancia AJUSTADO para un beacon concreto: ordenada al origen
-/// ([txPower], RSSI a 1 m) y pendiente ([n], exponente de perdida).
+/// ([txPower], RSSI a 1 m) y pendiente ([n], exponente de pérdida).
 ///
-/// -- POR QUE HACE FALTA AJUSTAR n Y NO SOLO txPower ------------------------
-/// El modelo es `rssi = txPower - 10*n*log10(d)`. Tiene DOS grados de libertad
-/// y la calibracion anterior estimaba solo uno: fijaba n = 2.7 y despejaba
-/// txPower en cada punto, para despues PROMEDIAR los txPower obtenidos. Si el
-/// n real del sitio no es 2.7, cada punto de calibracion devuelve un txPower
-/// distinto (absorbe el error de pendiente a SU distancia) y el promedio solo
-/// acierta a la distancia media de las calibraciones.
+/// -- POR QUÉ SE AJUSTA n Y NO SÓLO txPower ----------------------------------
+/// El modelo es `rssi = txPower - 10*n*log10(d)` y tiene DOS incógnitas. Si n
+/// queda fijo (2,7) y se despeja txPower en cada calibración, cada punto da un
+/// txPower distinto (absorbe el error de pendiente a SU distancia) y el
+/// promedio sólo acierta a la distancia media de las calibraciones.
 ///
-/// El efecto es una COMPRESION del rango dinamico de las distancias: si el n
-/// modelado es mayor que el real, `d_est = d_real^(n_real/n)`, o sea que las
-/// distancias cortas se INFLAN y las largas se ACHICAN. Medido con n_real =
-/// 2.0 y calibraciones a 2/5/8 m:
-///   d_real 0.3 m -> 0.60 m (+100 %)   ...   d_real 20 m -> 13.4 m (-33 %)
-/// Y eso es exactamente el sintoma doble reportado en campo:
-///   - parado JUNTO a un beacon el rango minimo estimado ronda 1 m, asi que la
-///     multilateracion nunca puede poner al usuario encima del beacon;
-///   - FUERA de la nube de beacons todos los rangos vienen achicados, asi que
-///     la solucion que mejor los explica cae DENTRO de la nube.
-/// No es un bug de la trilateracion: la trilateracion resuelve correctamente
-/// una geometria que le llega deformada.
+/// El efecto es una COMPRESIÓN de las distancias: si el n del modelo es mayor
+/// que el real, `d_est = d_real^(n_real/n)`, o sea que las distancias cortas
+/// se INFLAN y las largas se ACHICAN. Con n_real = 2,0 y calibraciones a
+/// 2/5/8 m:
+///   d_real 0,3 m -> 0,60 m (+100 %)   ...   d_real 20 m -> 13,4 m (-33 %)
+/// Y de ahí salen dos síntomas:
+///   - parado JUNTO a un beacon el rango mínimo estimado ronda 1 m, así que la
+///     multilateración nunca puede poner al usuario encima del beacon;
+///   - FUERA de la nube de beacons todos los rangos vienen achicados, así que
+///     la solución que mejor los explica cae DENTRO de la nube.
+/// La multilateración resuelve bien; la geometría le llega deformada.
 ///
-/// Con tres o mas calibraciones a distancias distintas se pueden ajustar AMBOS
-/// parametros por minimos cuadrados sobre `rssi` vs `log10(d)`, que es lineal.
-/// Sobre los datos del ejemplo la regresion recupera n = 2.00 y txPower = -60
-/// exactos, y el error de rango se vuelve nulo en todo el recorrido.
+/// Con tres o más calibraciones a distancias distintas se ajustan AMBOS
+/// parámetros por mínimos cuadrados sobre `rssi` vs `log10(d)`, que es una
+/// recta (ver [ProcesadorSenal.ajustarModelosRango]). Sobre los datos del
+/// ejemplo la regresión recupera n = 2,00 y txPower = -60 exactos.
 class ModeloRangoBeacon {
   /// RSSI de referencia a 1 m (dBm).
   final double txPower;
@@ -53,7 +59,9 @@ class ModeloRangoBeacon {
     this.puntos = 0,
   });
 
-  /// Distancia (m) para un RSSI ya filtrado.
+  /// Distancia (m) para un RSSI ya filtrado: el modelo despejado,
+  /// `d = 10^((txPower - rssi) / (10*n))`. Es la distancia 3D, la que
+  /// recorre la señal. Se acota a 0,1–30 m: fuera de eso el modelo no vale.
   double distancia(double rssiFiltrado) {
     if (rssiFiltrado >= 0) return 0.1;
     final d = pow(10.0, (txPower - rssiFiltrado) / (10.0 * n)).toDouble();
@@ -64,19 +72,19 @@ class ModeloRangoBeacon {
 class ProcesadorSenal {
   // ─── VENTANA DE MEDIANAS ──────────────────────────────────────────────────
   //
-  // Mediana truncada sobre ventana deslizante. Más robusta que Kalman para
-  // ruido bimodal/asimétrico del multipath BLE.
-  // _corteMediana: descarta 20% en cada extremo antes de promediar.
+  // Media truncada sobre una ventana deslizante: se ordenan las lecturas, se
+  // descarta el 20 % de cada punta (_corteMediana) y se promedia el resto.
+  // Aguanta mejor que un Kalman el ruido del BLE, que no es gaussiano: el
+  // multicamino da caídas bruscas de 10 dB o más que una media común
+  // arrastraría.
   //
   // ── LA VENTANA ES DE TIEMPO, NO DE LECTURAS ───────────────────────────────
-  // Antes eran N lecturas (19 parado, 7 caminando), pensadas para beacons que
-  // emiten cada 160 ms (19 × 0,16 s = 3 s). Pero el atraso que agrega una
-  // ventana es la mitad de su duración EN TIEMPO, y cuánto duran N lecturas
-  // depende de cada cuánto emite el beacon y de cuántos paquetes se pierden:
-  // con beacons que emiten una vez por segundo (el valor de fábrica de
-  // muchos), 7 lecturas son 7 s y el atraso sube a ~3,5 s. Ahora la ventana
-  // son los últimos N segundos, emita como emita el beacon: con beacons lentos
-  // entran menos lecturas (más ruido), pero el atraso no cambia.
+  // El atraso que agrega una ventana es la mitad de su duración EN TIEMPO, y
+  // cuánto duran N lecturas depende de cada cuánto emite el beacon y de
+  // cuántos paquetes se pierden: 7 lecturas son 1,1 s con un beacon que emite
+  // cada 160 ms y 7 s con uno que emite cada segundo (el valor de fábrica de
+  // muchos). Con una ventana de N segundos, un beacon lento aporta menos
+  // lecturas (más ruido), pero el atraso no cambia.
   //
   // La ventana con el usuario quieto es larga (estabilidad) y caminando corta
   // (su retardo es la MAYOR fuente de latencia del pipeline: con 3 s serían
@@ -115,17 +123,14 @@ class ProcesadorSenal {
   final Map<String, double> _varianzaRssi = {};
 
   /// MACs que el pipeline considera relevantes (los beacons configurados del
-  /// piso). Si está vacío se rastrean TODAS (comportamiento histórico).
+  /// piso). Si está vacío se rastrean todas.
   ///
-  /// POR QUÉ HACE FALTA: el scan BLE ve TODOS los dispositivos del ambiente
-  /// —celulares, TVs, auriculares, otras balizas ajenas— y [filtrarYPromediar]
-  /// se llamaba para cada uno. Como el resultado de un MAC que no es beacon
-  /// nunca se usa (los consumidores solo leen beacons configurados), lo único
-  /// que lograba era acumular una entrada por cada MAC visto en [_ventanaRssi]
-  /// y [_varianzaRssi] que no se limpiaba jamás. En un edificio concurrido
-  /// (una terminal, un shopping) eso es una fuga de memoria y de CPU (un sort
-  /// por dispositivo ajeno en cada callback) que crece durante toda la sesión.
-  /// Con la lista definida, los MAC ajenos se descartan antes de asignar nada.
+  /// El scan BLE ve TODOS los dispositivos del ambiente —celulares, TVs,
+  /// auriculares, balizas ajenas— y el resultado de un MAC que no es beacon
+  /// del piso nunca se usa. Sin esta lista, cada uno dejaría una entrada en
+  /// [_ventanaRssi] y [_varianzaRssi] que nunca se limpia: en un lugar
+  /// concurrido (una terminal, un shopping) es memoria y CPU (un sort por
+  /// dispositivo ajeno en cada callback) que crece durante toda la sesión.
   Set<String> _macsRelevantes = const {};
 
   /// Declara qué MACs son beacons configurados. A partir de acá
@@ -157,15 +162,17 @@ class ProcesadorSenal {
         _ventanaQuietoSeg + (_ventanaCaminandoSeg - _ventanaQuietoSeg) * f;
   }
 
-  // ─── MODELO DE DISTANCIA ──────────────────────────────────────────────────
+  // ─── MODELO DE DISTANCIA POR DEFECTO ──────────────────────────────────────
   //
-  // _txPower: RSSI de referencia a 1 m, calibrado = -55 dBm (rango aceptable
-  //   por beacon: -50 a -60 dBm). Es la *ordenada al origen* del modelo log.
-  //   Para calibración por beacon usar rssiADistanciaConTx(rssi, txPower).
+  // Lo que se usa cuando un beacon no tiene calibraciones suficientes para
+  // ajustar su propio modelo (ver [ajustarModelosRango]).
   //
-  // _pathLossExponent: es la *pendiente* del modelo y depende del entorno, no
-  //   de la referencia de 1 m. La calibración 1 m = -55 dBm fija txPower pero
-  //   NO altera n, así que 2.7 (interior típico) sigue siendo el valor correcto.
+  // _txPower: RSSI a 1 m (-55 dBm; un beacon típico da entre -50 y -60). Es
+  //   la *ordenada al origen* del modelo. Sólo se usa si el beacon no tiene
+  //   ninguna calibración.
+  //
+  // _pathLossExponent: n, la *pendiente* del modelo. Depende del lugar, no del
+  //   beacon:
   //   2.0 = pasillo despejado  |  2.5 = oficina abierta
   //   2.7 = interior típico    |  3.0 = varias paredes
   //   3.5 = hormigón/subterráneo
@@ -181,9 +188,9 @@ class ProcesadorSenal {
   //
   // El plano es 2D y la señal viaja en 3D. La distancia que "ve" el RSSI es
   //   d = √(d_plano² + Δh²),   Δh = altura del beacon − altura del teléfono.
-  // Antes se usaba d_plano en todo (calibración y posicionamiento), que es lo
-  // mismo que suponer Δh = 0. Con un beacon en el techo (Δh ≈ 1,4 m) eso
-  // deforma el modelo de cada beacon: la regresión sobre d_plano da un n más
+  // Usar d_plano (en la calibración o en el posicionamiento) equivale a
+  // suponer Δh = 0. Con un beacon en el techo (Δh ≈ 1,4 m) eso deforma el
+  // modelo de cada beacon: la regresión sobre d_plano da un n más
   // bajo que el real (2,0 → 1,53 en una simulación con calibraciones a 1, 3,
   // 6 y 10 m) y el rango queda inflado cerca del beacon (+0,8 m justo debajo)
   // y torcido lejos (−0,45 m a 4 m, +2 m a 12 m). Con beacons a alturas
@@ -193,9 +200,12 @@ class ProcesadorSenal {
   // regresión y se usa el modelo por defecto, que es peor todavía.
 
   /// Altura (m sobre el piso) a la que se supone el teléfono: en la mano o en
-  /// el pecho, tanto al calibrar como al navegar. Un error de ±0,3 m acá
-  /// mueve el rango horizontal ~0,3 m justo debajo de un beacon alto, y casi
-  /// nada a partir de 3 m.
+  /// el pecho, tanto al calibrar como al navegar. Es fija y no se le pide a
+  /// cada persona: en una simulación con 5 beacons en el techo, llevar el
+  /// teléfono a 0,8 o a 1,6 m suma 0,1–0,15 m de error medio (0,4 m en el
+  /// peor caso, justo debajo de un beacon), mucho menos que el ruido del
+  /// RSSI. La que más pesa es la del admin al calibrar, porque deforma el
+  /// modelo para todos.
   static const double alturaTelefonoM = 1.2;
 
   /// Altura del beacon menos la del teléfono (m). Null (beacon sin altura
@@ -237,11 +247,15 @@ class ProcesadorSenal {
 
   // ─── FILTRADO PRINCIPAL ───────────────────────────────────────────────────
 
+  /// Agrega una lectura de [mac] y devuelve su RSSI suavizado (dBm), o null
+  /// si todavía no hay [_minMuestras] lecturas o el MAC no es un beacon del
+  /// piso. Usa las lecturas de la ventana efectiva (ver
+  /// [ajustarPorMovimiento]): las ordena, descarta el 20 % de cada punta y
+  /// promedia el resto. Deja también la varianza de esas lecturas
+  /// ([varianzaBeacon]).
   double? filtrarYPromediar(String mac, int rssiActual) {
-    // Descartar de entrada los MAC que no son beacons configurados: sin esto,
-    // el historial de cada dispositivo ajeno del ambiente se acumulaba para
-    // siempre (ver [definirBeaconsRelevantes]). Con la lista vacía no filtra
-    // nada, así que el comportamiento por defecto no cambia.
+    // MACs que no son beacons del piso: se descartan antes de guardar nada
+    // (ver [definirBeaconsRelevantes]).
     if (_macsRelevantes.isNotEmpty && !_macsRelevantes.contains(mac)) {
       return null;
     }
@@ -319,8 +333,8 @@ class ProcesadorSenal {
   /// Medido con desviacion de 5 dB por beacon, parado en la celda CORRECTA:
   ///   metrica RMS simple  -> mediana 5.68 dB, percentil 90 8.71 dB
   ///   metrica robusta     -> mediana 3.85 dB, percentil 90 6.68 dB
-  /// El corte anterior de 6.0 dB rechazaba mas o menos la mitad de las
-  /// coincidencias buenas. Estos valores dejan pasar hasta el percentil 90.
+  /// Un corte en 6 dB rechazaría más o menos la mitad de las coincidencias
+  /// buenas. Estos valores dejan pasar hasta el percentil 90.
   static const double _fpDbBueno = 4.0;
 
   /// Distancia robusta (dB) por encima de la cual no hay coincidencia alguna.
@@ -358,11 +372,11 @@ class ProcesadorSenal {
   /// terreno perdido. Y lo que mas mejora es la separacion contra un falso
   /// positivo a 6 m, que pasa de 0.82 dB a 1.50 dB de brecha.
   ///
-  /// SE SUBIO DE 45 A 90 (probado en el campo): parado justo en el punto
-  /// clave pero mirando hacia otro lado, el patron quedaba afuera y la
-  /// posicion no se corregia nunca, que era la queja. Con +/- 90 la mediana
-  /// empeora poco (4.65 contra 4.19 dB) y sigue afuera lo peor: mirar para el
-  /// lado contrario, con el cuerpo tapando los beacons de adelante del patron.
+  /// Se usa +/- 90 y no +/- 45: con 45, parado justo en el punto clave pero
+  /// mirando hacia otro lado, el patrón queda afuera y la posición no se
+  /// corrige nunca. Con +/- 90 la mediana empeora poco (4.65 contra 4.19 dB) y
+  /// sigue afuera lo peor: mirar para el lado contrario, con el cuerpo tapando
+  /// los beacons de adelante del patrón.
   ///
   /// Bajarlo afina mas pero exige capturar mas orientaciones por celda; subirlo
   /// deja pasar mas sombra corporal.
@@ -417,7 +431,7 @@ class ProcesadorSenal {
   ///    cuadrado). Medido con 5 dB de desviacion por beacon, parado en la
   ///    celda correcta: RMS simple mediana 5.68 dB, robusta 3.85 dB.
   ///
-  /// Es el mismo criterio que ya usa esta clase para el RSSI (mediana truncada)
+  /// Es el mismo criterio que usa esta clase para el RSSI (media truncada)
   /// y que usa el solver para los rangos (perdida de Huber): no dejar que una
   /// sola medicion mala decida.
   ///
@@ -469,12 +483,11 @@ class ProcesadorSenal {
       if (!cal.esFingerprint) continue;
       final nombre = '${cal.etiqueta ?? ""}(${cal.celdaIx},${cal.celdaIy})';
 
-      // Puerta angular: el patron solo compite si fue capturado mirando en una
-      // direccion parecida a la actual. Si falta cualquiera de los dos rumbos
-      // (brujula no disponible ahora, o fingerprint viejo anterior a la v10) no
-      // se filtra: se degrada al comportamiento anterior en vez de dejar de
-      // funcionar. El error que puede introducir un match asi sigue acotado por
-      // el radio espacial que aplica el consumidor.
+      // Puerta angular: el patrón sólo compite si fue capturado mirando en una
+      // dirección parecida a la actual. Si falta cualquiera de los dos rumbos
+      // (no hay brújula, o el punto clave se guardó sin rumbo) se compara sin
+      // la puerta en vez de descartarlo. El error que puede meter un match así
+      // sigue acotado por el radio espacial que aplica quien consume esto.
       final rumboGuardado = cal.rumboCaptura;
       if (rumboVivo != null && rumboGuardado != null) {
         final dif = _difRumbo(rumboVivo, rumboGuardado).abs();
@@ -581,22 +594,32 @@ class ProcesadorSenal {
   static const double _nMin = 1.5;
   static const double _nMax = 4.5;
 
-  /// Distancia minima de un punto de calibracion para entrar en la regresion.
-  /// Por debajo de ~0.5 m el modelo log deja de valer (campo cercano) y el RSSI
-  /// se satura: esos puntos sesgan la pendiente.
+  /// Distancia mínima (3D) de un punto de calibración para entrar en la
+  /// regresión. Por debajo de ~0,5 m el modelo log deja de valer (campo
+  /// cercano) y el RSSI se satura: esos puntos sesgan la pendiente.
   static const double _dMinAjuste = 0.5;
 
-  /// Ajusta ([txPower], [n]) por beacon con minimos cuadrados sobre las
-  /// calibraciones guardadas.
+  /// Ajusta ([txPower], [n]) por beacon con mínimos cuadrados sobre las
+  /// calibraciones guardadas. Se llama una vez al empezar la navegación.
   ///
-  /// Cada [CalibracionRegistro] aporta un punto por beacon: la celda donde
-  /// estaba parado el operador da la distancia REAL al beacon, y `lecturasBle`
-  /// el RSSI medido ahi. Eso es todo lo que hace falta para la regresion; los
-  /// datos ya se venian guardando, solo no se estaban aprovechando.
+  /// ── Paso a paso ──────────────────────────────────────────────────────────
+  ///  1. Cada [CalibracionRegistro] aporta un punto por beacon. La celda
+  ///     donde estaba parado el admin (su centro) y la posición y altura del
+  ///     beacon dan la distancia REAL (3D) `d`; `lecturasBle` da el RSSI
+  ///     medido ahí (la media truncada de una toma de 10 s).
+  ///  2. Cada punto se guarda como `(x = log10(d), y = rssi)`. En esos ejes
+  ///     el modelo `rssi = txPower - 10·n·log10(d)` es una recta: pendiente
+  ///     `-10·n`, ordenada `txPower` (el RSSI en d = 1 m, donde log10(d) = 0).
+  ///  3. Con la recta de mínimos cuadrados, `pendiente = Σ(x-x̄)(y-ȳ) /
+  ///     Σ(x-x̄)²` y `txPower = ȳ - pendiente·x̄`. De ahí, `n = -pendiente/10`.
   ///
-  /// Si un beacon no tiene datos suficientes se devuelve el modelo por defecto
-  /// (n fijo y el txPower promedio de sus calibraciones), o sea el
-  /// comportamiento anterior: el ajuste nunca empeora el punto de partida.
+  /// ── Cuándo NO se confía en la recta ──────────────────────────────────────
+  /// Se usa el modelo por defecto (n = [pathLossExponent] y el txPower
+  /// promedio de sus puntos) si el beacon tiene menos de 3 puntos, si todos
+  /// están a distancias parecidas (la pendiente no se ve) o si n sale fuera
+  /// de 1,5–4,5 (vio más ruido que señal). Así el ajuste nunca queda peor que
+  /// el modelo fijo. Los puntos a menos de 0,5 m no entran: ahí el RSSI se
+  /// satura y el modelo deja de valer.
   ///
   /// [alturasBeacons]: la altura de cada beacon (m sobre el piso; null o
   /// ausente = a la altura del teléfono). Las distancias son 3D, con

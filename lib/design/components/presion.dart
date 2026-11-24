@@ -1,14 +1,4 @@
-import 'dart:async';
-
-import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
-
-import '../movimiento.dart';
-import '../relieve.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Respuesta al toque de los componentes
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Lo que se toca responde con el relieve: levantado en reposo, hundido
 // mientras se presiona, plano si está deshabilitado. Sin la onda (ripple) de
@@ -17,7 +7,7 @@ import '../relieve.dart';
 // se tocan además se achican apenas (EscalaPresion). El foco con teclado o
 // switch se ve en el borde, que pasa al acento con 2 px.
 //
-// ─── Movimiento (fase 3) ───
+// ─── Movimiento ───
 // El paso de un relieve a otro se anima (RelieveAnimado), según la tabla de
 // movimiento: presionar 120 ms, soltar 160 ms, seleccionar o enfocar 150 ms,
 // con la curva de salida fuerte. Interrumpido, sigue desde donde está. Con
@@ -31,6 +21,14 @@ import '../relieve.dart';
 // demora.
 //
 // Interno: lo usan los componentes y no se exporta.
+
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+
+import '../movimiento.dart';
+import '../relieve.dart';
 
 /// Fábrica de tinta sin onda.
 const InteractiveInkFeatureFactory sinOnda = NoSplash.splashFactory;

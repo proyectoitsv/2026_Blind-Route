@@ -1,3 +1,9 @@
+// Lugar de interés de un piso (LugarInteres).
+//
+// Un destino al que se puede navegar (un baño, un aula, una escalera), con su
+// posición, su rubro y las palabras con las que se lo puede pedir por voz.
+// Las escaleras guardan además si suben o bajan y hacia dónde da su entrada.
+
 import 'dart:math';
 import 'package:flutter/material.dart';
 

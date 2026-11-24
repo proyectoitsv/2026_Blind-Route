@@ -1,3 +1,9 @@
+// Catálogo de mapas publicados (app del usuario).
+//
+// PantallaMapasOnline lista los mapas de la nube agrupados por edificio, con
+// buscador y filtros, y deja descargar, actualizar o quitar cada piso del
+// teléfono. Los mapas que el admin borró de la nube se quitan solos.
+
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -31,24 +37,23 @@ enum OperacionMapa { descarga, actualizacion, borrado }
 ///
 /// Rendimiento: el listado sólo trae metadatos livianos y NO baja ninguna
 /// imagen. La miniatura se muestra sólo en los mapas ya descargados, desde el
-/// archivo del teléfono; el resto lleva un ícono. (Antes se pedía a la nube el
-/// plano completo de cada mapa visible sólo para dibujar la miniatura:
-/// `cacheWidth` achica la imagen en memoria, no la descarga.) El filtrado y la
+/// archivo del teléfono; el resto lleva un ícono (pedir a la nube el plano
+/// de cada mapa visible sólo para la miniatura bajaría la imagen entera:
+/// `cacheWidth` la achica en memoria, no en la descarga). El filtrado y la
 /// búsqueda se hacen en memoria sobre esa lista liviana, sin volver a
 /// consultar la nube.
 ///
-/// ─── Sistema de diseño (fase 5.2 del rediseño) ───
 /// Va envuelta en AmbienteDiseno. El buscador, los filtros y la lista se
 /// desplazan juntos: con letra grande, la lista no queda reducida a un
-/// renglón. Cada mapa es una TarjetaMapa (abajo), con los botones de siempre
-/// y las mismas etiquetas de TalkBack; ninguno va en cian, porque serían
+/// renglón. Cada mapa es una TarjetaMapa (abajo), con sus botones y sus
+/// etiquetas de TalkBack; ninguno va en cian, porque serían
 /// varios botones principales en la pantalla. Lo que no es la lista (vacía,
 /// sin conexión, cargando) es un EstadoPantalla, quieto (sin nada que gire),
 /// que TalkBack anuncia al aparecer. Quitar un mapa se confirma en una hoja
 /// (mostrarConfirmacion) y los avisos son los del sistema de diseño
 /// (mostrarAviso).
 ///
-/// Tirar hacia abajo vuelve a cargar la lista, como antes. Con TalkBack eso no
+/// Tirar hacia abajo vuelve a cargar la lista. Con TalkBack eso no
 /// se puede hacer: para eso están el botón de la barra ("Volver a cargar la
 /// lista") y "Reintentar" en el error de conexión, que hacen lo mismo.
 class PantallaMapasOnline extends StatefulWidget {
@@ -532,7 +537,7 @@ class _PantallaMapasOnlineState extends State<PantallaMapasOnline> {
 //
 // ─── TalkBack ───
 // La parte de arriba se lee de una vez ("Planta baja, 4 beacons y 12
-// calibraciones, Nuevo"). Los botones conservan las etiquetas de siempre:
+// calibraciones, Nuevo"). Los botones tienen sus propias etiquetas:
 // "Descargar Planta baja", "Actualizar Planta baja" y "Quitar Planta baja
 // del teléfono".
 //

@@ -1,3 +1,10 @@
+// Modo automático de la app del usuario: abrir la app adentro de un edificio
+// y que encuentre sola el mapa.
+//
+// ModoAutomatico escanea los beacons, busca a qué piso descargado pertenecen
+// (o consulta la nube y descarga el mapa), elige el piso con la señal más
+// fuerte y abre la navegación ahí, dejándole el scan andando.
+
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -32,17 +39,13 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
 
   // ── LA NUBE NO FRENA AL MAPA LOCAL ─────────────────────────────────────────
   //
-  // Antes, el primer barrido sin beacons conocidos (lo normal al arrancar: el
-  // primer aviso suele ser de un celular, no de un beacon) lanzaba la consulta
-  // a la nube con _resolviendo = true, y mientras durara se descartaban TODOS
-  // los barridos, también los de los beacons con mapa en el teléfono. La
-  // consulta no tenía límite de tiempo: adentro de un edificio, con datos
-  // móviles malos, el mapa local podía quedar esperando decenas de segundos.
-  //
-  // Ahora la consulta corre aparte ([_consultarNube]) sin frenar el
+  // La consulta a la nube corre aparte ([_consultarNube]) sin frenar el
   // procesamiento, tiene tope ([_limiteConsultaNube]) y sólo se lanza después
   // de [_esperaAntesDeNube] sin oír ningún beacon con mapa local: el mapa
-  // local tiene siempre la primera oportunidad.
+  // local tiene siempre la primera oportunidad. El primer barrido suele traer
+  // un celular y no un beacon; si eso disparara la consulta y bloqueara los
+  // barridos mientras dura, adentro de un edificio con datos móviles malos el
+  // mapa local podría quedar esperando decenas de segundos.
 
   /// true mientras hay una consulta a la nube en curso.
   bool _consultandoNube = false;
@@ -69,14 +72,11 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
 
   // ── FALLAS DEL BLUETOOTH: SE DICEN Y SE REINTENTA ──────────────────────────
   //
-  // Antes, si el Bluetooth estaba apagado, faltaba un permiso o el escaneo no
-  // arrancaba, la pantalla lo escribía y nada más: quien no ve se quedaba
-  // esperando en silencio. Y si el escaneo no arrancaba (Android deja 5
-  // arranques cada 30 s; ver BluetoothHelper), no se volvía a probar.
-  //
-  // Ahora cada falla se dice por voz, una vez, con lo que se puede hacer
-  // ([_avisarFalla]), y el arranque del escaneo se reintenta solo
-  // ([_arrancarScan]).
+  // Cada falla (Bluetooth apagado, falta un permiso, el escaneo no arranca)
+  // se dice por voz, una vez, con lo que se puede hacer ([_avisarFalla]):
+  // escrita en la pantalla, quien no ve se quedaría esperando en silencio. Y
+  // el arranque del escaneo se reintenta solo ([_arrancarScan]), porque
+  // Android deja 5 arranques cada 30 s (ver BluetoothHelper).
 
   /// Vuelve a probar el arranque del escaneo cuando no arrancó.
   Timer? _reintentoScanTimer;
@@ -94,13 +94,11 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
   // ── ELECCIÓN DEL PISO DE LLEGADA ───────────────────────────────────────────
   //
   // En un edificio de varios pisos se ven beacons de más de un piso a la vez
-  // (el hormigón atenúa, no bloquea). Antes se entraba al piso del PRIMER
-  // beacon que aparecía en el barrido, que es un orden arbitrario: estando en
-  // el piso 1 podía arrancar en el 2.
-  //
-  // Ahora se acumulan unos segundos de señal y se elige el piso con la señal
-  // más fuerte: los beacons del piso donde está el usuario llegan bastante
-  // más fuerte que los de arriba o abajo.
+  // (el hormigón atenúa, no bloquea). El orden del barrido es arbitrario:
+  // entrar al piso del PRIMER beacon que aparece podría arrancar en el 2
+  // estando en el 1. Por eso se acumulan unos segundos de señal y se elige
+  // el piso con la señal más fuerte: los beacons del piso donde está el
+  // usuario llegan bastante más fuerte que los de arriba o abajo.
 
   /// Índice "MAC de beacon → id de piso" de TODOS los mapas guardados, y los
   /// datos de cada piso. Se carga una sola vez (una consulta) al arrancar y
@@ -115,25 +113,19 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
 
   // ── LECTURAS DE BEACONS CON MAPA ───────────────────────────────────────────
   //
-  // POR QUÉ SE ACUMULAN (era la causa de "Mapa no encontrado" con el mapa ya
-  // descargado y los beacons alrededor):
-  //
-  // flutter_blue_plus entrega en cada callback la lista ACUMULADA de
-  // dispositivos y saca a los que no oye hace más de removeIfGone (3 s). El
-  // scan estaba en modo "balanced", que escucha ~1 s de cada 4 s, así que en
-  // cada pausa los beacons se caían de la lista un momento. Ahora el scan es
-  // continuo (ver BluetoothHelper), pero lo mismo puede pasar con un hueco de
-  // señal, por ejemplo el cuerpo tapando el teléfono. Antes bastaba UN
-  // callback sin beacons conocidos para:
-  //   • reiniciar la ventana de elección de piso, que pide 3 s seguidos: con
-  //     un corte cada ~4 s, muchas veces no se completaba nunca;
-  //   • caer en la rama "no hay mapa local": consulta a la nube y arranque
-  //     del aviso periódico "Mapa no encontrado", que desde ahí sonaba cada
-  //     10 s aunque los beacons con mapa se siguieran viendo.
-  //
-  // Ahora cada beacon conocido guarda su última lectura NUEVA (por la hora
-  // del advertisement, no por seguir figurando en la lista) y cuenta como
+  // Cada beacon conocido guarda su última lectura NUEVA (por la hora del
+  // advertisement, no por seguir figurando en la lista) y cuenta como
   // presente durante [_vigenciaLectura]. Un corte breve no borra nada.
+  //
+  // flutter_blue_plus saca de la lista a los dispositivos que no oye hace
+  // más de removeIfGone (3 s), y un hueco de señal (el cuerpo tapando el
+  // teléfono) hace caer a los beacons un momento. Si UN callback sin beacons
+  // conocidos alcanzara para olvidarlos:
+  //   • se reiniciaría la ventana de elección de piso, que pide 3 s
+  //     seguidos, y con cortes frecuentes no se completaría nunca;
+  //   • se caería en la rama "no hay mapa local": consulta a la nube y aviso
+  //     periódico "Mapa no encontrado" cada 10 s, con el mapa descargado y
+  //     los beacons alrededor.
 
   /// Última lectura nueva de cada beacon con mapa local.
   final Map<String, _Lectura> _lecturas = {};
@@ -469,7 +461,7 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       _consultarNube(macs);
     }
 
-    // 3) Feedback de dispositivos detectados sin mapa (comportamiento de siempre)
+    // 3) Aviso de dispositivos detectados sin mapa.
     if (mounted &&
         !_navegando &&
         !_resolviendo &&
@@ -480,8 +472,8 @@ class _ModoAutomaticoState extends State<ModoAutomatico> {
       );
       // Iniciar timer de mapa solo una vez, cuando aparecen beacons sin mapa.
       // Como queda corriendo, cada vez que suena revisa que de verdad no se
-      // esté oyendo ningún beacon con mapa: antes también avisaba mientras
-      // se estaba eligiendo el piso.
+      // esté oyendo ningún beacon con mapa (por ejemplo, mientras se elige
+      // el piso).
       _mapaTimer ??= Timer.periodic(const Duration(seconds: 10), (_) {
         if (mounted &&
             !_navegando &&

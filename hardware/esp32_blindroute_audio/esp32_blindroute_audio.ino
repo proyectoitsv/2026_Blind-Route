@@ -1,12 +1,22 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  BlindRoute — Firmware ESP32  (bidireccional)
+//  BlindRoute — Firmware del auricular ESP32
 //
+//  El ESP32 es un auricular Bluetooth con micrófono (INMP441) y parlante
+//  (MAX98357A). Tiene tres canales, que conviven:
+//   · A2DP (receptor): la música y los sonidos de cualquier app salen por el
+//     parlante.
+//   · HFP (manos libres): las llamadas y el asistente de voz del teléfono
+//     usan el micrófono y el parlante del auricular.
+//   · SPP: el protocolo propio con la app de BlindRoute (abajo).
+//  COMO_FUNCIONA.md explica cada parte y cómo probarlo.
+//
+//  ── SPP ───────────────────────────────────────────────────────────────────
 //  INMP441 (I2S RX) ──μ-law──> SPP ──> app        [capturar voz del usuario]
 //  app ──> SPP ──μ-law──> MAX98357A (I2S TX)      [reproducir voz de la app]
 //
-//  ── POR QUÉ ES HALF-DUPLEX (una cosa a la vez) ────────────────────────────
-//  El firmware NUNCA captura y reproduce al mismo tiempo. Es una decisión
-//  deliberada, por tres motivos independientes:
+//  ── POR QUÉ EL SPP ES HALF-DUPLEX (una cosa a la vez) ─────────────────────
+//  Por SPP el firmware NUNCA captura y reproduce al mismo tiempo. Es una
+//  decisión deliberada, por tres motivos independientes:
 //
 //   1. ANCHO DE BANDA. Medimos que el enlace SPP se satura: a 16 kHz el ESP32
 //      descartaba paquetes y el caudal caía en rampa (33→24→15→8 bloques/s).
@@ -24,14 +34,14 @@
 //  responde. Nunca las dos cosas a la vez.
 //
 //  ── PROTOCOLO ─────────────────────────────────────────────────────────────
-//  ESP32 → app (audio del micrófono, sin cambios):
+//  ESP32 → app (audio del micrófono):
 //    [0xAA][len_hi][len_lo][...μ-law 8-bit mono...]
 //
-//  app → ESP32 (audio para reproducir, NUEVO):
+//  app → ESP32 (audio para reproducir):
 //    [0xBB][len_hi][len_lo][...μ-law 8-bit mono...]   bloque de audio
 //    [0xBE]                                            fin de stream
 //
-//  app → ESP32 (comandos de un byte, sin cambios):
+//  app → ESP32 (comandos de un byte):
 //    'D'/'d' → reproduce /derecha.wav desde LittleFS
 //    'I'/'i' → reproduce /izquierda.wav desde LittleFS
 //    'M'/'m' → empieza a capturar y enviar audio
@@ -406,7 +416,7 @@ void initAmplifierI2S() {
     // ESTÉREO DE VERDAD: cada trama lleva la muestra en las dos ranuras, y la
     // duplica el firmware (ver escribirAmpEstereo), no el periférico.
     //
-    // Antes era ALL_LEFT (modo mono de 16 bits). En el ESP32 clásico ese modo
+    // No se usa ALL_LEFT (modo mono de 16 bits): en el ESP32 clásico ese modo
     // tiene una particularidad: el DMA lee de a palabras de 32 bits (dos
     // muestras) y el orden en que salen esas dos muestras no es el obvio. Si
     // salen intercambiadas de a pares, aparece una copia "espejada" del sonido
@@ -415,8 +425,8 @@ void initAmplifierI2S() {
     // áspero. Además, i2s_set_clk(..., I2S_CHANNEL_MONO) puede reconfigurar las
     // ranuras y dejar una vacía (6 dB menos con el pin SD del MAX98357A sin
     // forzar). Con tramas estéreo con la misma muestra en las dos ranuras no
-    // importa el orden: L y R son iguales. Es lo que hacía el firmware viejo
-    // (esp32_blindroute_a2dp).
+    // importa el orden: L y R son iguales. Lo mismo hace
+    // esp32_blindroute_a2dp.
     .channel_format       = I2S_CHANNEL_FMT_RIGHT_LEFT,
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
     .intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1,
@@ -673,8 +683,8 @@ void alimentarAltavoz() {
   // de lo que preparamos, el resto sigue en el anillo y se manda en la próxima
   // vuelta. Se avanza aunque i2s_write devuelva error: con timeout 0 devuelve
   // ESP_ERR_TIMEOUT cuando se llena a mitad de camino, pero lo que alcanzó a
-  // escribir ya está en el DMA. Antes eso no se descontaba y esas muestras
-  // sonaban dos veces.
+  // escribir ya está en el DMA: si no se descontara, esas muestras sonarían
+  // dos veces.
   if (escritos >= 4) {
     ringTail = (ringTail + escritos / 4) % RING_BYTES;
     sesReproducidas += escritos / 4;
@@ -938,22 +948,22 @@ static const uint32_t SCO_TASA_MSBC = 16000;
 // ─── RECONEXIÓN ──────────────────────────────────────────────────────────────
 // Es el auricular el que busca al teléfono (como cualquier auricular), pero
 // SOLO durante una ventana: al arrancar y cuando se corta el enlace por
-// distancia. Antes buscaba para siempre: HFP cada 5 s y A2DP cada 10 s.
+// distancia. Pasada la ventana, el ESP32 sólo espera: visible y conectable,
+// para que el teléfono se conecte él (desde Ajustes → Bluetooth, o solo al
+// prender el Bluetooth, como con cualquier auricular).
 //
-// POR QUÉ IMPORTA (y por qué un Pixel no llegaba a conectarse): cada intento
-// es un "page" de radio que dura hasta 5,12 s si el teléfono no contesta. Con
-// HFP cada 5 s y A2DP cada 10 s, la radio del ESP32 pasaba casi todo el
-// tiempo llamando al teléfono recordado, y mientras llama casi no escucha:
-// otro teléfono que lo quería emparejar o conectar no lo encontraba o se
-// cansaba de esperar. Y el teléfono recordado era el PRIMERO de la lista de
-// vinculados (el Samsung con que se probó), no el último usado: con el
-// Samsung cerca, el ESP32 se le volvía a conectar y ocupaba A2DP y HFP (un
-// solo teléfono a la vez), así que el Pixel podía emparejar pero no conectar.
+// POR QUÉ UNA VENTANA: cada intento es un "page" de radio que dura hasta
+// 5,12 s si el teléfono no contesta, y mientras llama la radio casi no
+// escucha. Buscando para siempre (un intento cada pocos segundos), la radio
+// pasaría casi todo el tiempo llamando al teléfono recordado, y otro teléfono
+// que lo quiere emparejar o conectar no lo encontraría o se cansaría de
+// esperar.
 //
-// Ahora: el último teléfono usado se guarda en la memoria no volátil (NVS), y
-// pasada la ventana el ESP32 solo espera: visible y conectable, para que el
-// teléfono se conecte él (desde Ajustes → Bluetooth, o solo al prender el
-// Bluetooth, como con cualquier auricular).
+// Y se busca al ÚLTIMO teléfono usado, guardado en la memoria no volátil
+// (NVS), no al primero de la lista de vinculados: con dos teléfonos
+// vinculados, el primero, si está cerca, se volvería a conectar y ocuparía
+// A2DP y HFP (un solo teléfono a la vez), y el otro podría emparejar pero no
+// conectar.
 #define VENTANA_RECONEXION_MS   60000   // cuánto busca al teléfono
 #define INTERVALO_RECONEXION_MS  6000   // entre intento e intento (HFP y A2DP se turnan)
 
@@ -1417,8 +1427,8 @@ static void atenderComandosUsb() {
 // después de un corte. El Bluetooth entrega la música a ráfagas y el DMA del
 // I2S guarda solo ~46 ms a 44,1 kHz: sin colchón, cualquier ráfaga atrasada
 // deja al DMA sin datos y mete un hueco de silencio (un "clic"). Muchos huecos
-// seguidos suenan ásperos. Más = más robusto y más retardo (el firmware viejo
-// usaba 100). Si "cortes" sube en el informe [bt-audio], subilo a 100-150.
+// seguidos suenan ásperos. Más = más robusto y más retardo
+// (esp32_blindroute_a2dp usa 100). Si "cortes" sube en el informe [bt-audio], subilo a 100-150.
 // Solo para la música: en las llamadas el DMA ya guarda ~256 ms a 8 kHz.
 #define PREBUFFER_A2DP_MS  80
 
@@ -1632,9 +1642,9 @@ static void hfEventoBt(esp_hf_client_cb_event_t event, esp_hf_client_cb_param_t 
 #define MAX_VINCULADOS 8
 
 // Al arrancar elige a qué teléfono reconectar: el último usado, guardado en la
-// NVS, si sigue vinculado. Antes era el primero de la lista de vinculados, que
-// no es el más reciente (es el orden en que los guarda la pila Bluetooth): con
-// dos teléfonos vinculados, buscaba siempre al primero.
+// NVS, si sigue vinculado. No el primero de la lista de vinculados, que no es
+// el más reciente (es el orden en que los guarda la pila Bluetooth): con dos
+// teléfonos vinculados, buscaría siempre al primero.
 static void recordarVinculadoAlArrancar() {
   int cantidad = esp_bt_gap_get_bond_device_num();
   if (cantidad <= 0) {
@@ -1746,8 +1756,8 @@ static void iniciarPerfilesBt() {
 
 #ifdef CONFIG_BT_SSP_ENABLED
   // Emparejamiento seguro simple sin pantalla ni teclado ("Just Works"), como
-  // cualquier auricular. Antes no se fijaba y quedaba la capacidad por
-  // defecto de la pila, que no es la misma en todas las versiones. Con esto
+  // cualquier auricular. Se fija explícitamente porque la capacidad por
+  // defecto de la pila no es la misma en todas las versiones. Con esto
   // el teléfono muestra solo "¿Vincular con ESP32_BlindRoute?" y el ESP32
   // acepta sin código.
   esp_bt_io_cap_t capacidad = ESP_BT_IO_CAP_NONE;
@@ -1785,7 +1795,8 @@ void setup() {
   if (!LittleFS.begin(true)) {
     Serial.println("Error al montar LittleFS");
     // No se corta: la reproducción en streaming no necesita LittleFS, solo
-    // los comandos 'D' e 'I'. Antes un fallo acá dejaba el firmware muerto.
+    // los comandos 'D' e 'I'. Un fallo acá no tiene que dejar el firmware
+    // muerto.
   }
 
   initMicrophoneI2S();

@@ -1,13 +1,4 @@
-import 'dart:ui' show lerpDouble;
-
-import 'package:flutter/foundation.dart';
-import 'package:flutter/painting.dart';
-
-import 'colores.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Relieve: levantado y hundido
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Lo que se toca se ve levantado o hundido. Levantado: dos sombras por
 // fuera, la oscura abajo a la derecha y la clara arriba a la izquierda (la
@@ -15,7 +6,7 @@ import 'colores.dart';
 // al revés (la oscura en el borde de arriba y de la izquierda), como algo
 // grabado en la superficie.
 //
-// Las medidas son las de CSS del prompt (sección 2.2):
+// Las medidas, en notación de sombras de CSS:
 //   levantado        6px 6px 12px oscura, -6px -6px 12px clara
 //   levantado chico  4px 4px  8px,        -4px -4px  8px  (botones de ícono,
 //                                                          chips)
@@ -38,9 +29,16 @@ import 'colores.dart';
 //
 // ─── Elevación ───
 // Un número de −1 (hundido) a 1 (levantado), pasando por 0 (plano): las
-// sombras se acortan hacia 0 y del otro lado aparecen por dentro. Así la
-// fase 3 puede animar el paso de levantado a hundido al presionar
+// sombras se acortan hacia 0 y del otro lado aparecen por dentro. Así se
+// puede animar el paso de levantado a hundido al presionar
 // interpolando un solo número (DecoracionRelieve.lerp).
+
+import 'dart:ui' show lerpDouble;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
+
+import 'colores.dart';
 
 /// Una sombra del relieve, con las medidas de CSS.
 @immutable
@@ -80,7 +78,7 @@ enum ParteRelieve {
   frente,
 }
 
-/// Las medidas del relieve (sección 2.2 del prompt).
+/// Las medidas del relieve.
 abstract final class RelieveApp {
   /// Tarjetas, botones grandes, la barra flotante y las hojas.
   static const SombraRelieve levantado = SombraRelieve(

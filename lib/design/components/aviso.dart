@@ -1,14 +1,4 @@
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../tipografia.dart';
-import 'panel_relieve.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Aviso
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Un mensaje corto abajo de la pantalla, que se va solo ("Planta baja
 // descargado", "Error al quitar: …"). Va en lugar del SnackBar de Material,
@@ -29,6 +19,14 @@ import 'panel_relieve.dart';
 // ─── Sin textos de Material ───
 // Sin el botón para cerrar del SnackBar, que TalkBack diría "Close", en
 // inglés. Para descartarlo con TalkBack está la acción estándar del sistema.
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../tipografia.dart';
+import 'panel_relieve.dart';
 
 /// Muestra [texto] en un aviso abajo de la pantalla. Con [error], lleva el
 /// ícono y el borde en rojo.

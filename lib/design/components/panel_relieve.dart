@@ -1,23 +1,21 @@
-import 'package:flutter/material.dart';
-
-import '../espaciado.dart';
-import '../estilo.dart';
-import '../formas.dart';
-import '../relieve.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Panel con relieve
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Un panel levantado (una tarjeta, la instrucción de la navegación) o hundido
-// (el plano, una pista). Es la pieza con la que se arman los componentes y,
-// en la fase 5, los paneles de las pantallas.
+// (el plano, una pista). Es la pieza con la que se arman los componentes y
+// los paneles de las pantallas.
 //
 // ─── Lo hundido con contenido que tapa el relleno ───
 // Si el contenido pinta encima de todo el panel (el plano), la sombra
 // interior tiene que caer sobre el contenido, no debajo: con sombraEncima,
 // el relleno va detrás y la sombra interior y el borde, delante. Para un
 // contenido con texto no se usa: el texto nunca va bajo una sombra.
+
+import 'package:flutter/material.dart';
+
+import '../espaciado.dart';
+import '../estilo.dart';
+import '../formas.dart';
+import '../relieve.dart';
 
 /// Panel con relieve: levantado (por defecto) o [hundido].
 class PanelRelieve extends StatelessWidget {

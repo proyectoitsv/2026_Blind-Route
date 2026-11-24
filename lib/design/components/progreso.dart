@@ -1,16 +1,4 @@
-import 'dart:math' as math;
-
-import 'package:flutter/material.dart';
-
-import '../estilo.dart';
-import '../formas.dart';
-import '../movimiento.dart';
-import '../relieve.dart';
-import '../tipografia.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Anillos, barras de progreso y minigráfico
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Dibujados con CustomPainter: trazo grueso con puntas redondas.
 //
@@ -34,6 +22,16 @@ import '../tipografia.dart';
 // cambia de golpe. El número no cuenta: dice siempre el valor final, y
 // TalkBack también. En la navegación en vivo no se llenan al aparecer
 // (animarAlAparecer: false): lo que se mueve ahí es la ruta.
+
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import '../estilo.dart';
+import '../formas.dart';
+import '../movimiento.dart';
+import '../relieve.dart';
+import '../tipografia.dart';
 
 /// "45 %", con un espacio que no se parte entre el número y el signo.
 String textoPorcentaje(double valor) =>

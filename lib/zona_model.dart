@@ -1,3 +1,6 @@
+// Zona no transitable de un piso (ZonaNoTransitable): un polígono con
+// vértices normalizados (0–1) sobre la imagen del plano.
+
 import 'package:flutter/material.dart';
 
 /// Representa una zona no transitable definida por un polígono de vértices.

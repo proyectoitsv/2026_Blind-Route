@@ -1,16 +1,14 @@
-import 'package:blindroute/grilla_nav.dart';
-import 'package:blindroute/pathfinder.dart';
-import 'package:blindroute/zona_model.dart';
-import 'package:flutter_test/flutter_test.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // SIN CAMINO: ¿QUÉ PUNTA QUEDÓ ENCERRADA?
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Plano de 10 × 10 m con celdas de 1 m. Una habitación de 2 × 2 celdas
 // (columnas y filas 7 y 8) cerrada por paredes de 20 cm sobre los límites
 // de celda (x = 7 y 9, y = 7 y 9): no tapan ningún centro, sólo cortan las
 // conexiones. Afuera queda el área principal del piso.
+
+import 'package:blindroute/grilla_nav.dart';
+import 'package:blindroute/pathfinder.dart';
+import 'package:blindroute/zona_model.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 const double _lado = 10.0;
 

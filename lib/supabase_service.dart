@@ -1,3 +1,10 @@
+// Nube de mapas publicados (Supabase: Postgres + Storage).
+//
+// SupabaseService publica los pisos desde la app del admin (plano, beacons,
+// zonas, lugares y calibraciones), lista el catálogo, descarga e instala los
+// mapas en la app del usuario y sincroniza los ajustes de navegación. El
+// resto de la app no conoce el SDK de Supabase.
+
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -457,12 +464,11 @@ class SupabaseService {
 
     // 2) Imagen → archivo local permanente.
     //
-    // El nombre lleva la versión del mapa. Antes era siempre
-    // "mapa_<id>.png": al actualizar un mapa cuyo plano había cambiado, el
-    // archivo se pisaba con el mismo nombre, y Flutter (que recuerda las
-    // imágenes ya abiertas por su ruta) podía seguir mostrando el plano
-    // viejo hasta reiniciar la app. Con un nombre por versión el plano nuevo
-    // se ve enseguida.
+    // El nombre lleva la versión del mapa. Con un nombre fijo, al actualizar
+    // un mapa cuyo plano cambió el archivo se pisaría con el mismo nombre, y
+    // Flutter (que recuerda las imágenes ya abiertas por su ruta) podría
+    // seguir mostrando el plano viejo hasta reiniciar la app. Con un nombre
+    // por versión el plano nuevo se ve enseguida.
     final imagenPath = row['imagen_path'] as String;
     final Uint8List bytes =
         await _client.storage.from(_bucket).download(imagenPath);
@@ -511,8 +517,8 @@ class SupabaseService {
       }
     }
 
-    // 4) Ajustes de navegación del edificio. Ahora hay conexión; en el
-    //    edificio puede no haberla. Si fallan, el mapa igual queda: se
+    // 4) Ajustes de navegación del edificio. En este momento hay conexión;
+    //    en el edificio puede no haberla. Si fallan, el mapa igual queda: se
     //    navega con lo último guardado y se reintenta al navegar.
     try {
       await sincronizarAjustesNavegacion(edificioNombre);

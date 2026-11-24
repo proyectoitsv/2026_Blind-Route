@@ -1,3 +1,16 @@
+// LA NAVEGACIÓN
+//
+// Lo que se ve (VistaNavegacion, que recibe todo de afuera): la barra, el
+// destino, la brújula, los pisos, la indicación, el plano, la línea de tiempo,
+// la señal y la píldora; los dos gestos de toda la pantalla; lo que dice
+// TalkBack y la letra al 200 % con Inter de verdad.
+//
+// Después, SeguimientoRecorrido (los tramos que se muestran, armados con la
+// ruta de la navegación), el plano (MapaWidget) y la pantalla de verdad
+// (PantallaNavegacion) con la base, la voz y la brújula simuladas: sin
+// Bluetooth (flutter_blue_plus no tiene plataforma en los tests), así que no
+// hay posición ni ruta; lo de la guía se prueba con la vista.
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -24,21 +37,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ayudas_pantallas.dart';
 import 'base_falsa.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// LA NAVEGACIÓN (fase 5.7 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Lo que se ve (VistaNavegacion, que recibe todo de afuera): la barra, el
-// destino, la brújula, los pisos, la indicación, el plano, la línea de tiempo,
-// la señal y la píldora; los dos gestos de toda la pantalla; lo que dice
-// TalkBack y la letra al 200 % con Inter de verdad.
-//
-// Después, SeguimientoRecorrido (los tramos que se muestran, armados con la
-// ruta de la navegación), el plano (MapaWidget) y la pantalla de verdad
-// (PantallaNavegacion) con la base, la voz y la brújula simuladas: sin
-// Bluetooth (flutter_blue_plus no tiene plataforma en los tests), así que no
-// hay posición ni ruta; lo de la guía se prueba con la vista.
 
 /// Un PNG de 1 × 1, transparente.
 const String _png1x1 =

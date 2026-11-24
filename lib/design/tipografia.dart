@@ -1,8 +1,4 @@
-import 'package:flutter/material.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Tipografía de BlindRoute
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Inter (licencia OFL, assets/fonts/Inter/OFL.txt), empaquetada en la app: se
 // ve igual sin internet. Se usan los pesos estáticos 400, 500, 600 y 700
@@ -25,6 +21,9 @@ import 'package:flutter/material.dart';
 // usa, con un color de la paleta.
 //
 // Entre paréntesis, el nombre de cada estilo en la escala del rediseño.
+
+import 'package:flutter/material.dart';
+
 abstract final class TipografiaApp {
   /// Familia declarada en pubspec.yaml.
   static const String familia = 'Inter';

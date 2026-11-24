@@ -1,3 +1,10 @@
+// Grilla de navegación de un piso (GrillaNav).
+//
+// Pasa de coordenadas normalizadas del plano (0–1) a celdas y metros: cuántas
+// celdas hay en cada eje, el índice de la celda de un punto y el centro de
+// cada celda. La comparten el A*, el posicionamiento, la calibración y el
+// dibujo del mapa, así todos hablan de la misma celda.
+
 import 'dart:ui';
 
 /// Definición de la grilla de navegación para un plano. El lado de celda es

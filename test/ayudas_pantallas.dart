@@ -1,15 +1,7 @@
-import 'package:blindroute/design/design.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_test/flutter_test.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// AYUDAS PARA LOS TESTS DE LAS PANTALLAS MIGRADAS (fase 5 del rediseño)
-// ═══════════════════════════════════════════════════════════════════════════
+// AYUDAS PARA LOS TESTS DE LAS PANTALLAS
 //
 // Lo que comparten los tests de las pantallas: armarlas como en la app (con
-// el MaterialApp de los entrypoints, que sigue con el tema de antes) en un
+// el MaterialApp de los entrypoints, que conserva su tema de Material) en un
 // teléfono de 360 × 780 dp y con la letra en la escala que se pida; Inter de
 // verdad para medir; las palabras partidas; lo que dice TalkBack y en qué
 // orden; y las rutas que se abren.
@@ -21,6 +13,12 @@ import 'package:flutter_test/flutter_test.dart';
 // medir como en el teléfono que ninguna palabra se parta.
 //
 // No termina en _test.dart: flutter test no lo corre solo.
+
+import 'package:blindroute/design/design.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 /// El canal de flutter_tts. Los tests de las pantallas que hablan lo
 /// simulan.
@@ -60,7 +58,7 @@ Future<void> cargarInter() async {
 }
 
 /// Arma [pantalla] como en la app (el MaterialApp de main_user.dart y de
-/// main_admin.dart, con el tema de antes), en un teléfono de 360 × 780 dp y
+/// main_admin.dart, con su tema de Material), en un teléfono de 360 × 780 dp y
 /// con la letra en [escala]. Devuelve el observador de las rutas.
 Future<ObservadorRutas> armarPantalla(
   WidgetTester tester,

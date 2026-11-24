@@ -1,3 +1,9 @@
+// Rubros de los lugares (Rubro, Rubros).
+//
+// Un rubro es la categoría de un lugar con las palabras con las que la gente
+// lo pide ("comer", "hambre" → Comida). Acá están los rubros de fábrica y el
+// catálogo editable de cada teléfono.
+
 /// Un rubro: la categoría de un lugar ("Comida", "Kiosco", "Baño"…) con las
 /// palabras con las que la gente lo pide.
 class Rubro {

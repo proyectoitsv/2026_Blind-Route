@@ -1,11 +1,10 @@
-import 'package:flutter/painting.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Espaciado de BlindRoute
-// ═══════════════════════════════════════════════════════════════════════════
 //
 // Márgenes y separaciones, en dp. Con letra grande el contenido crece hacia
 // abajo; los márgenes laterales no cambian, para no robarle ancho al texto.
+
+import 'package:flutter/painting.dart';
+
 abstract final class EspaciadoApp {
   /// Entre un ícono y su texto, o entre un número y su unidad.
   static const double minimo = 4;

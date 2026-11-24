@@ -1,18 +1,16 @@
+// PRIORIDAD DE LAS INDICACIONES SOBRE LAS FRASES SECUNDARIAS
+//
+// "Estás en <punto clave>" es una frase secundaria: sólo arranca con el
+// motor libre y cualquier indicación la corta. El motor de voz se simula
+// sobre el canal de flutter_tts: anota lo que se le manda a decir y, al
+// pedirle que pare, avisa la cancelación como lo hace el de Android.
+
 import 'dart:async';
 
 import 'package:blindroute/voz_service.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PRIORIDAD DE LAS INDICACIONES SOBRE LAS FRASES SECUNDARIAS
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// "Estás en <punto clave>" es una frase secundaria: sólo arranca con el
-// motor libre y cualquier indicación la corta. El motor de voz se simula
-// sobre el canal de flutter_tts: anota lo que se le manda a decir y, al
-// pedirle que pare, avisa la cancelación como lo hace el de Android.
 
 const _canal = MethodChannel('flutter_tts');
 

@@ -1,3 +1,9 @@
+// Base de datos local del teléfono (SQLite, con sqflite).
+//
+// DatabaseHelper guarda los edificios, pisos, beacons, zonas, lugares,
+// calibraciones y rubros, migra el esquema entre versiones (_onUpgrade) e
+// instala los mapas descargados de la nube. La comparten las dos apps.
+
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'beacon_model.dart';
@@ -352,8 +358,8 @@ class DatabaseHelper {
     }
     if (oldVersion < 18) {
       // v18: altura de instalación de cada beacon (m sobre el piso). Null =
-      // sin indicar, que la navegación toma como "a la altura del teléfono",
-      // o sea como hasta ahora (ver ProcesadorSenal.alturaRelativa).
+      // sin indicar, que la navegación toma como "a la altura del teléfono"
+      // (ver ProcesadorSenal.alturaRelativa).
       final cols = await db.rawQuery('PRAGMA table_info(beacons)');
       if (!cols.any((c) => (c['name'] as String?) == 'altura')) {
         await db.execute('ALTER TABLE beacons ADD COLUMN altura REAL');
@@ -751,12 +757,12 @@ class DatabaseHelper {
       // Calibraciones. Cada una pasa por CalibracionRegistro: de lo que vino
       // de la nube se guardan sólo los campos conocidos, con su tipo.
       //
-      // Antes el mapa crudo se insertaba tal cual, con sus claves como
-      // nombres de columna. Un campo que esta versión no conoce (un mapa
-      // publicado con una app más nueva) hacía fallar la descarga ENTERA; y
-      // como sqflite arma el INSERT con esos nombres sin escaparlos, quien
-      // pudiera publicar un mapa podía alterar la sentencia. Una calibración
-      // mal formada ahora se saltea: el resto del mapa se instala igual.
+      // El mapa crudo no se inserta tal cual, con sus claves como nombres de
+      // columna: un campo que esta versión no conoce (un mapa publicado con
+      // una app más nueva) haría fallar la descarga ENTERA, y como sqflite
+      // arma el INSERT con esos nombres sin escaparlos, quien pudiera
+      // publicar un mapa podría alterar la sentencia. Una calibración mal
+      // formada se saltea: el resto del mapa se instala igual.
       for (final raw in calibraciones) {
         final CalibracionRegistro registro;
         try {
@@ -819,7 +825,7 @@ class DatabaseHelper {
   // --- Beacons ---
   /// Reemplaza los beacons del piso por [beacons], en UNA transacción: se
   /// llama cada vez que se mueve un beacon y antes de publicar, y sin ella
-  /// un cierre de la app entre el borrado y las inserciones dejaba el piso
+  /// un cierre de la app entre el borrado y las inserciones dejaría el piso
   /// sin parte de sus beacons.
   Future<void> guardarBeacons(int pisoId, List<BeaconMarcado> beacons) async {
     final db = await instance.database;

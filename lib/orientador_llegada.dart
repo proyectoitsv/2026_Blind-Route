@@ -1,3 +1,9 @@
+// Orientación al llegar al destino.
+//
+// OrientadorLlegada guía con la brújula a quien llega hasta quedar de frente
+// al lugar (la puerta, la boca de una escalera) antes de anunciar la llegada,
+// porque la ruta suele terminar en el pasillo, al costado de la entrada.
+
 import 'orientacion_service.dart';
 
 /// Cómo sigue la orientación al llegar (ver [OrientadorLlegada]).

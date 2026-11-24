@@ -1,27 +1,26 @@
-import 'package:flutter/material.dart';
-
-import 'ajustes_movimiento.dart';
-import 'tema_blindroute.dart';
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Ambiente del sistema de diseño
-// ═══════════════════════════════════════════════════════════════════════════
 //
-// El envoltorio de una pantalla migrada (y de la galería y las hojas): pone
+// El envoltorio de cada pantalla (y de la galería y las hojas): pone
 // el tema nuevo (TemaBlindRoute.oscuro) y suma «Reducir movimiento» de
 // Ajustes a «Quitar animaciones» del teléfono en el MediaQuery
 // (disableAnimations). Así los componentes preguntan sólo
 // MovimientoApp.reducido y, cuando el ajuste cambia, lo de abajo se vuelve a
 // armar al instante.
 //
-// Va en cada pantalla porque los entrypoints (main_user.dart y
-// main_admin.dart) no se tocan: su MaterialApp sigue con el tema de antes.
+// Va en cada pantalla y no en el MaterialApp de main_user.dart y
+// main_admin.dart, que conservan su tema de Material.
 // Una pantalla nueva se abre con RutaApp (transiciones.dart); una hoja, con
 // mostrarHoja, que ya la envuelve.
 //
 //   return AmbienteDiseno(
 //     child: Scaffold(...),
 //   );
+
+import 'package:flutter/material.dart';
+
+import 'ajustes_movimiento.dart';
+import 'tema_blindroute.dart';
+
 class AmbienteDiseno extends StatelessWidget {
   const AmbienteDiseno({super.key, required this.child});
 
