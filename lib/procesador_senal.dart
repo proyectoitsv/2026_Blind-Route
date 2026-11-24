@@ -396,9 +396,15 @@ class ProcesadorSenal {
   /// de convertirlo: promediar la distancia y despues mapear es mas estable que
   /// promediar confianzas ya saturadas en 0 o en 1.
   ///
-  /// [dbMalo]: la coincidencia mínima (ver [_fpDbMalo]); la regula el admin.
-  static double confianzaFingerprint(double rms, {double dbMalo = _fpDbMalo}) =>
-      ((dbMalo - rms) / max(dbMalo - _fpDbBueno, 0.5)).clamp(0.0, 1.0);
+  /// [dbMalo] y [dbBueno]: la coincidencia mínima y la perfecta (ver
+  /// [_fpDbMalo] y [_fpDbBueno]); las regula el admin. Entre las dos la
+  /// confianza baja en línea recta de 1 a 0.
+  static double confianzaFingerprint(
+    double rms, {
+    double dbMalo = _fpDbMalo,
+    double dbBueno = _fpDbBueno,
+  }) =>
+      ((dbMalo - rms) / max(dbMalo - dbBueno, 0.5)).clamp(0.0, 1.0);
 
   /// Compara las [lecturasVivas] (mac -> RSSI filtrado) contra los
   /// fingerprints guardados y devuelve la mejor coincidencia, o `null`.
@@ -461,9 +467,9 @@ class ProcesadorSenal {
   /// espacial alrededor de la posicion que ya calculo la multilateracion: el
   /// fingerprint refina el ultimo metro, no ubica desde cero.
   ///
-  /// [dbMalo] y [toleranciaRumbo]: la coincidencia mínima y la tolerancia de
-  /// rumbo, que el admin regula desde el panel de ajustes (por defecto,
-  /// [_fpDbMalo] y [_fpToleranciaRumbo]).
+  /// [dbMalo], [dbBueno] y [toleranciaRumbo]: la coincidencia mínima, la
+  /// perfecta y la tolerancia de rumbo, que el admin regula desde el panel de
+  /// ajustes (por defecto, [_fpDbMalo], [_fpDbBueno] y [_fpToleranciaRumbo]).
   ///
   /// [diagnostico]: si se pasa, se le agrega una línea por punto clave con lo
   /// que dio la comparación o por qué quedó afuera (para el log).
@@ -472,6 +478,7 @@ class ProcesadorSenal {
     required List<CalibracionRegistro> calibraciones,
     double? rumboVivo,
     double dbMalo = _fpDbMalo,
+    double dbBueno = _fpDbBueno,
     double toleranciaRumbo = _fpToleranciaRumbo,
     List<String>? diagnostico,
   }) {
@@ -550,7 +557,7 @@ class ProcesadorSenal {
           celdaIy: cal.celdaIy,
           etiqueta: cal.etiqueta,
           distanciaDb: rms,
-          confianza: confianzaFingerprint(rms, dbMalo: dbMalo),
+          confianza: confianzaFingerprint(rms, dbMalo: dbMalo, dbBueno: dbBueno),
           beaconsComunes: comunes,
         );
       } else if (mejor != null &&

@@ -151,13 +151,25 @@ class _PanelAjustesNavegacionState extends State<_PanelAjustesNavegacion> {
         const EncabezadoSeccion(titulo: 'Seguimiento de la posición'),
         const SizedBox(height: EspaciadoApp.chico),
         Text(
-          'Arranca tarde y avanza de golpe: bajar el umbral y las '
-          'ventanas, subir los filtros. Se pasa de largo: bajar el '
-          'empuje y la velocidad máxima.',
+          'Arranca tarde y avanza de golpe: bajar el umbral, las '
+          'ventanas y el ancla caminando; subir los filtros. Se pasa de '
+          'largo: bajar el empuje y la velocidad máxima. Tiembla parado: '
+          'subir el ancla parado.',
           style: pista,
         ),
         const SizedBox(height: EspaciadoApp.medio),
         for (final p in _ajustes.parametrosPosicion) _control(e, p),
+        const SizedBox(height: EspaciadoApp.medio),
+        const EncabezadoSeccion(titulo: 'Brújula'),
+        const SizedBox(height: EspaciadoApp.chico),
+        Text(
+          'Cerca de metal se traba de costado: subir la calidad mínima. '
+          'No sigue un corrimiento real: subir el paso de costado. El log '
+          '[Rumbo] dice la calidad.',
+          style: pista,
+        ),
+        const SizedBox(height: EspaciadoApp.medio),
+        for (final p in _ajustes.parametrosBrujula) _control(e, p),
         const SizedBox(height: EspaciadoApp.medio),
         const EncabezadoSeccion(titulo: 'Puntos clave'),
         const SizedBox(height: EspaciadoApp.chico),

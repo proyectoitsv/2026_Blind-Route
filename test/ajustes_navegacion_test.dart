@@ -31,6 +31,27 @@ void main() {
     }
   });
 
+  test('el ancla, la brújula y la coincidencia perfecta arrancan en los '
+      'valores que tenía el código y se regulan por edificio', () {
+    expect(a.anclaQuieto.valor, 3);
+    expect(a.anclaCaminando.valor, 0.25);
+    expect(a.calidadBrujula.valor, 0.35);
+    expect(a.pasoLateral.valor, 3);
+    expect(a.pasoAtras.valor, 15);
+    expect(a.fpCoincidenciaPerfectaDb.valor, 4);
+    for (final p in [
+      a.anclaQuieto,
+      a.anclaCaminando,
+      ...a.parametrosBrujula,
+      a.fpCoincidenciaPerfectaDb,
+    ]) {
+      expect(p.porEdificio, isTrue, reason: p.nombre);
+      expect(a.todos, contains(p), reason: p.nombre);
+    }
+    a.cambiarEnEdificio(a.pasoLateral, 8);
+    expect(a.pasoLateral.valor, 8);
+  });
+
   test('el general pisa al código y el edificio pisa al general', () {
     final f = a.filtroCaminando;
     a.cambiarGeneral(f, 0.7);

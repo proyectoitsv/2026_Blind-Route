@@ -154,6 +154,10 @@ class Posicionador {
     // brújula ya descontada la rotación del mapa. Si no hay brújula, `null` y
     // el ancla es isotrópica.
     Offset? rumboPlano,
+    // Peso del ancla, quieto y caminando (ver _priorQuieto). Los regula el
+    // panel de ajustes (AjustesNavegacion.anclaQuieto / anclaCaminando).
+    double priorQuieto = _priorQuieto,
+    double priorMoviendo = _priorMoviendo,
     int maxIter = 12,
   }) {
     if (obs.isEmpty) return posPrevia ?? const Offset(0.5, 0.5);
@@ -218,7 +222,7 @@ class Posicionador {
     double pa11 = 0, pa12 = 0, pa22 = 0;
     if (tienePrevia) {
       final kIso =
-          sumWc * (_priorQuieto + (_priorMoviendo - _priorQuieto) * fMov);
+          sumWc * (priorQuieto + (priorMoviendo - priorQuieto) * fMov);
 
       // Versor del rumbo en marco MÉTRICO: un mismo desplazamiento normalizado
       // mide distinto en cada eje (mx≠my), así que hay que llevarlo a metros y
@@ -429,6 +433,11 @@ class PuertaRumbo {
     required double factorMovimiento,
     required double dt,
     double velocidadAngularGrados = 0.0,
+    // Fracción que pasa de costado (puerta cerrada) y hacia atrás, con la
+    // anisotropía al máximo (ver _gLateralCerrada y _facAtras). Las regula
+    // el panel de ajustes (AjustesNavegacion.pasoLateral / pasoAtras).
+    double gananciaLateral = _gLateralCerrada,
+    double gananciaAtras = _facAtras,
   }) {
     if (!dt.isFinite || dt <= 0) return candidata;
     final mx = (metrosX.isFinite && metrosX > 0) ? metrosX : 1.0;
@@ -494,8 +503,8 @@ class PuertaRumbo {
     // aniso = 1 → restricción direccional plena (usuario caminando).
     final aniso = fMov;
     const double gAdelante = 1.0;
-    final double gAtras = 1.0 + (_facAtras - 1.0) * aniso;
-    final double gLatBase = 1.0 + (_gLateralCerrada - 1.0) * aniso;
+    final double gAtras = 1.0 + (gananciaAtras - 1.0) * aniso;
+    final double gLatBase = 1.0 + (gananciaLateral - 1.0) * aniso;
     final double gLateral = gLatBase + _apertura * (gAdelante - gLatBase);
 
     final aSalida = a * (a >= 0 ? gAdelante : gAtras);

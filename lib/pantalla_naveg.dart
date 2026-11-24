@@ -227,15 +227,17 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// posicionamiento. Por debajo de esto el heading se sigue usando para las
   /// instrucciones de voz y para el icono, pero NO para condicionar la
   /// posicion: un rumbo distorsionado por metal cercano clavaria la posicion
-  /// sobre un eje equivocado, que es peor que no restringir nada.
-  static const double _calidadRumboMinima = 0.35;
+  /// sobre un eje equivocado, que es peor que no restringir nada. La regula
+  /// el panel ([AjustesNavegacion.calidadBrujula]).
+  double get _calidadRumboMinima => _ajustes.calidadBrujula.valor;
 
-  /// Umbral de APAGADO del rumbo, mas bajo que el de encendido (histeresis).
-  /// Sin esto, con la calidad oscilando alrededor de _calidadRumboMinima el
-  /// rumbo entraría y saldría ciclo a ciclo; y cada salida resetea la puerta
-  /// direccional (evidencia y apertura a cero), así que la restricción
-  /// quedaría apagada en la práctica aunque en promedio hubiera calidad.
-  static const double _calidadRumboApagar = 0.15;
+  /// Umbral de APAGADO del rumbo, 0,2 por debajo del de encendido
+  /// (histéresis). Sin esto, con la calidad oscilando alrededor de
+  /// _calidadRumboMinima el rumbo entraría y saldría ciclo a ciclo; y cada
+  /// salida resetea la puerta direccional (evidencia y apertura a cero), así
+  /// que la restricción quedaría apagada en la práctica aunque en promedio
+  /// hubiera calidad.
+  double get _calidadRumboApagar => max(0.0, _calidadRumboMinima - 0.2);
   bool _rumboActivo = false;
 
   /// Throttle del log de diagnostico del rumbo (~cada 2 s).
@@ -1702,6 +1704,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         posPrevia: _posicionFiltrada,
         factorMovimiento: fPos,
         rumboPlano: rumboPlano,
+        priorQuieto: _ajustes.anclaQuieto.valor,
+        priorMoviendo: _ajustes.anclaCaminando.valor,
       );
 
       // ── PUERTA DIRECCIONAL ───────────────────────────────────────────────
@@ -1720,6 +1724,8 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           factorMovimiento: fPos,
           dt: dt,
           velocidadAngularGrados: _orientacion.velocidadAngularGrados,
+          gananciaLateral: _ajustes.pasoLateral.valor / 100,
+          gananciaAtras: _ajustes.pasoAtras.valor / 100,
         );
       } else {
         // Sin rumbo confiable la puerta no debe conservar evidencia vieja: al
@@ -1738,6 +1744,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       final diagnosticoFp = logFp ? <String>[] : null;
       final fuerzaFp = _ajustes.fpFuerza.valor;
       final coincidenciaDbFp = _ajustes.fpCoincidenciaDb.valor;
+      // La perfecta tiene que quedar por debajo de la mínima: si en el panel
+      // quedó más alta, se la baja a medio dB de la mínima.
+      final perfectaDbFp = min(
+        _ajustes.fpCoincidenciaPerfectaDb.valor,
+        coincidenciaDbFp - 0.5,
+      );
       final coincidencia = ProcesadorSenal.compararFingerprints(
         lecturasVivas: {
           for (final b in _beaconsEnElMapa.values)
@@ -1749,6 +1761,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
         // false, mandar el rumbo filtraria patrones por un dato malo.
         rumboVivo: _rumboActivo ? _orientacion.heading : null,
         dbMalo: coincidenciaDbFp,
+        dbBueno: perfectaDbFp,
         toleranciaRumbo: _ajustes.fpToleranciaRumbo.valor,
         diagnostico: diagnosticoFp,
       );
@@ -1806,6 +1819,7 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
           final confianza = ProcesadorSenal.confianzaFingerprint(
             _fpRmsSuavizado!,
             dbMalo: coincidenciaDbFp,
+            dbBueno: perfectaDbFp,
           );
           _fpPeso += fuerzaFp * (confianza - _fpPeso);
           _fpObjetivo = objetivoFp;

@@ -336,6 +336,41 @@ class AjustesNavegacion {
     porEdificio: true,
   );
 
+  /// Cuánto tira la posición hacia la del ciclo anterior con el usuario
+  /// quieto, en múltiplos del peso de los beacons ([Posicionador.estimar],
+  /// `priorQuieto`). De fábrica: 3.
+  final ParametroAjuste anclaQuieto = ParametroAjuste(
+    clave: 'nav_ancla_quieto',
+    nombre: 'Ancla, parado',
+    ayuda: 'Cuánto se aferra el punto a donde estaba, parado. Más: tiembla '
+        'menos, pero tarda en corregir un error.',
+    unidad: '',
+    unidadHablada: '',
+    minimo: 0.5,
+    maximo: 8,
+    paso: 0.25,
+    decimales: 2,
+    porDefecto: 3,
+    porEdificio: true,
+  );
+
+  /// Lo mismo caminando ([Posicionador.estimar], `priorMoviendo`). De
+  /// fábrica: 0,25.
+  final ParametroAjuste anclaCaminando = ParametroAjuste(
+    clave: 'nav_ancla_caminando',
+    nombre: 'Ancla, caminando',
+    ayuda: 'Cuánto se aferra el punto a donde estaba, caminando. Menos: '
+        'sigue más rápido, pero salta más.',
+    unidad: '',
+    unidadHablada: '',
+    minimo: 0.05,
+    maximo: 1.5,
+    paso: 0.05,
+    decimales: 2,
+    porDefecto: 0.25,
+    porEdificio: true,
+  );
+
   List<ParametroAjuste> get parametrosPosicion => [
         umbralCaminata,
         ventanaSenalQuieto,
@@ -344,7 +379,73 @@ class AjustesNavegacion {
         filtroCaminando,
         empujeVelocidad,
         velocidadMaxima,
+        anclaQuieto,
+        anclaCaminando,
       ];
+
+  // ── Brújula ───────────────────────────────────────────────────────────────
+  //
+  // Con la brújula confiable, el movimiento que no va hacia donde mira la
+  // persona se frena salvo que sea sostenido (ver [PuertaRumbo]). Cuánto
+  // metal hay cerca cambia de un edificio a otro, y con él cuándo se puede
+  // confiar en la brújula.
+
+  /// Calidad de la brújula (0 a 1, ver [OrientacionService.calidadRumbo]) a
+  /// partir de la cual frena el movimiento de costado. Se apaga 0,2 por
+  /// debajo, para que no entre y salga a cada ciclo. De fábrica: 0,35.
+  final ParametroAjuste calidadBrujula = ParametroAjuste(
+    clave: 'nav_calidad_brujula',
+    nombre: 'Calidad mínima de la brújula',
+    ayuda: 'Desde qué calidad la brújula frena el movimiento de costado (se '
+        'apaga 0,2 por debajo). Subirla si cerca de metal el punto se traba '
+        'de costado.',
+    unidad: '',
+    unidadHablada: '',
+    minimo: 0.1,
+    maximo: 0.9,
+    paso: 0.05,
+    decimales: 2,
+    porDefecto: 0.35,
+    porEdificio: true,
+  );
+
+  /// Porcentaje del desplazamiento de costado que pasa caminando mientras no
+  /// sea sostenido ([PuertaRumbo.aplicar], `gananciaLateral`). De fábrica:
+  /// 3 %.
+  final ParametroAjuste pasoLateral = ParametroAjuste(
+    clave: 'nav_paso_lateral_pct',
+    nombre: 'Paso de costado',
+    ayuda: 'Cuánto del movimiento de costado pasa caminando, si no es '
+        'sostenido. Más: sigue antes un corrimiento real, pero se bambolea.',
+    unidad: '%',
+    unidadHablada: 'por ciento',
+    minimo: 0,
+    maximo: 50,
+    paso: 1,
+    decimales: 0,
+    porDefecto: 3,
+    porEdificio: true,
+  );
+
+  /// Porcentaje del desplazamiento hacia atrás que pasa caminando
+  /// ([PuertaRumbo.aplicar], `gananciaAtras`). De fábrica: 15 %.
+  final ParametroAjuste pasoAtras = ParametroAjuste(
+    clave: 'nav_paso_atras_pct',
+    nombre: 'Paso hacia atrás',
+    ayuda: 'Cuánto del movimiento hacia atrás pasa caminando. Más: sigue '
+        'antes a quien retrocede, pero deja pasar más ruido.',
+    unidad: '%',
+    unidadHablada: 'por ciento',
+    minimo: 0,
+    maximo: 100,
+    paso: 5,
+    decimales: 0,
+    porDefecto: 15,
+    porEdificio: true,
+  );
+
+  List<ParametroAjuste> get parametrosBrujula =>
+      [calidadBrujula, pasoLateral, pasoAtras];
 
   // ── Puntos clave (ver "CORRECCION POR PUNTO CLAVE" en la navegación) ──────
   //
@@ -385,6 +486,23 @@ class AjustesNavegacion {
     maximo: 14,
     paso: 0.5,
     porDefecto: 10.0,
+    porEdificio: true,
+  );
+
+  /// Diferencia robusta (dB) por debajo de la cual la coincidencia es total
+  /// ([ProcesadorSenal.compararFingerprints], `dbBueno`). Entre ésta y la
+  /// [fpCoincidenciaDb] la confianza baja de 1 a 0. De fábrica: 4 dB.
+  final ParametroAjuste fpCoincidenciaPerfectaDb = ParametroAjuste(
+    clave: 'nav_fp_perfecta_db',
+    nombre: 'Coincidencia perfecta',
+    ayuda: 'Con menos dB que esto, la confianza en el punto clave es total. '
+        'Va por debajo de la coincidencia mínima.',
+    unidad: 'dB',
+    unidadHablada: 'decibeles',
+    minimo: 1,
+    maximo: 8,
+    paso: 0.5,
+    porDefecto: 4,
     porEdificio: true,
   );
 
@@ -440,8 +558,14 @@ class AjustesNavegacion {
     porEdificio: true,
   );
 
-  List<ParametroAjuste> get parametrosPuntoClave =>
-      [fpRadio, fpCoincidenciaDb, fpFuerza, fpCiclos, fpToleranciaRumbo];
+  List<ParametroAjuste> get parametrosPuntoClave => [
+        fpRadio,
+        fpCoincidenciaDb,
+        fpCoincidenciaPerfectaDb,
+        fpFuerza,
+        fpCiclos,
+        fpToleranciaRumbo,
+      ];
 
   // ── Interruptores de prueba (no se guardan ni se publican) ────────────────
   //
@@ -460,8 +584,12 @@ class AjustesNavegacion {
   /// transitable (ver [RestriccionZonas]).
   bool restringirZonas = true;
 
-  List<ParametroAjuste> get todos =>
-      [...parametrosGiro, ...parametrosPosicion, ...parametrosPuntoClave];
+  List<ParametroAjuste> get todos => [
+        ...parametrosGiro,
+        ...parametrosPosicion,
+        ...parametrosBrujula,
+        ...parametrosPuntoClave,
+      ];
 
   List<ParametroAjuste> get _porEdificio =>
       [for (final p in todos) if (p.porEdificio) p];
