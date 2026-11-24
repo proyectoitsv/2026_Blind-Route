@@ -100,9 +100,9 @@ El proyecto genera dos aplicaciones a partir del mismo código, que se instalan 
       <ul>
         <li>Edificios y pisos con la imagen del plano y su <b>escala en metros</b>.</li>
         <li>Ubicación de <b>balizas</b> (con la altura a la que está cada una), <b>zonas no transitables</b> y <b>lugares de interés</b> (aulas, baños, escaleras, ascensores).</li>
-        <li><b>Calibración</b> de la señal y <b>puntos de referencia</b> para mejorar la precisión.</li>
+        <li><b>Calibración</b> de la señal en el punto exacto donde se está parado, o justo debajo de un beacon, y <b>puntos de referencia</b> para mejorar la precisión.</li>
         <li><b>Publicación en la nube</b> de los mapas para la aplicación de la persona usuaria.</li>
-        <li><b>Panel de ajustes</b> de la navegación, por edificio o generales.</li>
+        <li><b>Panel de ajustes</b> de la navegación (posición, brújula, giros y puntos de referencia), por edificio o generales.</li>
       </ul>
     </td>
   </tr>
@@ -162,7 +162,7 @@ Las capturas se generaron en la computadora con datos y planos de ejemplo.
 | Requisito | Detalle |
 |---|---|
 | **Sistema operativo** | Android 7.0 (API 24) o superior. Compilada para Android 16 (API 36). |
-| **Dispositivo de prueba** | Samsung Galaxy S24 Ultra |
+| **Dispositivos de prueba** | Samsung Galaxy S24 Ultra y Google Pixel 9 Pro XL |
 | **Sensores** | Bluetooth y brújula |
 | **Entorno** | Un edificio con balizas instaladas y su mapa publicado |
 | **Voz sin conexión** | Android 13 o superior. La primera vez, con conexión, la aplicación descarga el español para el reconocimiento de voz. Con versiones anteriores, entender la voz requiere internet. |
@@ -181,9 +181,17 @@ La imagen del plano se elige con el selector del sistema y las vibraciones son l
 
 ## Estado del proyecto
 
-El proyecto se encuentra en desarrollo y en etapa de calibración en dispositivos reales.
+El proyecto se encuentra en desarrollo y en etapa de calibración en dispositivos reales. Varios parámetros de la navegación se eligieron con simulaciones y todavía se tienen que medir en un edificio real, y la forma de hacerlo se explica en [`docs/AJUSTES_EN_EL_EDIFICIO.md`](docs/AJUSTES_EN_EL_EDIFICIO.md).
+
+Los últimos cambios (la altura de los beacons, la calibración en el punto exacto, los parámetros nuevos del panel de ajustes y el firmware 2.1 del auricular) se resumen en [`docs/RESUMEN_DE_CAMBIOS_NOVIEMBRE_2026.md`](docs/RESUMEN_DE_CAMBIOS_NOVIEMBRE_2026.md).
 
 El proceso del rediseño visual se documenta en [`docs/ESTETICA.md`](docs/ESTETICA.md).
+
+### Problemas conocidos sin resolver
+
+Cada modelo de teléfono mide la señal de un mismo beacon con algunos dB de más o de menos según su antena, su carcasa y su chip Bluetooth. Como la calibración se hace con el teléfono del administrador, una persona con otro modelo calcula todas las distancias más largas o más cortas en la misma proporción, y en una simulación una diferencia de 3 a 5 dB llevó el error de la posición a entre 2,7 y 5 m. Este problema aún no se ha resuelto: la aplicación usa las calibraciones tal como las tomó el administrador, sin corregirlas según el teléfono. Se probó en simulación un aprendizaje automático de la diferencia, que quedó sin integrar porque antes hace falta medir con teléfonos reales si la diferencia es constante o cambia con la distancia. El detalle está en la sección 10 de [`docs/AJUSTES_EN_EL_EDIFICIO.md`](docs/AJUSTES_EN_EL_EDIFICIO.md).
+
+El firmware 2.1 del auricular ESP32, que corrige la conexión con teléfonos distintos del primero emparejado y el sonido metálico, todavía no se compiló ni se probó en la placa.
 
 ## Compilación e instalación
 
@@ -228,6 +236,12 @@ Se recomienda instalar con `adb install -r` en lugar de `flutter install`, ya qu
 flutter test
 ```
 
+Para correr un solo archivo de pruebas se indica su ruta, por ejemplo:
+
+```bash
+flutter test test/alturas_test.dart
+```
+
 ```bash
 flutter run --flavor user -t lib/main_galeria.dart
 ```
@@ -250,7 +264,9 @@ El código se encuentra en `lib/` y es compartido por ambas aplicaciones:
 | `database.dart` | Base de datos local |
 | `supabase_service.dart`, `supabase_config.dart` | Conexión con la nube |
 
-Las pruebas automáticas se encuentran en `test/` y los scripts SQL de la nube, en `supabase/`. El código nativo de Android que consulta y descarga el idioma para el reconocimiento de voz sin conexión se encuentra en `android/app/src/main/kotlin/com/example/blindroute/MainActivity.kt`.
+Las pruebas automáticas se encuentran en `test/` y los scripts SQL de la nube, en `supabase/`. El código nativo de Android que consulta y descarga el idioma para el reconocimiento de voz sin conexión se encuentra en `android/app/src/main/kotlin/com/example/blindroute/MainActivity.kt`, y el firmware del auricular ESP32, en `hardware/esp32_blindroute_audio/`.
+
+Cada archivo de `lib/` empieza con un comentario que explica qué contiene y cómo se relaciona con los demás.
 
 ## Tecnologías
 
@@ -277,7 +293,9 @@ Las pruebas automáticas se encuentran en `test/` y los scripts SQL de la nube, 
 | Archivo | Contenido |
 |---|---|
 | [`docs/ESTETICA.md`](docs/ESTETICA.md) | Diseño visual actual, su evolución y tareas pendientes |
-| [`docs/AJUSTES_EN_EL_EDIFICIO.md`](docs/AJUSTES_EN_EL_EDIFICIO.md) | Cómo probar en un edificio real y decidir el valor de cada parámetro de la navegación |
+| [`docs/AJUSTES_EN_EL_EDIFICIO.md`](docs/AJUSTES_EN_EL_EDIFICIO.md) | Cómo probar en un edificio real y decidir el valor de cada parámetro de la navegación, y la diferencia de ganancia entre teléfonos, que aún no se ha resuelto |
+| [`docs/RESUMEN_DE_CAMBIOS_NOVIEMBRE_2026.md`](docs/RESUMEN_DE_CAMBIOS_NOVIEMBRE_2026.md) | Resumen de los cambios del 23 y 24 de noviembre de 2026 y de lo que quedó pendiente |
+| [`hardware/esp32_blindroute_audio/COMO_FUNCIONA.md`](hardware/esp32_blindroute_audio/COMO_FUNCIONA.md) | Funcionamiento del auricular ESP32 (firmware 2.1): conexión, sonido, pines y mensajes del puerto serie |
 | [`supabase/ajustes_navegacion.sql`](supabase/ajustes_navegacion.sql) | Tabla y permisos de los ajustes de navegación en la nube |
 
 ---

@@ -2,7 +2,7 @@
 
 Varios de los valores que usa la navegación para calcular la posición se eligieron con simulaciones en la computadora, con cuentas o tomando valores típicos, ya que hasta ahora no se pudo medir cada uno en un edificio real, por lo que en la práctica pueden necesitar otro valor. En este documento se explica, para cada parámetro que conviene revisar, qué hace, dónde se cambia, qué se tiene que medir y cómo se decide el valor a partir de lo medido.
 
-Algunos datos ya se midieron y quedaron cargados: los beacons emiten cada 160 ms (se puede cambiar desde la app del fabricante), la señal configurada a 1 m es de −55 dBm, que coincide con el valor por defecto de la app, y el teléfono se lleva a unos 1,1 m del piso, que pasó a ser el valor de `alturaTelefonoM` en `lib/procesador_senal.dart`.
+Algunos datos ya se midieron y quedaron cargados: los beacons emiten cada 160 ms (se puede cambiar desde la app del fabricante), la señal configurada a 1 m es de −55 dBm, que coincide con el valor por defecto de la app, y el teléfono se lleva a unos 1,1 m del piso, que pasó a ser el valor de `alturaTelefonoM` en `lib/procesador_senal.dart`. La sección 10 explica aparte un problema que todavía no se resolvió, la diferencia de ganancia entre los teléfonos, junto con lo que se probó y lo que hace falta medir.
 
 ## 1. Antes de empezar
 
@@ -184,3 +184,105 @@ Tabla 6. Valores que se midieron o se probaron en la realidad.
 | Radio de llegada (0,5 m) | `lib/pantalla_naveg.dart` | Elegido después de probar con 1,5 m, que anunciaba la llegada con el lugar todavía lejos |
 | Tiempos del reconocimiento de voz | `lib/voz_service.dart` | Medidos en un Pixel 9 Pro XL |
 | Altura del teléfono (1,1 m), emisión cada 160 ms y −55 dBm a 1 m | `lib/procesador_senal.dart` y beacons | Datos medidos y configurados en los beacons |
+
+## 10. Diferencia de ganancia entre teléfonos (sin resolver)
+
+Cada modelo de teléfono mide la señal de un mismo beacon con algunos dB de más o de menos según su antena, su carcasa y su chip Bluetooth, y como el n y el RSSI a 1 m de cada beacon salen de las calibraciones hechas con el teléfono del administrador, una persona que navega con otro modelo calcula las distancias con un modelo que no corresponde a su teléfono. Este problema aún no se ha resuelto, por lo que la app usa las calibraciones tal como las tomó el administrador, sin ninguna corrección según el teléfono que navega.
+
+### 10.1 Cómo afecta a la posición
+
+Si la diferencia Δ entre los dos teléfonos es constante, todas las distancias quedan multiplicadas por el mismo factor:
+
+```
+factor = 10^(Δ / (10 · n))
+```
+
+Con el n por defecto de 2,7 y un teléfono que mide 5 dB menos queda factor = 10^(5 / 27) = 10^0,185 = 1,53, por lo que ese teléfono ve todos los beacons un 53 % más lejos de lo que están, mientras que con 3 dB el factor es 10^(3 / 27) = 1,29. Con todas las distancias estiradas o achicadas en la misma proporción las circunferencias dejan de cruzarse en un punto, y la posición que mejor las explica queda lejos de la real. En la Tabla 7 se resume una simulación sin ruido hecha con el posicionador de la app, con 5 beacons en el techo y n = 2, valor con el que las distancias se estiran más que con 2,7 (5 dB dan un factor de 1,78 en vez de 1,53).
+
+Tabla 7. Error de la posición según la diferencia del teléfono, en una simulación sin ruido.
+
+| El teléfono del usuario mide | Distancias que calcula | Error medio | Peor caso |
+|---|---|---|---|
+| 8 dB menos | ×2,51 | 7,0 m | 17,8 m |
+| 5 dB menos | ×1,78 | 5,0 m | 11,0 m |
+| 3 dB menos | ×1,41 | 3,6 m | 7,9 m |
+| Igual | ×1 | 0 m | 0,06 m |
+| 3 dB más | ×0,71 | 2,7 m | 6,2 m |
+| 5 dB más | ×0,56 | 3,4 m | 7,5 m |
+
+Los puntos clave no se ven afectados, debido a que antes de comparar la lectura en vivo con el patrón guardado se resta la mediana de las diferencias de todos los beacons, de manera que un teléfono que mide todo 5 dB menos da la misma comparación que el del administrador.
+
+Por otro lado, nada asegura que la diferencia entre dos teléfonos sea la misma a cualquier distancia. Si un teléfono mide −40 dBm donde el del administrador mide −50 dBm, y −65 dBm donde el otro mide −70 dBm, la relación entre los dos es una recta con pendiente distinta de 1:
+
+```
+rssi_usuario = a · rssi_admin + b
+a = (−40 − (−65)) / (−50 − (−70)) = 25 / 20 = 1,25
+b = −40 − 1,25 · (−50) = 22,5
+```
+
+Reemplazando el modelo del beacon, rssi_admin = tx − 10 · n · log10(d), queda:
+
+```
+rssi_usuario = (a · tx + b) − 10 · (a · n) · log10(d)
+```
+
+por lo que con una pendiente distinta de 1 el teléfono del usuario ve un n distinto (en el ejemplo, 1,25 veces el del administrador) además de un RSSI a 1 m distinto, y una corrección que sólo suma o resta dB no alcanza para compensarlo del todo.
+
+### 10.2 Lo que se probó
+
+Se programó y se probó en simulación una forma de que la navegación aprenda sola la diferencia, suponiendo que es constante. En cada ciclo se busca a la vez la posición y la diferencia que mejor explican todas las distancias, de manera parecida a como el GPS calcula el error del reloj del receptor, y el valor que se usa se acerca de a poco al que van dando los ciclos (con una constante de tiempo de 60 s caminando y de 240 s parado), debido a que cada ciclo tiene el ruido y el multicamino del lugar donde se tomó. Sólo aprende con 4 beacons o más y con la posición rodeada por ellos, porque con 3 beacons, o con todos los beacons de un mismo lado, la diferencia se confunde con un corrimiento de la posición, y cuando un punto clave coincide con buena confianza también usa el desplazamiento común que da esa comparación. Lo aprendido se guarda en el teléfono por edificio, ya que depende del teléfono con que se calibró cada uno.
+
+Un primer intento, que tomaba la mediana de los residuos en la posición ya calculada, no funcionó con los teléfonos que miden menos, ya que la posición se corría hacia los bordes del plano y absorbía la diferencia, y por eso se pasó a resolver las tres incógnitas (x, y y la diferencia) juntas en cada ciclo. En una simulación caminando 3 minutos con 2 dB de ruido por lectura y 3 dB de multicamino por lugar, el valor aprendido quedó a menos de 1,5 dB del real entre los 50 y los 160 s, más tarde cuanto mayor era la diferencia, con los errores de la Tabla 8.
+
+Tabla 8. Resultado del aprendizaje en una simulación de 3 minutos caminando, con tres semillas por diferencia.
+
+| Diferencia real | Valor aprendido | Error en el último minuto, aprendiendo | Sin aprender |
+|---|---|---|---|
+| −8 dB | −7,0 a −7,3 dB | 2,6 a 3,2 m | 7,5 a 8,5 m |
+| −5 dB | −4,5 a −4,7 dB | 2,4 a 2,7 m | 5,5 a 6,1 m |
+| −3 dB | −2,8 a −3,0 dB | 2,3 a 2,5 m | 3,6 a 4,1 m |
+| 0 dB | −0,3 dB | 2,2 a 2,4 m | 2,2 a 2,4 m |
+| +3 dB | +2,3 dB | 2,1 a 2,3 m | 2,1 a 2,3 m |
+| +5 dB | +4,0 a +4,1 dB | 2,0 a 2,3 m | 2,3 a 2,5 m |
+
+Con relaciones con pendiente distinta de 1, como la del ejemplo de la sección 10.1, se repitió la misma simulación, cuyos resultados están en la Tabla 9. En los dos casos con poca diferencia el error casi no cambió con o sin aprendizaje, y en los dos con mucha diferencia el aprendizaje recuperó la mayor parte, aunque quedaron entre 0,3 y 0,7 m de más comparado con los 2,25 m que dio un teléfono igual al del administrador en la misma simulación.
+
+Tabla 9. Resultado del aprendizaje con relaciones entre teléfonos de pendiente distinta de 1, donde r es el RSSI que mide el teléfono del administrador.
+
+| Relación | Valor aprendido | Error aprendiendo | Sin aprender |
+|---|---|---|---|
+| 1,25 · r + 22,5 (el ejemplo de la sección 10.1) | +2,2 dB | 2,19 m | 2,13 m |
+| 0,8 · r − 15 | +0,3 dB | 2,29 m | 2,27 m |
+| 1,25 · r + 15 | −4,3 dB | 2,53 m | 4,76 m |
+| 1,25 · r + 10 | −8,5 dB | 2,97 m | 8,14 m |
+
+### 10.3 Por qué quedó sin integrar
+
+El aprendizaje no se integró a la app debido a que todas las pruebas fueron simulaciones y todavía no se sabe cómo es la diferencia real entre el teléfono del administrador y otros modelos: si es constante alcanza con aprender un solo número, si cambia con la distancia también hay que corregir el n, y si es chica puede que no haga falta corregir nada. A su vez, un aprendizaje que se equivoca empeora la posición de teléfonos que sin él andarían bien, por lo que se decidió medir primero.
+
+El código de la prueba quedó guardado aparte con `git stash`, con el nombre "Aprendizaje de la ganancia del telefono (sin terminar, para mas adelante)", e incluye `lib/estimador_ganancia.dart`, sus 12 tests, el interruptor "Aprender la ganancia del teléfono" del panel y los cambios en la navegación. Cabe aclarar que el stash existe sólo en la copia local del repositorio de la computadora donde se hizo y no se sube a GitHub. Para recuperarlo se busca su número en la lista y se aplica con ese número en lugar de N:
+
+```bash
+git stash list
+git stash apply stash@{N}
+```
+
+### 10.4 Qué medir antes de resolverlo
+
+Para saber cómo es la diferencia se comparan dos teléfonos en el mismo lugar, con la app del administrador instalada en los dos:
+
+1. Poner el teléfono del administrador y uno de otro modelo uno al lado del otro, a 1,1 m del piso, con la calibración del piso abierta en los dos.
+2. Parado a 1, 2, 4, 8 y 12 m de un beacon, anotar durante 20 o 30 s el valor típico de ese beacon en "Lecturas actuales" en cada teléfono, completando la Tabla 10.
+3. Repetir con otro beacon y, si se puede, con un tercer modelo de teléfono.
+
+Tabla 10. Registro de la comparación entre dos teléfonos.
+
+| Distancia | RSSI del administrador | RSSI del otro teléfono | Diferencia |
+|---|---|---|---|
+| 1 m | | | |
+| 2 m | | | |
+| 4 m | | | |
+| 8 m | | | |
+| 12 m | | | |
+
+Si la diferencia queda igual a todas las distancias, con 1 o 2 dB de variación, es constante, y alcanza con el aprendizaje guardado o con una corrección fija por modelo de teléfono. Si cambia de forma pareja con la distancia hay una pendiente, y además del RSSI a 1 m hay que corregir el n. Si en todos los modelos la diferencia queda en 1 o 2 dB, probablemente no haga falta corregirla, aunque ese caso no se simuló y conviene confirmarlo caminando el mismo recorrido con los dos teléfonos.
