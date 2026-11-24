@@ -277,6 +277,7 @@ Las pruebas automáticas se encuentran en `test/` y los scripts SQL de la nube, 
 | Archivo | Contenido |
 |---|---|
 | [`docs/ESTETICA.md`](docs/ESTETICA.md) | Diseño visual actual, su evolución y tareas pendientes |
+| [`docs/AJUSTES_EN_EL_EDIFICIO.md`](docs/AJUSTES_EN_EL_EDIFICIO.md) | Cómo probar en un edificio real y decidir el valor de cada parámetro de la navegación |
 | [`supabase/ajustes_navegacion.sql`](supabase/ajustes_navegacion.sql) | Tabla y permisos de los ajustes de navegación en la nube |
 
 ---
