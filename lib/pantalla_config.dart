@@ -143,7 +143,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   // ── Calibración de posición: una toma por celda ───────────────────────────
   // Cómo se calibra:
   //   1. El admin elige una celda en el plano y se para en su centro, con el
-  //      teléfono a la altura del pecho (ProcesadorSenal.alturaTelefonoM).
+  //      teléfono en la mano a la altura con que se navega
+  //      (ProcesadorSenal.alturaTelefonoM).
   //   2. Inicia la toma: durante [_duracionCalibracion] se acumula cada
   //      lectura NUEVA de cada beacon del piso ([_acumCal]).
   //   3. Al terminar, cada beacon queda con un solo RSSI: la media truncada

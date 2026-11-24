@@ -363,7 +363,7 @@ void main() {
         // La altura de los beacons ya ubicados (los que entran en pantalla).
         'Altura de los beacons',
         'Desde el piso hasta el beacon. Toca uno para cambiarla. Sin '
-            'indicar, se toma a la altura del teléfono (1,2 m).',
+            'indicar, se toma a la altura del teléfono (1,1 m).',
         'Holy-IOT-B1, altura sin indicar',
         'Holy-IOT-B2, altura sin indicar',
       ]);
@@ -417,9 +417,9 @@ void main() {
       // Sin altura, arranca en la del teléfono.
       expect(
         _nodo(tester, find.bySemanticsLabel('Altura')),
-        isSemantics(isSlider: true, value: '1,2 metros'),
+        isSemantics(isSlider: true, value: '1,1 metros'),
       );
-      for (var i = 0; i < 13; i++) {
+      for (var i = 0; i < 14; i++) {
         tester.semantics.increase(find.semantics.byLabel('Altura'));
         await tester.pumpAndSettle();
       }

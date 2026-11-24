@@ -25,7 +25,7 @@ final GrillaNav _grilla =
 const Map<String, ({int ix, int iy, double altura})> _beacons = {
   'B1': (ix: 2, iy: 2, altura: 2.6),
   'B2': (ix: 17, iy: 3, altura: 3.0),
-  'B3': (ix: 10, iy: 16, altura: 1.2),
+  'B3': (ix: 10, iy: 16, altura: ProcesadorSenal.alturaTelefonoM),
   'B4': (ix: 3, iy: 15, altura: 1.8),
 };
 

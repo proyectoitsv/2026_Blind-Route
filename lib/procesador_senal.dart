@@ -200,13 +200,13 @@ class ProcesadorSenal {
   // regresión y se usa el modelo por defecto, que es peor todavía.
 
   /// Altura (m sobre el piso) a la que se supone el teléfono: en la mano o en
-  /// el pecho, tanto al calibrar como al navegar. Es fija y no se le pide a
-  /// cada persona: en una simulación con 5 beacons en el techo, llevar el
+  /// el pecho, tanto al calibrar como al navegar. Medida: el teléfono se lleva
+  /// a ~1,1 m. Es fija y no se le pide a cada persona: en una simulación con 5 beacons en el techo, llevar el
   /// teléfono a 0,8 o a 1,6 m suma 0,1–0,15 m de error medio (0,4 m en el
   /// peor caso, justo debajo de un beacon), mucho menos que el ruido del
   /// RSSI. La que más pesa es la del admin al calibrar, porque deforma el
   /// modelo para todos.
-  static const double alturaTelefonoM = 1.2;
+  static const double alturaTelefonoM = 1.1;
 
   /// Altura del beacon menos la del teléfono (m). Null (beacon sin altura
   /// indicada) se toma como "a la altura del teléfono": 0, lo de antes.
