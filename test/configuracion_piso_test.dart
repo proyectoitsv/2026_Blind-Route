@@ -861,14 +861,23 @@ void main() {
       await _armar(tester);
       final errores = await _elegirModo(tester, 'Calibrar');
       expect(errores, [isA<UnsupportedError>()]);
-      expect(_ayuda(tester), 'Toca la celda donde estás parado.');
-      expect(find.text('Calibraciones guardadas (3)'), findsOneWidget);
-      await _tocarPlano(tester, 0.45, 0.42);
-      expect(_ayuda(tester), 'Celda (13, 8). Toma la calibración aquí abajo.');
       expect(
-        _nodo(tester, find.text('Celda (13, 8)')),
+        _ayuda(tester),
+        'Toca el punto exacto donde estás parado, o elige abajo un beacon si '
+        'estás justo debajo de él.',
+      );
+      // El punto exacto, en metros desde los bordes del plano (30 × 20 m).
+      await _tocarPlano(tester, 0.45, 0.42);
+      expect(
+        _ayuda(tester),
+        'Punto en 13,5 m, 8,4 m (celda 13, 8). Toma la calibración aquí '
+        'abajo.',
+      );
+      expect(
+        _nodo(tester, find.text('Punto en 13,5 m, 8,4 m (celda 13, 8)')),
         isSemantics(isHeader: true),
       );
+      await _verEnPanel(tester, find.text('Lecturas actuales (4 beacons)'));
       expect(find.text('Lecturas actuales (4 beacons)'), findsOneWidget);
       expect(find.text('Holy-IOT-B1'), findsWidgets);
       final puntoClave = find.bySemanticsLabel(
@@ -898,6 +907,33 @@ void main() {
       _leerBrujula(80);
       await tester.pumpAndSettle();
       expect(find.textContaining('(ahora: 80°)'), findsOneWidget);
+
+      // Justo debajo de un beacon: el punto pasa a ser el del beacon.
+      final debajo = find.bySemanticsLabel('Debajo de Holy-IOT-B1');
+      await _verEnPanel(tester, debajo);
+      await tester.tap(debajo);
+      await tester.pumpAndSettle();
+      expect(
+        find.bySemanticsLabel('Debajo de Holy-IOT-B1, elegido'),
+        findsOneWidget,
+      );
+      // Arriba, la ayuda y el encabezado lo dicen.
+      await _verEnPanel(
+        tester,
+        find.text('Debajo de Holy-IOT-B1. Toma la calibración aquí abajo.'),
+        arriba: true,
+      );
+      expect(
+        _ayuda(tester),
+        'Debajo de Holy-IOT-B1. Toma la calibración aquí abajo.',
+      );
+      expect(
+        _nodo(tester, find.text('Debajo de Holy-IOT-B1')),
+        isSemantics(isHeader: true),
+      );
+      // Debajo, las calibraciones ya guardadas.
+      await _verEnPanel(tester, find.text('Calibraciones guardadas (3)'));
+      expect(find.text('Calibraciones guardadas (3)'), findsOneWidget);
       semantica.dispose();
     });
 

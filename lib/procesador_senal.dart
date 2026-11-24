@@ -610,10 +610,13 @@ class ProcesadorSenal {
   /// calibraciones guardadas. Se llama una vez al empezar la navegación.
   ///
   /// ── Paso a paso ──────────────────────────────────────────────────────────
-  ///  1. Cada [CalibracionRegistro] aporta un punto por beacon. La celda
-  ///     donde estaba parado el admin (su centro) y la posición y altura del
+  ///  1. Cada [CalibracionRegistro] aporta un punto por beacon, también los
+  ///     puntos clave. El punto donde estaba parado el admin (o el centro de
+  ///     la celda, en las calibraciones viejas) y la posición y altura del
   ///     beacon dan la distancia REAL (3D) `d`; `lecturasBle` da el RSSI
-  ///     medido ahí (la media truncada de una toma de 10 s).
+  ///     medido ahí (la media truncada de la toma). Dos calibraciones en el
+  ///     mismo lugar no se promedian ni se descartan: son dos puntos más, y
+  ///     ese lugar pesa el doble en la recta.
   ///  2. Cada punto se guarda como `(x = log10(d), y = rssi)`. En esos ejes
   ///     el modelo `rssi = txPower - 10·n·log10(d)` es una recta: pendiente
   ///     `-10·n`, ordenada `txPower` (el RSSI en d = 1 m, donde log10(d) = 0).
@@ -642,8 +645,11 @@ class ProcesadorSenal {
     // Puntos (log10 d, rssi) por beacon.
     final puntos = <String, List<({double x, double y})>>{};
     for (final cal in calibraciones) {
-      final cx = grilla.centroX(cal.celdaIx);
-      final cy = grilla.centroY(cal.celdaIy);
+      final donde = cal.centro(
+        (ix, iy) => Offset(grilla.centroX(ix), grilla.centroY(iy)),
+      );
+      final cx = donde.dx;
+      final cy = donde.dy;
       for (final lectura in cal.lecturasBle) {
         final mac = lectura['mac'] as String?;
         final rssi = (lectura['rssi'] as num?)?.toDouble();

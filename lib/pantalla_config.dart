@@ -91,8 +91,25 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   // el cambio y repinte el polígono en construcción mientras se dibuja.
   List<Offset> _verticesEnCurso = [];
 
-  // Calibración: celda seleccionada por el operador + registros guardados.
-  ({int ix, int iy})? _celdaCalSeleccionada;
+  // Calibración: dónde está parado el operador + registros guardados.
+
+  /// Punto exacto (normalizado) donde está parado el operador para calibrar:
+  /// el que tocó en el plano o el de un beacon ([_beaconCal]). Null: todavía
+  /// no lo marcó.
+  Offset? _puntoCal;
+
+  /// MAC del beacon debajo del cual está parado, si eligió esa opción (su
+  /// posición es exacta: no depende de dónde se toque el plano).
+  String? _beaconCal;
+
+  /// La celda de [_puntoCal]: la que se resalta y la que identifica a un
+  /// punto clave.
+  ({int ix, int iy})? get _celdaCalSeleccionada {
+    final p = _puntoCal;
+    if (p == null) return null;
+    return (ix: _grilla.indiceX(p.dx), iy: _grilla.indiceY(p.dy));
+  }
+
   List<CalibracionRegistro> _calibraciones = [];
   final TextEditingController _etiquetaCalCtrl = TextEditingController();
 
@@ -140,17 +157,20 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// teléfono se movió.
   static const double _consistenciaMinTomaRumbo = 0.97;
 
-  // ── Calibración de posición: una toma por celda ───────────────────────────
+  // ── Calibración de posición: una toma por punto ───────────────────────────
   // Cómo se calibra:
-  //   1. El admin elige una celda en el plano y se para en su centro, con el
-  //      teléfono en la mano a la altura con que se navega
+  //   1. El admin se para en un lugar y lo marca: tocando el plano en el
+  //      punto exacto (con zoom) o eligiendo un beacon si está justo debajo
+  //      de él. Lleva el teléfono en la mano a la altura con que se navega
   //      (ProcesadorSenal.alturaTelefonoM).
   //   2. Inicia la toma: durante [_duracionCalibracion] se acumula cada
   //      lectura NUEVA de cada beacon del piso ([_acumCal]).
   //   3. Al terminar, cada beacon queda con un solo RSSI: la media truncada
   //      de sus lecturas, igual que en la navegación. Los que se oyeron menos
   //      de [_minMuestrasCalibracion] veces se descartan.
-  //   4. Se guarda la celda con esos RSSI ([_guardarCalibracionAcumulada]).
+  //   4. Se guardan el punto, su celda y esos RSSI
+  //      ([_guardarCalibracionAcumulada]). Las distancias se miden desde el
+  //      punto, así que no hace falta pararse en el centro de una celda.
   // Con varias calibraciones a distancias distintas de cada beacon, la
   // navegación ajusta su modelo de distancia (ver
   // ProcesadorSenal.ajustarModelosRango). Un PUNTO CLAVE es lo mismo, con una
@@ -1523,24 +1543,28 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       }
       _agregarLugar(normalizado);
     } else if (_modo == _ModoEdicion.calibracion) {
-      // Seleccionar la celda donde el operador dice estar parado.
-      // El ícono de posición salta INMEDIATAMENTE a esa celda y deja de
-      // moverse con el BLE mientras se toman muestras: la calibración parte
-      // de la premisa de que el operador declaró dónde está.
-      final ix = _grilla.indiceX(normalizado.dx);
-      final iy = _grilla.indiceY(normalizado.dy);
-      if (mounted) {
-        setState(() {
-          _celdaCalSeleccionada = (ix: ix, iy: iy);
-          // Anclar la posición visible al centro de la celda seleccionada.
-          _posicionUsuario = Offset(_grilla.centroX(ix), _grilla.centroY(iy));
-        });
-      }
+      // El punto exacto donde el operador dice estar parado. El ícono de
+      // posición salta INMEDIATAMENTE ahí y deja de moverse con el BLE: la
+      // calibración parte de que el operador declaró dónde está. Durante una
+      // toma no se mueve, para que no cambie a mitad de la medición.
+      if (_tomandoMuestras) return;
+      _marcarPuntoCal(normalizado);
     }
     // En modo escala la interacción es por arrastre (no por tap).
   }
 
   // -- Calibración -----------------------------------------------------------
+
+  /// Marca [punto] como el lugar donde está parado el operador. [beacon]: la
+  /// MAC del beacon, si eligió pararse justo debajo de uno.
+  void _marcarPuntoCal(Offset punto, {String? beacon}) {
+    if (!mounted) return;
+    setState(() {
+      _puntoCal = punto;
+      _beaconCal = beacon;
+      _posicionUsuario = punto;
+    });
+  }
 
   /// Asegura que el escáner BLE esté activo (necesario para ver lecturas en
   /// tiempo real al calibrar). No-op si ya está escaneando.
@@ -1679,12 +1703,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     }
   }
 
-  /// Registra una calibración en la celda seleccionada con las muestras
-  /// acumuladas. Por beacon: descarta el 20 % de cada punta de sus lecturas
-  /// y promedia el resto (igual que [ProcesadorSenal.filtrarYPromediar]).
-  /// Guarda ese RSSI y, además, el txPower que sale de esta sola toma con n
-  /// fijo y la distancia 3D celda↔beacon (el respaldo de
-  /// [ProcesadorSenal.txPowerCalibrado]).
+  /// Registra una calibración en el punto marcado ([_puntoCal]) con las
+  /// muestras acumuladas. Por beacon: descarta el 20 % de cada punta de sus
+  /// lecturas y promedia el resto (igual que
+  /// [ProcesadorSenal.filtrarYPromediar]). Guarda ese RSSI y, además, el
+  /// txPower que sale de esta sola toma con n fijo y la distancia 3D
+  /// punto↔beacon (el respaldo de [ProcesadorSenal.txPowerCalibrado]).
   ///
   /// REENTRADA: se llama desde el callback del scan SIN await, y ese callback
   /// dispara decenas de veces por segundo. Si `_tomandoMuestras` se apagara
@@ -1698,16 +1722,17 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   Future<void> _guardarCalibracionAcumulada() async {
     if (_guardandoCalibracion) return;
+    final punto = _puntoCal;
     final celda = _celdaCalSeleccionada;
-    if (celda == null || _acumCal.isEmpty) return;
+    if (punto == null || celda == null || _acumCal.isEmpty) return;
 
     // Antes de cualquier await: el callback de scan no puede volver a entrar.
     _guardandoCalibracion = true;
     _tomandoMuestras = false;
     _inicioToma = null;
 
-    final cx = _grilla.centroX(celda.ix);
-    final cy = _grilla.centroY(celda.iy);
+    final cx = punto.dx;
+    final cy = punto.dy;
     final nExp = ProcesadorSenal.pathLossExponent;
 
     final lecturas = <Map<String, dynamic>>[];
@@ -1791,6 +1816,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       // Solo tiene sentido en un punto clave: en una calibracion comun el
       // rumbo no se usa para nada.
       rumboCaptura: _tomaEsFingerprint ? _rumboMedioToma : null,
+      posicion: punto,
     );
 
     try {
@@ -1919,6 +1945,15 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// Cómo se nombra una calibración: su etiqueta o su celda.
   String _nombreCalibracion(CalibracionRegistro c) =>
       c.etiqueta ?? 'Celda (${c.celdaIx}, ${c.celdaIy})';
+
+  /// "Punto en 13,6 m, 8,4 m (celda 13, 8)": dónde quedó el punto marcado,
+  /// en metros desde el borde izquierdo y el de arriba del plano.
+  String _nombrePuntoCal() {
+    final p = _puntoCal!;
+    final c = _celdaCalSeleccionada!;
+    return 'Punto en ${_decimal(p.dx * _grilla.metrosX)} m, '
+        '${_decimal(p.dy * _grilla.metrosY)} m (celda ${c.ix}, ${c.iy})';
+  }
 
   // -- Escala (puntos desplazables, como las zonas) --------------------------
   //
@@ -2304,7 +2339,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     // Al salir del modo calibración: liberar el anclado de posición.
     if (_modo == _ModoEdicion.calibracion &&
         nuevoModo != _ModoEdicion.calibracion) {
-      _celdaCalSeleccionada = null;
+      _puntoCal = null;
+      _beaconCal = null;
       _posicionUsuario = null;
       _tomandoMuestras = false;
       _acumCal.clear();
@@ -2444,11 +2480,13 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         return '$actual Medición lista. Arrastra los puntos para ajustar o '
             '«Reiniciar» para medir de nuevo.';
       case _ModoEdicion.calibracion:
-        if (_celdaCalSeleccionada == null) {
-          return 'Toca la celda donde estás parado.';
+        if (_puntoCal == null) {
+          return 'Toca el punto exacto donde estás parado, o elige abajo un '
+              'beacon si estás justo debajo de él.';
         }
-        final c = _celdaCalSeleccionada!;
-        return 'Celda (${c.ix}, ${c.iy}). Toma la calibración aquí abajo.';
+        final nombre = _beaconsEnElMapa[_beaconCal]?.nombre;
+        return '${nombre != null ? 'Debajo de $nombre' : _nombrePuntoCal()}. '
+            'Toma la calibración aquí abajo.';
       case _ModoEdicion.brujula:
         return 'Apunta el teléfono hacia el «arriba» del plano y toca «Usar la '
             'dirección actual».';
@@ -2733,9 +2771,11 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     celdasCalibradas: _modo == _ModoEdicion.calibracion
                         ? _calibraciones
                               .map(
-                                (c) => Offset(
-                                  _grilla.centroX(c.celdaIx),
-                                  _grilla.centroY(c.celdaIy),
+                                (c) => c.centro(
+                                  (ix, iy) => Offset(
+                                    _grilla.centroX(ix),
+                                    _grilla.centroY(iy),
+                                  ),
                                 ),
                               )
                               .toList()
@@ -3313,11 +3353,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   // ─── Calibración ──────────────────────────────────────────────────────────
 
   List<Widget> _contenidoCalibracion(EstiloApp e) {
-    final celda = _celdaCalSeleccionada;
+    final marcado = _puntoCal != null;
+    final debajoDe = _beaconsEnElMapa[_beaconCal]?.nombre;
     return [
-      if (celda != null) ...[
+      if (marcado) ...[
         const SizedBox(height: EspaciadoApp.entreSecciones),
-        EncabezadoSeccion(titulo: 'Celda (${celda.ix}, ${celda.iy})'),
+        EncabezadoSeccion(
+          titulo: debajoDe != null ? 'Debajo de $debajoDe' : _nombrePuntoCal(),
+        ),
         const SizedBox(height: EspaciadoApp.medio),
         CampoTexto(
           etiqueta: 'Etiqueta (opcional)',
@@ -3338,10 +3381,39 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         // ── Toma multi-muestra ──
         if (_tomandoMuestras) ..._tomaEnCurso(e) else _botonToma(),
       ],
+      if (!_tomandoMuestras && _beaconsEnElMapa.isNotEmpty) ...[
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        _debajoDeUnBeacon(),
+      ],
       const SizedBox(height: EspaciadoApp.entreSecciones),
       ..._calibracionesGuardadas(e),
     ];
   }
+
+  /// Calibrar parado justo debajo de un beacon: el lugar queda en la
+  /// posición del beacon, que ya está en el plano, sin depender de dónde se
+  /// toque. Sirve en espacios abiertos sin puertas ni paredes de referencia,
+  /// y un solo punto calibra a la vez la distancia a todos los demás beacons.
+  Widget _debajoDeUnBeacon() => GrupoFilas(
+    titulo: 'Justo debajo de un beacon',
+    pie: 'Párate debajo del beacon, con el teléfono en la mano, y tócalo '
+        'acá. Sirve donde no hay puertas ni paredes que tomar de referencia.',
+    filas: [
+      for (final b in _beaconsEnElMapa.values)
+        FilaGrupo(
+          icono: Icons.person_pin_circle_rounded,
+          titulo: b.nombre,
+          subtitulo: b.altura == null
+              ? 'Altura sin indicar · MAC …${_finMac(b.mac)}'
+              : 'Altura: ${_decimal(b.altura!)} m · MAC …${_finMac(b.mac)}',
+          valor: _beaconCal == b.mac ? 'Elegido' : null,
+          etiquetaSemantica: _beaconCal == b.mac
+              ? 'Debajo de ${b.nombre}, elegido'
+              : 'Debajo de ${b.nombre}',
+          alTocar: () => _marcarPuntoCal(b.posicion, beacon: b.mac),
+        ),
+    ],
+  );
 
   /// Lo que se oye ahora de cada beacon del piso: el nombre, la MAC y la
   /// potencia filtrada. Sin señal, el ícono en gris.

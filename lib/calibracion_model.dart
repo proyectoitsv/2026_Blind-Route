@@ -1,13 +1,15 @@
-// Una calibración o un punto clave tomado en una celda (CalibracionRegistro).
+// Una calibración o un punto clave tomado en un punto del plano
+// (CalibracionRegistro).
 //
 // Las calibraciones alimentan el modelo de distancia de cada beacon; los
 // puntos clave (fingerprints) guardan el patrón de RSSI de una celda singular
 // para reconocerla después.
 
 import 'dart:convert';
+import 'dart:ui' show Offset;
 
-/// Registro de una calibración tomada por el operador parado en una celda
-/// concreta de la grilla.
+/// Registro de una calibración tomada por el operador parado en un punto del
+/// plano ([posicion]), dentro de la celda [celdaIx], [celdaIy].
 ///
 /// - `lecturasBle`: el RSSI de cada beacon en esa celda (la media truncada de
 ///   una toma de 10 s). Es lo que usa ProcesadorSenal.ajustarModelosRango
@@ -72,6 +74,14 @@ class CalibracionRegistro {
   /// rotacion del piso solo agregaria una fuente de error comun a ambas.
   final double? rumboCaptura;
 
+  /// Punto exacto (normalizado, 0–1) donde estaba parado el operador: el que
+  /// tocó en el plano o el de un beacon, si calibró parado justo debajo.
+  /// Las distancias a los beacons se miden desde acá, no desde el centro de
+  /// la celda, así que estar corrido de la celda no agrega error. Null en
+  /// las calibraciones anteriores a la v19 de la base: ésas usan el centro de
+  /// su celda ([centro]).
+  final Offset? posicion;
+
   const CalibracionRegistro({
     this.id,
     required this.pisoId,
@@ -83,7 +93,13 @@ class CalibracionRegistro {
     this.etiqueta,
     this.esFingerprint = false,
     this.rumboCaptura,
+    this.posicion,
   });
+
+  /// Dónde estaba parado el operador: [posicion] o, si no la tiene, el centro
+  /// de su celda según [centroCelda] (GrillaNav.centroX / centroY).
+  Offset centro(Offset Function(int ix, int iy) centroCelda) =>
+      posicion ?? centroCelda(celdaIx, celdaIy);
 
   /// Fila lista para `db.insert`. Omite `id` cuando es null (autoincrement).
   Map<String, dynamic> toJson() => {
@@ -97,6 +113,8 @@ class CalibracionRegistro {
         'etiqueta': etiqueta,
         'es_fingerprint': esFingerprint ? 1 : 0,
         'rumbo_captura': rumboCaptura,
+        'pos_x': posicion?.dx,
+        'pos_y': posicion?.dy,
       };
 
   factory CalibracionRegistro.fromJson(Map<String, dynamic> row) {
@@ -120,6 +138,16 @@ class CalibracionRegistro {
       // Instalaciones anteriores a la v10 no tienen la columna: queda null y
       // el fingerprint simplemente no filtra por rumbo.
       rumboCaptura: (row['rumbo_captura'] as num?)?.toDouble(),
+      // Calibraciones anteriores a la v19 (y mapas publicados con versiones
+      // viejas de la app): sin punto, se usa el centro de la celda.
+      posicion: _punto(row['pos_x'], row['pos_y']),
     );
+  }
+
+  static Offset? _punto(Object? x, Object? y) {
+    if (x is! num || y is! num) return null;
+    final dx = x.toDouble(), dy = y.toDouble();
+    if (!dx.isFinite || !dy.isFinite) return null;
+    return Offset(dx.clamp(0.0, 1.0), dy.clamp(0.0, 1.0));
   }
 }

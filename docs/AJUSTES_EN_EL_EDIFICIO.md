@@ -33,7 +33,7 @@ Sin el cable se pueden ver las lecturas por segundo en el panel, el estado "quie
 
 ### 1.3 Forma de trabajar
 
-Primero que todo hay que revisar los datos del edificio, ya que todo lo demás depende de ellos: la altura de cada beacon medida con cinta desde el piso, la posición de cada beacon en el plano (un metro de error en el plano se convierte en un metro de error en la posición), la escala del plano medida sobre dos paredes largas y el norte del plano, tomado con "Usar la dirección actual" lejos de columnas de metal. Una vez cargados, conviene calibrar cada beacon en al menos tres celdas a distancias distintas, porque varios de los ajustes de las secciones siguientes se apoyan en esas calibraciones.
+Primero que todo hay que revisar los datos del edificio, ya que todo lo demás depende de ellos: la altura de cada beacon medida con cinta desde el piso, la posición de cada beacon en el plano (un metro de error en el plano se convierte en un metro de error en la posición), la escala del plano medida sobre dos paredes largas y el norte del plano, tomado con "Usar la dirección actual" lejos de columnas de metal. Una vez cargados, conviene calibrar cada beacon en al menos tres lugares a distancias distintas, porque varios de los ajustes de las secciones siguientes se apoyan en esas calibraciones. Cada calibración guarda el punto exacto que se marca en el plano, por lo que no hace falta pararse en el centro de una celda, aunque sí marcar bien dónde se está parado, con zoom y midiendo con cinta desde paredes o columnas que se vean en el plano. En espacios abiertos, sin referencias cerca, la opción "Justo debajo de un beacon" usa la posición del beacon como lugar de la calibración, y como un mismo punto da la distancia a todos los demás beacons, con una calibración debajo de cada uno ya se tienen puntos a distancias variadas para todos.
 
 Los parámetros se ajustan de a uno y en el orden de las secciones, debido a que varios se cruzan entre sí (por ejemplo, el ancla y el filtro del panel actúan sobre lo mismo) y cambiando dos a la vez no se sabe cuál produjo el resultado. Para no perder lo probado sirve anotar cada prueba en una tabla con las columnas de la Tabla 2, completando una fila por cada cambio.
 
@@ -49,7 +49,7 @@ Cuando se abre la navegación, la app ajusta para cada beacon una recta entre el
 
 Para revisarlos se siguen estos pasos:
 
-1. Calibrar cada beacon en al menos tres celdas, una a 1 o 2 m, otra a 4 o 5 m y otra a 8 o 10 m, con el teléfono en la mano a 1,1 m del piso.
+1. Calibrar cada beacon en al menos tres lugares, uno a 1 o 2 m, otro a 4 o 5 m y otro a 8 o 10 m, con el teléfono en la mano a 1,1 m del piso (los puntos debajo de los otros beacons también cuentan).
 2. Abrir la navegación con el teléfono conectado y anotar la línea `[Rango]` de cada beacon.
 
 Si todos los n quedan entre 1,5 y 4,5, los límites no se tocan. Si un beacon bien ubicado, con la posición y la altura revisadas, da un n por debajo de 1,5, cosa que puede pasar en pasillos largos que guían la señal, se baja `_nMin` a 1,2, y si da más de 4,5, por ejemplo con paredes gruesas en el medio, se sube `_nMax` a 5. Cuando un solo beacon da un valor raro y los demás no, conviene revisar primero su posición en el plano y volver a calibrarlo, ya que un beacon corrido en el plano también deforma la recta. El `tx` de cada línea muestra el RSSI a 1 m que mide el teléfono, que puede quedar algunos dB por debajo o por encima de los −55 dBm configurados en el beacon, diferencia que el ajuste absorbe sin problema.

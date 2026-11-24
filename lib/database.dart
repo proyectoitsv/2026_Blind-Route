@@ -34,7 +34,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 18, // v14: lugares.palabras_clave · v15: .rubro · v16: .ascensor · v17: rubros · v18: beacons.altura
+      version: 19, // v14: lugares.palabras_clave · v15: .rubro · v16: .ascensor · v17: rubros · v18: beacons.altura · v19: calibraciones.pos_x/pos_y
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -165,6 +165,8 @@ class DatabaseHelper {
       etiqueta TEXT,
       es_fingerprint INTEGER NOT NULL DEFAULT 0,
       rumbo_captura REAL,
+      pos_x REAL,
+      pos_y REAL,
       FOREIGN KEY (piso_id) REFERENCES pisos (id) ON DELETE CASCADE
     )
   ''';
@@ -363,6 +365,17 @@ class DatabaseHelper {
       final cols = await db.rawQuery('PRAGMA table_info(beacons)');
       if (!cols.any((c) => (c['name'] as String?) == 'altura')) {
         await db.execute('ALTER TABLE beacons ADD COLUMN altura REAL');
+      }
+    }
+    if (oldVersion < 19) {
+      // v19: punto exacto (normalizado) donde se tomó cada calibración. Null
+      // en las anteriores, que usan el centro de su celda. Si la tabla se
+      // creó en esta misma migración con el DDL nuevo, las columnas ya están.
+      final cols = await db.rawQuery('PRAGMA table_info(calibraciones)');
+      for (final col in const ['pos_x', 'pos_y']) {
+        if (!cols.any((c) => (c['name'] as String?) == col)) {
+          await db.execute('ALTER TABLE calibraciones ADD COLUMN $col REAL');
+        }
       }
     }
   }

@@ -14,7 +14,7 @@
 // rechaza con un error que lo nombra: así un pedido nuevo no pasa en
 // silencio.
 //
-// La versión del esquema se contesta 18, la de DatabaseHelper: así sqflite
+// La versión del esquema se contesta 19, la de DatabaseHelper: así sqflite
 // no crea las tablas (acá no hace falta) ni migra nada.
 //
 // Sin paquetes nuevos (sqflite_common_ffi no es una dependencia) ni imports
@@ -136,7 +136,7 @@ class BaseFalsa {
   Map<String, Object?> _consultar(String sql, _Valores valores) {
     if (sql == 'PRAGMA user_version') {
       return _resultado([
-        {'user_version': 18},
+        {'user_version': 19},
       ]);
     }
     for (final armada in armadas.entries) {
