@@ -10,6 +10,9 @@
 //
 //   aviso.dart               mostrarAviso (un mensaje abajo que se va
 //                            solo, en lugar del SnackBar)
+//   bandeja_hundida.dart     BandejaHundida (un sliver: una lista adentro de
+//                            un hueco hundido, con su título, para que no se
+//                            confunda con los controles de alrededor)
 //   barras.dart              BarraSuperior (botones redondos, título
 //                            centrado; .logotipo, la del inicio),
 //                            AccionBarra, BarraInferior y
@@ -38,7 +41,10 @@
 //   estado_pantalla.dart     EstadoPantalla (vacía, con un error o
 //                            esperando)
 //   grupo_filas.dart         EncabezadoSeccion, GrupoFilas, FilaGrupo
+//                            (también la que abre una sección plegable)
 //   hoja_inferior.dart       mostrarHoja
+//   indicador_senal.dart     IndicadorSenal (las barras de la señal de un
+//                            dispositivo Bluetooth, en el cuadro hundido)
 //   linea_ruta.dart          LineaRuta (la ruta sobre el plano), TramoRuta,
 //                            MarcaTramo, EstadoTramo, Recorrido
 //   linea_tiempo.dart        LineaTiempo (la ruta como línea de tiempo)
@@ -62,6 +68,7 @@
 // abre con: flutter run --flavor user -t lib/main_galeria.dart
 
 export 'aviso.dart';
+export 'bandeja_hundida.dart';
 export 'barras.dart';
 export 'boton_pulso.dart';
 export 'botones.dart';
@@ -74,6 +81,7 @@ export 'deslizador.dart';
 export 'estado_pantalla.dart';
 export 'grupo_filas.dart';
 export 'hoja_inferior.dart';
+export 'indicador_senal.dart';
 export 'linea_ruta.dart';
 export 'linea_tiempo.dart';
 export 'logotipo.dart';

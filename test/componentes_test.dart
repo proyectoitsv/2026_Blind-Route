@@ -1055,6 +1055,61 @@ void main() {
       semantica.dispose();
     });
 
+    testWidgets('la fila plegable: encabezado y botón expandido o contraído; '
+        'la flecha gira media vuelta (con movimiento reducido, salta)', (
+      tester,
+    ) async {
+      final semantica = tester.ensureSemantics();
+      var abierto = false;
+      Widget plegable() => StatefulBuilder(
+        builder: (context, setState) => GrupoFilas(
+          filas: [
+            FilaGrupo.plegable(
+              icono: Icons.height_rounded,
+              titulo: 'Altura de los beacons',
+              subtitulo: '2 de 4 sin altura',
+              abierto: abierto,
+              alCambiar: (v) => setState(() => abierto = v),
+            ),
+          ],
+        ),
+      );
+      AnimatedRotation flecha() => tester.widget<AnimatedRotation>(
+        find.byType(AnimatedRotation),
+      );
+      await armar(tester, plegable());
+      expect(
+        tester.getSemantics(find.text('Altura de los beacons')),
+        isSemantics(
+          label: 'Altura de los beacons\n2 de 4 sin altura',
+          isHeader: true,
+          isButton: true,
+          hasTapAction: true,
+          hasExpandedState: true,
+          isExpanded: false,
+        ),
+      );
+      expect(flecha().turns, 0);
+      expect(flecha().duration, MovimientoApp.seleccion);
+      // La fila entera la abre, también tocando el subtítulo.
+      await tester.tap(find.text('2 de 4 sin altura'));
+      await tester.pumpAndSettle();
+      expect(abierto, isTrue);
+      expect(
+        tester.getSemantics(find.text('Altura de los beacons')),
+        isSemantics(hasExpandedState: true, isExpanded: true),
+      );
+      expect(flecha().turns, 0.5);
+      // La flecha es decorativa: no tiene nodo propio.
+      expect(find.bySemanticsLabel(RegExp('expand')), findsNothing);
+      // Con movimiento reducido, gira sin animación.
+      abierto = false;
+      await armar(tester, plegable(), sinAnimaciones: true);
+      expect(flecha().duration, Duration.zero);
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      semantica.dispose();
+    });
+
     testWidgets('con etiqueta propia, TalkBack dice sólo esa', (tester) async {
       final semantica = tester.ensureSemantics();
       await armar(
@@ -3010,6 +3065,114 @@ void main() {
       await tester.tap(tarjetas.last);
       expect(tocada, 'baño');
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      semantica.dispose();
+    });
+
+    testWidgets('un dispositivo: las barras de su señal en lugar del ícono '
+        '(decorativas: TalkBack lee el nombre y los dBm)', (tester) async {
+      final semantica = tester.ensureSemantics();
+      await armar(
+        tester,
+        Column(
+          children: [
+            TarjetaDestino(
+              inicio: IndicadorSenal(barras: IndicadorSenal.barrasDe(-67)),
+              nombre: 'Holy-IOT',
+              detalle: 'C3:00:00:1A:2B:01 · -67 dBm',
+              seleccionada: false,
+              alTocar: () {},
+            ),
+            const TarjetaDestino(
+              inicio: IndicadorSenal(barras: 1, apagado: true),
+              nombre: 'Holy-IOT',
+              detalle: 'C3:00:00:1A:2B:02 · -88 dBm · ya está en el mapa',
+              seleccionada: false,
+              alTocar: null,
+            ),
+          ],
+        ),
+      );
+      expect(find.byType(CuadroIcono), findsNothing);
+      expect(tester.getSize(find.byType(IndicadorSenal).first), const Size(40, 40));
+      // Las barras de la primera: 3 de 4 en acento (−67 dBm).
+      List<Color?> colores(int i) => [
+        for (final c in tester.widgetList<Container>(
+          find.descendant(
+            of: find.byType(IndicadorSenal).at(i),
+            matching: find.byType(Container),
+          ),
+        ))
+          (c.decoration! as BoxDecoration).color,
+      ];
+      expect(colores(0), [
+        ColoresApp.acento,
+        ColoresApp.acento,
+        ColoresApp.acento,
+        ColoresApp.separador,
+      ]);
+      // La de un dispositivo que ya está en el plano, en gris.
+      expect(colores(1).first, ColoresApp.textoSecundario);
+      expect(
+        tester.getSemantics(find.byType(TarjetaDestino).first),
+        isSemantics(label: 'Holy-IOT, C3:00:00:1A:2B:01 · -67 dBm'),
+      );
+      expect(
+        [for (final d in [-50, -60, -61, -70, -75, -80, -81, -95])
+          IndicadorSenal.barrasDe(d)],
+        [4, 4, 3, 3, 2, 2, 1, 1],
+      );
+      semantica.dispose();
+    });
+  });
+
+  group('bandeja hundida', () {
+    testWidgets('hundida, con el título como encabezado; la lista adentro se '
+        'arma de a poco y la bandeja se pinta también a medio desplazar', (
+      tester,
+    ) async {
+      final semantica = tester.ensureSemantics();
+      await armar(
+        tester,
+        SizedBox(
+          height: 600,
+          child: CustomScrollView(
+            slivers: [
+              const SliverToBoxAdapter(child: SizedBox(height: 300)),
+              BandejaHundida(
+                titulo: '40 dispositivos encontrados',
+                icono: Icons.sensors_rounded,
+                cantidad: 40,
+                constructor: (context, i) => TarjetaDestino(
+                  inicio: const IndicadorSenal(barras: 2),
+                  nombre: 'Dispositivo $i',
+                  seleccionada: false,
+                  alTocar: () {},
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      final decoracion =
+          tester.widget<DecoratedSliver>(find.byType(DecoratedSliver)).decoration
+              as DecoracionRelieve;
+      expect(decoracion.elevacion, -1);
+      expect(decoracion.color, ColoresApp.hundido);
+      expect(decoracion.radio, FormasApp.bordeTarjeta);
+      expect(
+        tester.getSemantics(find.text('40 dispositivos encontrados')),
+        isSemantics(isHeader: true),
+      );
+      // Perezosa: no están las 40 armadas.
+      expect(
+        find.byType(TarjetaDestino, skipOffstage: false).evaluate().length,
+        lessThan(40),
+      );
+      // A medio desplazar, con el título ya arriba del borde.
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, -900));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Dispositivo 10'), findsOneWidget);
       semantica.dispose();
     });
   });

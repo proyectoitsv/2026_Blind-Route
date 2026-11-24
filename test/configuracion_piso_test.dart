@@ -266,6 +266,14 @@ Future<void> _verEnPanel(
   await tester.pumpAndSettle();
 }
 
+/// Abre la sección plegable [titulo] del panel.
+Future<void> _abrirSeccion(WidgetTester tester, String titulo) async {
+  final fila = find.text(titulo);
+  await _verEnPanel(tester, fila);
+  await tester.tap(fila);
+  await tester.pumpAndSettle();
+}
+
 /// La tarjeta del lugar [nombre] en la lista (el nombre también va sobre el
 /// plano).
 Finder _tarjetaLugar(String nombre) =>
@@ -332,9 +340,10 @@ void main() {
 
   group('configuración del piso', () {
     testWidgets('al entrar (Beacons): la barra con las acciones de la nube, '
-        'los seis modos, el plano con «Borrar», la ayuda, el escáner y el '
-        'filtro; lo que dice TalkBack, en orden; un solo botón principal; '
-        'nada gira; 48 dp, etiquetas y contraste', (tester) async {
+        'los seis modos, el plano con «Borrar», la ayuda, la búsqueda abierta '
+        '(el escáner y el filtro) y la altura plegada; lo que dice TalkBack, '
+        'en orden; un solo botón principal; nada gira; 48 dp, etiquetas y '
+        'contraste', (tester) async {
       final semantica = tester.ensureSemantics();
       // Sin lugares, para el orden de TalkBack: sus nombres sobre el plano
       // se prueban con el plano (navegacion_test.dart).
@@ -357,19 +366,40 @@ void main() {
         'Plano del piso',
         'Elige un dispositivo de la lista y toca el mapa para ubicarlo. '
             'Arrastra la mira de un beacon para moverlo.',
+        // La búsqueda, abierta.
+        'Buscar beacons\nEscáner detenido',
         'Escáner detenido',
         'Escanear',
         'Filtrar por nombre o potencia\nLos más fuertes, primero',
-        // La altura de los beacons ya ubicados (los que entran en pantalla).
-        'Altura de los beacons',
-        'Desde el piso hasta el beacon. Toca uno para cambiarla. Sin '
-            'indicar, se toma a la altura del teléfono (1,1 m).',
-        'Holy-IOT-B1, altura sin indicar',
-        'Holy-IOT-B2, altura sin indicar',
+        // Abajo de todo, la altura de los beacons ya ubicados, plegada: la
+        // fila dice cuántos falta indicar.
+        'Altura de los beacons\n4 de 4 sin altura',
       ]);
       expect(
         _nodo(tester, find.text('Configuración del piso')),
         isSemantics(isHeader: true, namesRoute: true),
+      );
+      // Las secciones plegables: encabezados (para saltar de una a otra) y
+      // botones que TalkBack dice expandidos o contraídos.
+      expect(
+        _nodo(tester, find.text('Buscar beacons')),
+        isSemantics(
+          isHeader: true,
+          isButton: true,
+          hasTapAction: true,
+          hasExpandedState: true,
+          isExpanded: true,
+        ),
+      );
+      // Armada pero todavía debajo del borde de la pantalla.
+      expect(
+        _nodo(tester, find.text('Altura de los beacons', skipOffstage: false)),
+        isSemantics(
+          isHeader: true,
+          isButton: true,
+          hasExpandedState: true,
+          isExpanded: false,
+        ),
       );
       expect(
         _nodo(tester, find.widgetWithText(ChipFiltro, 'Beacons')),
@@ -400,12 +430,43 @@ void main() {
       semantica.dispose();
     });
 
+    testWidgets('beacons: la búsqueda se pliega y se vuelve a abrir, y la '
+        'altura se abre abajo de todo', (tester) async {
+      final semantica = tester.ensureSemantics();
+      _cargarPiso();
+      await _armar(tester);
+      final busqueda = find.text('Buscar beacons');
+      await tester.tap(busqueda);
+      await tester.pumpAndSettle();
+      expect(find.text('Escanear'), findsNothing);
+      expect(find.text('Filtrar por nombre o potencia'), findsNothing);
+      expect(_nodo(tester, busqueda), isSemantics(isExpanded: false));
+      // Plegada la búsqueda, la altura queda justo debajo.
+      final alturas = find.text('Altura de los beacons');
+      await tester.tap(alturas);
+      await tester.pumpAndSettle();
+      expect(_nodo(tester, alturas), isSemantics(isExpanded: true));
+      await _verEnPanel(tester, find.text('Holy-IOT-B1'));
+      expect(find.text('Altura sin indicar\nMAC …2B:01'), findsOneWidget);
+      // Otra vez abierta, la búsqueda vuelve arriba de la altura.
+      await _verEnPanel(tester, busqueda, arriba: true);
+      await tester.tap(busqueda);
+      await tester.pumpAndSettle();
+      expect(find.text('Escanear'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Escanear')).dy,
+        lessThan(tester.getTopLeft(alturas).dy),
+      );
+      semantica.dispose();
+    });
+
     testWidgets('beacons: la altura de cada uno se cambia en una hoja (un '
         'deslizador que TalkBack dice en metros); «Usar en todos» la copia a '
         'los demás y se guarda en la base', (tester) async {
       final semantica = tester.ensureSemantics();
       _cargarPiso();
       await _armar(tester);
+      await _abrirSeccion(tester, 'Altura de los beacons');
       await _verEnPanel(tester, find.text('Holy-IOT-B1'));
       expect(find.text('Altura sin indicar\nMAC …2B:01'), findsOneWidget);
       await tester.tap(find.text('Holy-IOT-B1'));
@@ -434,6 +495,11 @@ void main() {
         [2.5, 2.5, 2.5, 2.5],
       );
       expect(find.text('Altura: 2,5 m\nMAC …2B:01'), findsOneWidget);
+      await _verEnPanel(
+        tester,
+        find.text('Los 4 beacons tienen su altura'),
+        arriba: true,
+      );
 
       // Uno solo, sin «Usar en todos»: los demás quedan como estaban.
       await _verEnPanel(tester, find.text('Holy-IOT-B2'));
@@ -854,8 +920,9 @@ void main() {
     });
 
     testWidgets('calibrar: sin Bluetooth (en el test, flutter_blue_plus no '
-        'tiene plataforma); la celda, la etiqueta, las lecturas y el punto '
-        'clave; «Activa el escáner primero», apagado', (tester) async {
+        'tiene plataforma); la tarjeta con el punto, la etiqueta (en una '
+        'hoja) y el punto clave (con su celda en el plano); las lecturas; '
+        '«Activa el escáner primero», apagado', (tester) async {
       final semantica = tester.ensureSemantics();
       _cargarPiso();
       await _armar(tester);
@@ -868,21 +935,44 @@ void main() {
       );
       // El punto exacto, en metros desde los bordes del plano (30 × 20 m).
       await _tocarPlano(tester, 0.45, 0.42);
+      // El punto lo dice la tarjeta (una sola vez); la ayuda, qué hacer si no
+      // es ese.
+      expect(_ayuda(tester), 'Si no estás ahí, toca de nuevo el plano.');
+      expect(find.text('13,5 m · 8,4 m · celda 13, 8'), findsOneWidget);
       expect(
-        _ayuda(tester),
-        'Punto en 13,5 m, 8,4 m (celda 13, 8). Toma la calibración aquí '
-        'abajo.',
+        find.bySemanticsLabel(
+          'Punto marcado: 13,5 metros, 8,4 metros, celda 13, 8',
+        ),
+        findsOneWidget,
       );
+      // En el plano, la mira en el punto exacto (no la celda entera) y no el
+      // marcador del usuario, que va al centro de la celda.
+      final mira = find.descendant(
+        of: find.byKey(const ValueKey('capaPuntoCalibracion')),
+        matching: find.byType(CustomPaint),
+      );
+      dynamic pintorMira() => tester.widget<CustomPaint>(mira).painter;
+      final punto = pintorMira().punto as Offset;
+      expect(punto.dx, closeTo(0.45, 0.001));
+      expect(punto.dy, closeTo(0.42, 0.001));
+      expect(pintorMira().celdaPuntoClave, isNull);
+      expect(find.byKey(const ValueKey('capaUsuario')), findsNothing);
+
+      // La etiqueta, en una hoja.
+      await _verEnPanel(tester, find.text('Opcional, por ejemplo Entrada'));
+      await tester.tap(find.text('Opcional, por ejemplo Entrada'));
+      await tester.pumpAndSettle();
+      // La hoja, con su título (el último «Etiqueta»: el otro es la fila).
       expect(
-        _nodo(tester, find.text('Punto en 13,5 m, 8,4 m (celda 13, 8)')),
+        _nodo(tester, find.text('Etiqueta').last),
         isSemantics(isHeader: true),
       );
-      await _verEnPanel(tester, find.text('Lecturas actuales (4 beacons)'));
-      expect(find.text('Lecturas actuales (4 beacons)'), findsOneWidget);
-      expect(find.text('Holy-IOT-B1'), findsWidgets);
-      final puntoClave = find.bySemanticsLabel(
-        RegExp(r'^Punto clave \(fingerprint\)'),
-      );
+      await tester.enterText(find.byType(TextField), 'Pasillo norte');
+      await tester.tap(find.text('Guardar'));
+      await tester.pumpAndSettle();
+      expect(find.text('Pasillo norte'), findsOneWidget);
+
+      final puntoClave = find.bySemanticsLabel(RegExp(r'^Punto clave\n'));
       await _verEnPanel(tester, puntoClave);
       expect(
         _nodo(tester, puntoClave),
@@ -891,6 +981,20 @@ void main() {
       await tester.tap(puntoClave);
       await tester.pumpAndSettle();
       expect(_nodo(tester, puntoClave), isSemantics(isToggled: true));
+      // Con el punto clave, el plano marca su celda debajo de la mira (la
+      // que contiene el punto) y la ayuda dice qué representa.
+      final celda = pintorMira().celdaPuntoClave as Rect;
+      final plano = tester.getSize(mira);
+      expect(celda.width, closeTo(plano.width / 30, 0.5));
+      expect(
+        celda.contains(Offset(0.45 * plano.width, 0.42 * plano.height)),
+        isTrue,
+      );
+      const ayudaPuntoClave =
+          'Si no estás ahí, toca de nuevo el plano. El punto clave corrige '
+          'hacia el centro de la celda marcada.';
+      await _verEnPanel(tester, find.text(ayudaPuntoClave), arriba: true);
+      expect(_ayuda(tester), ayudaPuntoClave);
       // Sin la brújula todavía: se guarda sin rumbo.
       expect(
         find.textContaining('Sin brújula: se guarda sin rumbo'),
@@ -906,9 +1010,29 @@ void main() {
       // Con la brújula, el rumbo de ahora.
       _leerBrujula(80);
       await tester.pumpAndSettle();
+      await _verEnPanel(
+        tester,
+        find.textContaining('(ahora: 80°)'),
+        arriba: true,
+      );
       expect(find.textContaining('(ahora: 80°)'), findsOneWidget);
+      // La mira lo dibuja (corregido por la rotación del plano, que acá es 0).
+      expect(pintorMira().heading, 80);
 
-      // Justo debajo de un beacon: el punto pasa a ser el del beacon.
+      // Debajo del botón, las lecturas, plegadas: la fila dice cuántos
+      // beacons se oyen (ninguno, sin Bluetooth).
+      final lecturas = find.text('Lecturas actuales');
+      await _verEnPanel(tester, lecturas);
+      expect(find.text('Se oyen 0 de 4 beacons'), findsOneWidget);
+      expect(_nodo(tester, lecturas), isSemantics(isExpanded: false));
+      await tester.tap(lecturas);
+      await tester.pumpAndSettle();
+      await _verEnPanel(tester, find.text('C3:00:00:1A:2B:04'));
+      expect(find.text('-100 dBm'), findsWidgets);
+
+      // Justo debajo de un beacon (plegada): el punto pasa a ser el del
+      // beacon.
+      await _abrirSeccion(tester, 'Justo debajo de un beacon');
       final debajo = find.bySemanticsLabel('Debajo de Holy-IOT-B1');
       await _verEnPanel(tester, debajo);
       await tester.tap(debajo);
@@ -917,42 +1041,54 @@ void main() {
         find.bySemanticsLabel('Debajo de Holy-IOT-B1, elegido'),
         findsOneWidget,
       );
-      // Arriba, la ayuda y el encabezado lo dicen.
       await _verEnPanel(
         tester,
-        find.text('Debajo de Holy-IOT-B1. Toma la calibración aquí abajo.'),
+        find.text('Elegido: Holy-IOT-B1'),
         arriba: true,
       );
-      expect(
-        _ayuda(tester),
-        'Debajo de Holy-IOT-B1. Toma la calibración aquí abajo.',
+      // Arriba, la tarjeta y la ayuda lo dicen.
+      await _verEnPanel(
+        tester,
+        find.text('Debajo de Holy-IOT-B1'),
+        arriba: true,
       );
-      expect(
-        _nodo(tester, find.text('Debajo de Holy-IOT-B1')),
-        isSemantics(isHeader: true),
-      );
-      // Debajo, las calibraciones ya guardadas.
-      await _verEnPanel(tester, find.text('Calibraciones guardadas (3)'));
-      expect(find.text('Calibraciones guardadas (3)'), findsOneWidget);
+      const ayudaDebajo =
+          'Si no estás debajo de Holy-IOT-B1, elige otro beacon o toca el '
+          'plano. El punto clave corrige hacia el centro de la celda marcada.';
+      await _verEnPanel(tester, find.text(ayudaDebajo), arriba: true);
+      expect(_ayuda(tester), ayudaDebajo);
+      // Al final, las calibraciones ya guardadas, plegadas.
+      await _verEnPanel(tester, find.text('Calibraciones guardadas'));
+      expect(find.text('1 calibración y 2 puntos clave'), findsOneWidget);
       semantica.dispose();
     });
 
-    testWidgets('calibraciones guardadas: plegadas al entrar; «Ver» las '
+    testWidgets('calibraciones guardadas: plegadas al entrar; la fila las '
         'muestra; cada una con su tacho; «Borrar todas» con la confirmación '
         'y el aviso', (tester) async {
       final semantica = tester.ensureSemantics();
       _cargarPiso();
       await _armar(tester);
       await _elegirModo(tester, 'Calibrar');
+      // En el plano, la calibración con su ✓ en su punto y los dos puntos
+      // clave con su celda.
+      final pintorPlano =
+          tester
+                  .widgetList<CustomPaint>(find.byType(CustomPaint))
+                  .firstWhere(
+                    (w) => w.painter.runtimeType.toString() == '_MapaPainter',
+                  )
+                  .painter
+              as dynamic;
+      expect(pintorPlano.celdasCalibradas, hasLength(1));
+      expect(pintorPlano.puntosClaveGuardados, hasLength(2));
       expect(find.text('Quitar duplicados'), findsNothing);
-      final ver = find.bySemanticsLabel('Ver las calibraciones guardadas');
-      await _verEnPanel(tester, ver);
-      await tester.tap(ver);
+      final guardadas = find.text('Calibraciones guardadas');
+      await _verEnPanel(tester, guardadas);
+      expect(_nodo(tester, guardadas), isSemantics(isExpanded: false));
+      await tester.tap(guardadas);
       await tester.pumpAndSettle();
-      expect(
-        find.bySemanticsLabel('Ocultar las calibraciones guardadas'),
-        findsOneWidget,
-      );
+      expect(_nodo(tester, guardadas), isSemantics(isExpanded: true));
       expect(find.text('Quitar duplicados'), findsOneWidget);
       await _verEnPanel(
         tester,
@@ -979,11 +1115,7 @@ void main() {
       await tester.tap(find.widgetWithText(BotonSecundario, 'Eliminar'));
       await tester.pumpAndSettle();
       expect(baseFalsa.filas('calibraciones'), hasLength(2));
-      await _verEnPanel(
-        tester,
-        find.text('Calibraciones guardadas (2)'),
-        arriba: true,
-      );
+      await _verEnPanel(tester, find.text('2 puntos clave'), arriba: true);
       // Todas.
       await _verEnPanel(tester, find.text('Borrar todas'));
       await tester.tap(find.text('Borrar todas'));
@@ -1008,7 +1140,7 @@ void main() {
     testWidgets('brújula: esperando, un reloj de arena quieto (sin ruedita); '
         'con lecturas, la flecha en acento (que de 350° a 10° no da la vuelta '
         'larga), la precisión en ámbar si no es alta y el ajuste fino en '
-        'grados', (tester) async {
+        'grados, sin atajos', (tester) async {
       final semantica = tester.ensureSemantics();
       _cargarPiso();
       await _armar(tester);
@@ -1051,27 +1183,19 @@ void main() {
       );
       expect(tester.widget<Text>(media).style!.color, e.advertencia);
       expect(_nodo(tester, media), isSemantics(isLiveRegion: true));
-      // Los atajos guardan enseguida; el deslizador lo dice en grados.
-      final este = find.text('Este (90°)');
-      await _verEnPanel(tester, este);
-      await tester.tap(este);
-      await tester.pumpAndSettle();
-      expect(baseFalsa.filas('pisos').single['rotacion_mapa'], 90.0);
+      // Sin atajos (Norte, Este…): la dirección actual o el ajuste fino, que
+      // TalkBack dice en grados.
       final ajuste = find.bySemanticsLabel('Ajuste fino');
-      await _verEnPanel(tester, ajuste, arriba: true);
+      await _verEnPanel(tester, ajuste);
+      expect(find.textContaining('(90°)', skipOffstage: false), findsNothing);
+      expect(find.byType(FilaBotones), findsNothing);
       expect(
         _nodo(tester, ajuste),
         isSemantics(
           isSlider: true,
-          value: '90 grados',
-          increasedValue: '91 grados',
+          value: '0 grados',
+          increasedValue: '1 grados',
         ),
-      );
-      expect(find.text('90°'), findsOneWidget);
-      await _verEnPanel(
-        tester,
-        find.text('Norte magnético: 10° · offset actual: 90°'),
-        arriba: true,
       );
       semantica.dispose();
     });
@@ -1107,6 +1231,7 @@ void main() {
       final semantica = tester.ensureSemantics();
       _cargarPiso();
       await _armar(tester);
+      await _verEnPanel(tester, find.text('Filtrar por nombre o potencia'));
       await tester.tap(find.text('Filtrar por nombre o potencia'));
       await tester.pumpAndSettle();
       expect(
@@ -1243,6 +1368,8 @@ void main() {
         expect(tester.takeException(), isNull, reason: modo);
       }
 
+      // Con la altura abierta, para revisar también sus filas.
+      await _abrirSeccion(tester, 'Altura de los beacons');
       await revisar('Beacons');
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
@@ -1255,14 +1382,14 @@ void main() {
       await revisar('Brújula con lecturas');
       await _elegirModo(tester, 'Calibrar');
       await _tocarPlano(tester, 0.45, 0.42);
-      await _verEnPanel(
-        tester,
-        find.bySemanticsLabel('Ver las calibraciones guardadas'),
-      );
-      await tester.tap(
-        find.bySemanticsLabel('Ver las calibraciones guardadas'),
-      );
-      await tester.pumpAndSettle();
+      // Con todas las secciones abiertas.
+      for (final seccion in [
+        'Lecturas actuales',
+        'Justo debajo de un beacon',
+        'Calibraciones guardadas',
+      ]) {
+        await _abrirSeccion(tester, seccion);
+      }
       await revisar('Calibrar');
       semantica.dispose();
     });
@@ -1305,6 +1432,7 @@ void main() {
       await revisar('Filtro');
       await cancelar();
       // La altura de un beacon.
+      await _abrirSeccion(tester, 'Altura de los beacons');
       await _verEnPanel(tester, find.text('Holy-IOT-B1'));
       await tester.tap(find.text('Holy-IOT-B1'));
       await tester.pumpAndSettle();

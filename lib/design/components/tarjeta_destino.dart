@@ -12,6 +12,10 @@
 // Al elegirla, el borde cambia y la tilde aparece con un fundido, en 150 ms.
 // Presionada, se hunde y se achica apenas (presion.dart).
 //
+// En lugar del cuadro del ícono puede ir otra cosa del mismo tamaño
+// ([inicio]): un dispositivo Bluetooth encontrado lleva las barras de su
+// señal (IndicadorSenal).
+//
 // ─── Letra grande ───
 // El cuadro del ícono (decorativo) no se muestra: el nombre se queda con el
 // ancho.
@@ -35,16 +39,22 @@ import 'presion.dart';
 class TarjetaDestino extends StatelessWidget {
   const TarjetaDestino({
     super.key,
-    required this.icono,
+    this.icono,
+    this.inicio,
     required this.nombre,
     this.detalle,
     required this.seleccionada,
     required this.alTocar,
     this.detalleSemantico,
-  });
+  }) : assert(icono != null || inicio != null);
 
   /// Ícono del cuadro (Icons.*_rounded): el rubro del lugar. Decorativo.
-  final IconData icono;
+  final IconData? icono;
+
+  /// Lo que va en lugar del cuadro del ícono, del mismo tamaño
+  /// (FormasApp.cuadroIcono): las barras de la señal de un dispositivo, por
+  /// ejemplo. Decorativo, como el ícono.
+  final Widget? inicio;
   final String nombre;
 
   /// Piso y distancia ("Piso 1 · a 25 m").
@@ -73,7 +83,7 @@ class TarjetaDestino extends StatelessWidget {
       child: Row(
         children: [
           if (!letraGrande) ...[
-            CuadroIcono(icono: icono),
+            inicio ?? CuadroIcono(icono: icono!),
             const SizedBox(width: EspaciadoApp.medio),
           ],
           Expanded(

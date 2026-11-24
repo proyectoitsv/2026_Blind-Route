@@ -13,6 +13,15 @@
 // pista y el pulgar cambian en 150 ms con la curva de salida fuerte y, con
 // movimiento reducido, saltan. Toda la fila lo prende y lo apaga.
 //
+// ─── Plegable ───
+// FilaGrupo.plegable abre y cierra una sección que va debajo de la tarjeta:
+// termina en una flecha que gira media vuelta (150 ms; con movimiento
+// reducido, salta) y la fila entera la abre. Lo de abajo lo muestra o no
+// quien la usa, según si está abierta: así sirve igual en una lista que
+// entre los slivers de una CustomScrollView. TalkBack la lee como
+// encabezado (para saltar de sección en sección) y como botón, expandido o
+// contraído.
+//
 // ─── Letra grande ───
 // Las filas crecen con el texto, que se parte en renglones. Desde
 // TipografiaApp.esLetraGrande, el título se queda con todo el ancho: el
@@ -175,7 +184,26 @@ class FilaGrupo extends StatelessWidget {
     this.destructiva = false,
     this.alTocar,
     this.etiquetaSemantica,
+    this.abierto,
   });
+
+  /// Fila que abre y cierra la sección de abajo ("Altura de los beacons").
+  /// [subtitulo] dice lo que hay adentro sin abrirla ("2 de 4 sin altura").
+  FilaGrupo.plegable({
+    Key? key,
+    required String titulo,
+    String? subtitulo,
+    IconData? icono,
+    required bool abierto,
+    required ValueChanged<bool> alCambiar,
+  }) : this(
+         key: key,
+         titulo: titulo,
+         subtitulo: subtitulo,
+         icono: icono,
+         abierto: abierto,
+         alTocar: () => alCambiar(!abierto),
+       );
 
   /// Fila con un interruptor: toda la fila lo prende y lo apaga, y TalkBack
   /// la lee como un interruptor ("Vibrar al llegar, activado").
@@ -226,6 +254,10 @@ class FilaGrupo extends StatelessWidget {
   /// hace falta otra redacción ("Mapas disponibles para descargar"). Por
   /// defecto, lo que se ve.
   final String? etiquetaSemantica;
+
+  /// Si la fila abre y cierra una sección (ver [FilaGrupo.plegable]): true
+  /// abierta, false cerrada; null, una fila común.
+  final bool? abierto;
 
   /// Hasta qué parte del ancho de la pantalla puede ocupar el [valor] a la
   /// derecha: el resto queda para el título.
@@ -314,6 +346,10 @@ class FilaGrupo extends StatelessWidget {
                 color: e.textoSecundario,
               ),
             ],
+            if (abierto != null) ...[
+              const SizedBox(width: EspaciadoApp.minimo),
+              _FlechaPlegable(abierto: abierto!),
+            ],
           ],
         ),
       ),
@@ -322,6 +358,8 @@ class FilaGrupo extends StatelessWidget {
     return MergeSemantics(
       child: Semantics(
         button: alTocar != null && accesorio == null,
+        header: abierto != null,
+        expanded: abierto,
         child: ConEstados(
           deshabilitado: alTocar == null,
           constructor: (context, controlador, estados) {
@@ -357,6 +395,29 @@ class FilaGrupo extends StatelessWidget {
       ),
     );
   }
+}
+
+/// La flecha de una fila plegable: apunta hacia abajo cerrada y hacia arriba
+/// abierta. Decorativa: lo que dice TalkBack sale de la fila (expandida o
+/// contraída).
+class _FlechaPlegable extends StatelessWidget {
+  const _FlechaPlegable({required this.abierto});
+
+  final bool abierto;
+
+  @override
+  Widget build(BuildContext context) => ExcludeSemantics(
+    child: AnimatedRotation(
+      turns: abierto ? 0.5 : 0,
+      duration: MovimientoApp.duracion(context, MovimientoApp.seleccion),
+      curve: MovimientoApp.curva,
+      child: Icon(
+        Icons.expand_more_rounded,
+        size: FormasApp.icono,
+        color: EstiloApp.de(context).textoSecundario,
+      ),
+    ),
+  );
 }
 
 /// Interruptor de una fila, con las medidas del de Material 3 (pista de

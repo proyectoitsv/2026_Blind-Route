@@ -102,6 +102,7 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
   String _filtro = 'todos';
   String _destino = 'aula12';
   bool _anunciarPiso = true;
+  bool _seccionAbierta = false;
   double _progreso = 0.45;
   int _tramo = 1;
 
@@ -383,6 +384,26 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
       ],
     ),
     _entreSecciones,
+    GrupoFilas(
+      filas: [
+        FilaGrupo.plegable(
+          icono: Icons.height_rounded,
+          titulo: 'Sección plegable',
+          subtitulo: 'Lo que hay adentro, sin abrirla',
+          abierto: _seccionAbierta,
+          alCambiar: (v) => setState(() => _seccionAbierta = v),
+        ),
+      ],
+    ),
+    if (_seccionAbierta) ...[
+      _bajoEncabezado,
+      _parrafo(
+        e,
+        'Lo de la sección va debajo de la tarjeta y lo muestra la pantalla '
+        'que la usa.',
+      ),
+    ],
+    _entreSecciones,
     const EncabezadoSeccion(titulo: 'Tarjetas de destino'),
     _bajoEncabezado,
     for (final (id, icono, nombre, detalle, hablado) in const [
@@ -414,6 +435,38 @@ class _GaleriaComponentesState extends State<GaleriaComponentes> {
     _parrafo(
       e,
       'Se elige una sola: la elegida lleva el borde y la tilde en acento.',
+    ),
+    _entreSecciones,
+    const EncabezadoSeccion(titulo: 'Bandeja hundida'),
+    _bajoEncabezado,
+    // Es un sliver: acá, en una lista común, va en una CustomScrollView que
+    // no se desplaza sola.
+    CustomScrollView(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      slivers: [
+        BandejaHundida(
+          titulo: '2 dispositivos encontrados',
+          icono: Icons.sensors_rounded,
+          cantidad: 2,
+          constructor: (context, i) => TarjetaDestino(
+            inicio: IndicadorSenal(barras: i == 0 ? 3 : 1),
+            nombre: 'Holy-IOT',
+            detalle: i == 0
+                ? 'C3:00:00:1A:2B:01 · -67 dBm'
+                : 'C3:00:00:1A:2B:02 · -86 dBm',
+            seleccionada: _destino == 'beacon$i',
+            alTocar: () => setState(() => _destino = 'beacon$i'),
+          ),
+        ),
+      ],
+    ),
+    _bajoEncabezado,
+    _parrafo(
+      e,
+      'Los dispositivos que encuentra el escáner (en la configuración del '
+      'piso), con las barras de su señal en lugar del ícono: el hueco los '
+      'separa de los controles levantados de alrededor.',
     ),
     _entreSecciones,
     const EncabezadoSeccion(titulo: 'Botones'),

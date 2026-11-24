@@ -90,6 +90,44 @@ void _lineaPunteada(
   }
 }
 
+/// El contorno punteado de una celda ([rect], en píxeles del plano), con un
+/// relleno suave si [alphaRelleno] es mayor que 0. El punteado va dos
+/// veces, oscuro y más ancho debajo y en [color] encima (con el mismo paso,
+/// así coinciden), para que se lea sobre cualquier plano. [k] es la escala
+/// del zoom (ver _MapaPainter._k).
+void _celdaPunteada(
+  Canvas canvas,
+  Rect rect,
+  Color color,
+  double k, {
+  double alphaRelleno = 0,
+}) {
+  if (alphaRelleno > 0) {
+    canvas.drawRect(
+      rect,
+      Paint()..color = color.withValues(alpha: alphaRelleno),
+    );
+  }
+  final esquinas = [
+    rect.topLeft,
+    rect.topRight,
+    rect.bottomRight,
+    rect.bottomLeft,
+  ];
+  for (final (pintura, ancho) in [
+    (ColoresApp.mapaContorno, 3.0),
+    (color, 1.6),
+  ]) {
+    final p = Paint()
+      ..color = pintura
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = ancho * k;
+    for (var i = 0; i < 4; i++) {
+      _lineaPunteada(canvas, esquinas[i], esquinas[(i + 1) % 4], p, paso: 8 * k);
+    }
+  }
+}
+
 /// Dibuja una "mira" (retícula translúcida con cruz central) para marcar un
 /// punto con PRECISIÓN. El centro exacto queda libre —los brazos de la cruz no
 /// llegan a tocarse— para que el punto objetivo no quede tapado ni por el
@@ -196,11 +234,13 @@ class _MapaPainter extends CustomPainter {
   /// Puntos de la medición de escala (violeta). 1 a 3 puntos.
   final List<Offset> puntosMedicion;
 
-  /// Centro normalizado de la celda seleccionada en modo calibración (amarillo).
-  final Offset? celdaResaltada;
-
-  /// Centros normalizados de las celdas que ya tienen calibraciones (pin ✓).
+  /// Puntos normalizados de las calibraciones ya guardadas (pin ✓).
   final List<Offset> celdasCalibradas;
+
+  /// Centros normalizados de las celdas de los puntos clave ya guardados:
+  /// la celda punteada y un pin en su centro, que es hacia donde corrige la
+  /// navegación cuando el punto clave coincide.
+  final List<Offset> puntosClaveGuardados;
 
   /// Índice del vértice de [verticesEnCurso] que el operador está arrastrando
   /// en este momento (se resalta más grande), o null si no hay ninguno.
@@ -227,8 +267,8 @@ class _MapaPainter extends CustomPainter {
     required this.grilla,
     this.mostrarGrilla = false,
     this.puntosMedicion = const [],
-    this.celdaResaltada,
     this.celdasCalibradas = const [],
+    this.puntosClaveGuardados = const [],
     this.verticeArrastrado,
     this.guias = const [],
     this.guiaPunto,
@@ -271,24 +311,6 @@ class _MapaPainter extends CustomPainter {
         final y = (j * grilla.tamCeldaY * h).clamp(0.0, h);
         canvas.drawLine(Offset(0, y), Offset(w, y), paintGrilla);
       }
-    }
-
-    // --- Celda seleccionada en modo calibración (ámbar 60%, contorno oscuro) ---
-    if (celdaResaltada != null) {
-      final rect = _rectCelda(celdaResaltada!, grilla, tamanoImagen);
-      canvas.drawRect(
-        rect,
-        Paint()
-          ..color = ColoresApp.advertencia.withValues(alpha: 0.60)
-          ..style = PaintingStyle.fill,
-      );
-      canvas.drawRect(
-        rect,
-        Paint()
-          ..color = ColoresApp.mapaContorno
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.0 * _k,
-      );
     }
 
     // --- Zonas no transitables ---
@@ -461,29 +483,44 @@ class _MapaPainter extends CustomPainter {
       }
     }
 
-    // --- Pines de celdas ya calibradas (✓ sobre un círculo oscuro) ---
-    if (celdasCalibradas.isNotEmpty) {
-      final icono = Icons.check_circle_rounded;
-      final tp = TextPainter(textDirection: TextDirection.ltr);
-      for (final centro in celdasCalibradas) {
-        tp.text = TextSpan(
-          text: String.fromCharCode(icono.codePoint),
-          style: TextStyle(
-            fontSize: 18 * _k,
-            fontFamily: icono.fontFamily,
-            package: icono.fontPackage,
-            color: ColoresApp.acento,
-          ),
-        );
-        tp.layout();
-        final c = _desnormalizar(centro, tamanoImagen);
-        canvas.drawCircle(c, 10 * _k, Paint()..color = ColoresApp.mapaContorno);
-        tp.paint(canvas, Offset(c.dx - tp.width / 2, c.dy - tp.height / 2));
-      }
+    // --- Puntos clave guardados: su celda punteada y un pin en el centro ---
+    for (final centro in puntosClaveGuardados) {
+      _celdaPunteada(
+        canvas,
+        _rectCelda(centro, grilla, tamanoImagen),
+        ColoresApp.acento,
+        _k,
+      );
     }
+    _iconos(canvas, puntosClaveGuardados, Icons.push_pin_rounded);
+
+    // --- Calibraciones guardadas: ✓ en el punto exacto de cada una ---
+    _iconos(canvas, celdasCalibradas, Icons.check_circle_rounded);
 
     // --- Guías del asistente de trazo (siempre por encima de todo) ---
     _dibujarGuias(canvas, tamanoImagen);
+  }
+
+  /// [icono] en acento sobre un círculo oscuro, en cada uno de [puntos]
+  /// (normalizados).
+  void _iconos(Canvas canvas, List<Offset> puntos, IconData icono) {
+    if (puntos.isEmpty) return;
+    final tp = TextPainter(textDirection: TextDirection.ltr);
+    tp.text = TextSpan(
+      text: String.fromCharCode(icono.codePoint),
+      style: TextStyle(
+        fontSize: 18 * _k,
+        fontFamily: icono.fontFamily,
+        package: icono.fontPackage,
+        color: ColoresApp.acento,
+      ),
+    );
+    tp.layout();
+    for (final punto in puntos) {
+      final c = _desnormalizar(punto, tamanoImagen);
+      canvas.drawCircle(c, 10 * _k, Paint()..color = ColoresApp.mapaContorno);
+      tp.paint(canvas, Offset(c.dx - tp.width / 2, c.dy - tp.height / 2));
+    }
   }
 
   /// Guías de alineación: rectas punteadas magenta que atraviesan el plano por
@@ -566,8 +603,8 @@ class _MapaPainter extends CustomPainter {
       old.grilla != grilla ||
       old.mostrarGrilla != mostrarGrilla ||
       old.puntosMedicion != puntosMedicion ||
-      old.celdaResaltada != celdaResaltada ||
       old.celdasCalibradas != celdasCalibradas ||
+      old.puntosClaveGuardados != puntosClaveGuardados ||
       old.verticeArrastrado != verticeArrastrado ||
       old.guias != guias ||
       old.guiaPunto != guiaPunto ||
@@ -776,6 +813,98 @@ class _UsuarioPainter extends CustomPainter {
       old.escalaVista != escalaVista;
 }
 
+/// La mira del punto exacto que marcó el operador al calibrar: el anillo y
+/// la cruz con un punto en el centro, como la de los beacons pero en ámbar.
+/// Con brújula, una flecha por fuera del anillo apunta hacia donde mira el
+/// operador, que es el rumbo con que se guarda un punto clave; va por fuera
+/// para no tapar el centro. Mide lo mismo en pantalla con cualquier zoom.
+///
+/// Si se va a tomar un punto clave, debajo va su celda ([celdaPuntoClave],
+/// en píxeles del plano), punteada y con un punto en el centro: la
+/// navegación reconoce el punto clave por la celda y corrige hacia su
+/// centro, aunque las lecturas se tomen en el punto exacto.
+class _PuntoCalibracionPainter extends CustomPainter {
+  final Offset punto; // normalizado
+  final Size tamanoImagen;
+  final double? heading; // grados; 0 = Norte (arriba)
+  final double escalaVista;
+  final Rect? celdaPuntoClave;
+
+  _PuntoCalibracionPainter({
+    required this.punto,
+    required this.tamanoImagen,
+    this.heading,
+    this.escalaVista = 1.0,
+    this.celdaPuntoClave,
+  });
+
+  static const double _radio = 12;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final k = 1 / max(1.0, escalaVista);
+    final celda = celdaPuntoClave;
+    if (celda != null) {
+      _celdaPunteada(
+        canvas,
+        celda,
+        ColoresApp.advertencia,
+        k,
+        alphaRelleno: 0.14,
+      );
+      canvas.drawCircle(
+        celda.center,
+        3.5 * k,
+        Paint()..color = ColoresApp.mapaContorno,
+      );
+      canvas.drawCircle(
+        celda.center,
+        2.5 * k,
+        Paint()..color = ColoresApp.advertencia,
+      );
+    }
+    final centro = _desnormalizar(punto, tamanoImagen);
+    _dibujarMira(
+      canvas,
+      centro,
+      radio: _radio * k,
+      color: ColoresApp.advertencia,
+      activo: true,
+      escala: k,
+    );
+    if (heading == null) return;
+    // La base de la flecha, apenas más allá de los brazos de la cruz (que
+    // llegan a 1,3 veces el radio).
+    final base = (_radio * 1.3 + 3) * k;
+    final flecha = Path()
+      ..moveTo(0, -(base + 9 * k))
+      ..lineTo(6 * k, -base)
+      ..lineTo(-6 * k, -base)
+      ..close();
+    canvas.save();
+    canvas.translate(centro.dx, centro.dy);
+    canvas.rotate(heading! * pi / 180);
+    canvas.drawPath(
+      flecha,
+      Paint()
+        ..color = ColoresApp.mapaContorno
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2 * k
+        ..strokeJoin = StrokeJoin.round,
+    );
+    canvas.drawPath(flecha, Paint()..color = ColoresApp.advertencia);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_PuntoCalibracionPainter old) =>
+      old.punto != punto ||
+      old.tamanoImagen != tamanoImagen ||
+      old.heading != heading ||
+      old.escalaVista != escalaVista ||
+      old.celdaPuntoClave != celdaPuntoClave;
+}
+
 /// Widget del mapa reutilizable para configuración y navegación.
 class MapaWidget extends StatelessWidget {
   final String rutaImagen;
@@ -857,10 +986,20 @@ class MapaWidget extends StatelessWidget {
   /// defecto) todo se dibuja como siempre.
   final double escalaVista;
 
-  /// Modo calibración: centro normalizado de la celda seleccionada (amarillo) y
-  /// centros de las celdas que ya tienen calibraciones guardadas (pin ✓).
-  final Offset? celdaResaltada;
+  /// Modo calibración: el punto exacto donde el operador dice estar parado
+  /// (una mira ámbar, con la flecha del rumbo si hay brújula), los puntos
+  /// de las calibraciones ya guardadas (pin ✓) y los centros de las celdas
+  /// de los puntos clave guardados (celda punteada y pin). Con el punto
+  /// marcado, la pantalla no pasa [posicionUsuario]: el marcador del usuario,
+  /// que se dibuja en el centro de su celda, taparía el punto exacto.
+  final Offset? puntoCalibracion;
   final List<Offset> celdasCalibradas;
+  final List<Offset> puntosClaveGuardados;
+
+  /// Centro normalizado de la celda que va a representar el punto clave que
+  /// se está por tomar (punteada en ámbar, debajo de la mira), o null si la
+  /// toma no es un punto clave.
+  final Offset? celdaPuntoClave;
 
   /// MAC del beacon que el operador está arrastrando ahora (modo beacons de la
   /// configuración), o null. Se resalta como mira activa. El arrastre en sí lo
@@ -900,8 +1039,10 @@ class MapaWidget extends StatelessWidget {
     this.onArrastreActualizar,
     this.onArrastreFin,
     this.onArrastreCancelar,
-    this.celdaResaltada,
+    this.puntoCalibracion,
     this.celdasCalibradas = const [],
+    this.puntosClaveGuardados = const [],
+    this.celdaPuntoClave,
     this.verticeArrastrado,
     this.beaconArrastrado,
     this.lugarArrastrado,
@@ -1030,8 +1171,8 @@ class MapaWidget extends StatelessWidget {
                           grilla: grilla,
                           mostrarGrilla: mostrarGrilla,
                           puntosMedicion: puntosMedicion,
-                          celdaResaltada: celdaResaltada,
                           celdasCalibradas: celdasCalibradas,
+                          puntosClaveGuardados: puntosClaveGuardados,
                           verticeArrastrado: verticeArrastrado,
                           guias: guias,
                           guiaPunto: guiaPunto,
@@ -1249,6 +1390,36 @@ class MapaWidget extends StatelessWidget {
                           grilla: grilla,
                           heading: headingUsuario,
                           escalaVista: escalaVista,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // El punto exacto de la calibración, encima de todo. Lo que
+                // marca lo dice el panel, así que TalkBack no lo lee acá.
+                if (puntoCalibracion != null)
+                  Positioned(
+                    key: const ValueKey('capaPuntoCalibracion'),
+                    left: offsetX,
+                    top: offsetY,
+                    width: tamanoRenderizado.width,
+                    height: tamanoRenderizado.height,
+                    child: IgnorePointer(
+                      child: ExcludeSemantics(
+                        child: CustomPaint(
+                          painter: _PuntoCalibracionPainter(
+                            punto: puntoCalibracion!,
+                            tamanoImagen: tamanoRenderizado,
+                            heading: headingUsuario,
+                            escalaVista: escalaVista,
+                            celdaPuntoClave: celdaPuntoClave == null
+                                ? null
+                                : _rectCelda(
+                                    celdaPuntoClave!,
+                                    grilla,
+                                    tamanoRenderizado,
+                                  ),
+                          ),
                         ),
                       ),
                     ),

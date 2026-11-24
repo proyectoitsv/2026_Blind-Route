@@ -189,8 +189,6 @@ El proceso del rediseño visual se documenta en [`docs/ESTETICA.md`](docs/ESTETI
 
 Cada modelo de teléfono mide la señal de un mismo beacon con algunos dB de más o de menos según su antena, su carcasa y su chip Bluetooth. Como la calibración se hace con el teléfono del administrador, una persona con otro modelo calcula todas las distancias más largas o más cortas en la misma proporción, y en una simulación una diferencia de 3 a 5 dB llevó el error de la posición a entre 2,7 y 5 m. Este problema aún no se ha resuelto: la aplicación usa las calibraciones tal como las tomó el administrador, sin corregirlas según el teléfono. Se probó en simulación un aprendizaje automático de la diferencia, que quedó sin integrar porque antes hace falta medir con teléfonos reales si la diferencia es constante o cambia con la distancia.
 
-El firmware 2.1 del auricular ESP32, que corrige la conexión con teléfonos distintos del primero emparejado y el sonido metálico, todavía no se compiló ni se probó en la placa.
-
 ## Compilación e instalación
 
 **Requisitos:** Flutter 3.41 (Dart 3.11), el SDK de Android y un teléfono con la depuración USB activada.

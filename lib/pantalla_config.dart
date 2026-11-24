@@ -102,8 +102,12 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// posición es exacta: no depende de dónde se toque el plano).
   String? _beaconCal;
 
-  /// La celda de [_puntoCal]: la que se resalta y la que identifica a un
-  /// punto clave.
+  /// Centro normalizado de la celda (ix, iy).
+  Offset _centroDeCelda(int ix, int iy) =>
+      Offset(_grilla.centroX(ix), _grilla.centroY(iy));
+
+  /// La celda de [_puntoCal]: la que se nombra en el panel y la que
+  /// identifica a un punto clave.
   ({int ix, int iy})? get _celdaCalSeleccionada {
     final p = _puntoCal;
     if (p == null) return null;
@@ -113,8 +117,14 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   List<CalibracionRegistro> _calibraciones = [];
   final TextEditingController _etiquetaCalCtrl = TextEditingController();
 
-  /// Si la lista de calibraciones guardadas está a la vista (arranca
-  /// plegada).
+  /// Secciones plegables del panel. La búsqueda de beacons arranca abierta,
+  /// porque es lo primero que se hace en un piso nuevo, y se pliega al
+  /// terminar; las demás arrancan cerradas, así el panel muestra primero lo
+  /// que se está haciendo y cada sección dice en su fila qué tiene adentro.
+  bool _verBusqueda = true;
+  bool _verAlturas = false;
+  bool _verLecturas = false;
+  bool _verDebajoDeBeacon = false;
   bool _verCalibraciones = false;
 
   /// Una clave por chip de modo, para centrar el elegido en la fila.
@@ -1543,8 +1553,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
       }
       _agregarLugar(normalizado);
     } else if (_modo == _ModoEdicion.calibracion) {
-      // El punto exacto donde el operador dice estar parado. El ícono de
-      // posición salta INMEDIATAMENTE ahí y deja de moverse con el BLE: la
+      // El punto exacto donde el operador dice estar parado. La mira aparece
+      // ahí enseguida y la posición deja de moverse con el BLE: la
       // calibración parte de que el operador declaró dónde está. Durante una
       // toma no se mueve, para que no cambie a mitad de la medición.
       if (_tomandoMuestras) return;
@@ -1945,15 +1955,6 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// Cómo se nombra una calibración: su etiqueta o su celda.
   String _nombreCalibracion(CalibracionRegistro c) =>
       c.etiqueta ?? 'Celda (${c.celdaIx}, ${c.celdaIy})';
-
-  /// "Punto en 13,6 m, 8,4 m (celda 13, 8)": dónde quedó el punto marcado,
-  /// en metros desde el borde izquierdo y el de arriba del plano.
-  String _nombrePuntoCal() {
-    final p = _puntoCal!;
-    final c = _celdaCalSeleccionada!;
-    return 'Punto en ${_decimal(p.dx * _grilla.metrosX)} m, '
-        '${_decimal(p.dy * _grilla.metrosY)} m (celda ${c.ix}, ${c.iy})';
-  }
 
   // -- Escala (puntos desplazables, como las zonas) --------------------------
   //
@@ -2484,9 +2485,16 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
           return 'Toca el punto exacto donde estás parado, o elige abajo un '
               'beacon si estás justo debajo de él.';
         }
+        // El punto ya lo dice la tarjeta de abajo: acá, qué hacer si no es
+        // ese y, con un punto clave, qué representa la celda marcada.
         final nombre = _beaconsEnElMapa[_beaconCal]?.nombre;
-        return '${nombre != null ? 'Debajo de $nombre' : _nombrePuntoCal()}. '
-            'Toma la calibración aquí abajo.';
+        final corregir = nombre != null
+            ? 'Si no estás debajo de $nombre, elige otro beacon o toca el plano.'
+            : 'Si no estás ahí, toca de nuevo el plano.';
+        return _tomaEsFingerprint
+            ? '$corregir El punto clave corrige hacia el centro de la celda '
+                  'marcada.'
+            : corregir;
       case _ModoEdicion.brujula:
         return 'Apunta el teléfono hacia el «arriba» del plano y toca «Usar la '
             'dirección actual».';
@@ -2645,12 +2653,19 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                     beacons: _beaconsEnElMapa,
                     zonas: _zonas,
                     lugares: _lugares,
-                    posicionUsuario: _posicionUsuario,
+                    // Con un punto de calibración marcado, la mira del punto
+                    // exacto ocupa el lugar del marcador del usuario, que se
+                    // dibuja en el centro de la celda y lo taparía.
+                    posicionUsuario:
+                        _modo == _ModoEdicion.calibracion && _puntoCal != null
+                        ? null
+                        : _posicionUsuario,
                     // Flecha de hacia dónde mira el operador, compensada con la
                     // rotación del mapa como en la navegación. La brújula sólo
                     // corre en Calibración y Brújula: en el resto no hay flecha.
                     // En Calibración sirve para ver, antes de tomar un punto
-                    // clave, hacia dónde va a quedar guardado su rumbo.
+                    // clave, hacia dónde va a quedar guardado su rumbo (con un
+                    // punto marcado, la dibuja la mira).
                     headingUsuario: _headingEnVivo == null
                         ? null
                         : ((_headingEnVivo! - _rotacionMapa) % 360 + 360) % 360,
@@ -2758,27 +2773,34 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
                         _modo == _ModoEdicion.lugares && _lugarEnMovimiento
                         ? _lugarArrastrado
                         : null,
-                    // Calibración: celda seleccionada (amarillo) + pines de
-                    // celdas calibradas.
-                    celdaResaltada:
-                        _modo == _ModoEdicion.calibracion &&
+                    // Calibración: la mira en el punto exacto que se tocó y,
+                    // si la toma es un punto clave, su celda (la navegación
+                    // lo reconoce por la celda y corrige hacia su centro).
+                    // Lo guardado: cada calibración con su ✓ en su punto, y
+                    // cada punto clave con su celda y un pin en el centro.
+                    puntoCalibracion: _modo == _ModoEdicion.calibracion
+                        ? _puntoCal
+                        : null,
+                    celdaPuntoClave: _modo == _ModoEdicion.calibracion &&
+                            _tomaEsFingerprint &&
                             _celdaCalSeleccionada != null
-                        ? Offset(
-                            _grilla.centroX(_celdaCalSeleccionada!.ix),
-                            _grilla.centroY(_celdaCalSeleccionada!.iy),
+                        ? _centroDeCelda(
+                            _celdaCalSeleccionada!.ix,
+                            _celdaCalSeleccionada!.iy,
                           )
                         : null,
                     celdasCalibradas: _modo == _ModoEdicion.calibracion
-                        ? _calibraciones
-                              .map(
-                                (c) => c.centro(
-                                  (ix, iy) => Offset(
-                                    _grilla.centroX(ix),
-                                    _grilla.centroY(iy),
-                                  ),
-                                ),
-                              )
-                              .toList()
+                        ? [
+                            for (final c in _calibraciones)
+                              if (!c.esFingerprint) c.centro(_centroDeCelda),
+                          ]
+                        : const [],
+                    puntosClaveGuardados: _modo == _ModoEdicion.calibracion
+                        ? [
+                            for (final c in _calibraciones)
+                              if (c.esFingerprint)
+                                _centroDeCelda(c.celdaIx, c.celdaIy),
+                          ]
                         : const [],
                   ),
                 );
@@ -3050,20 +3072,33 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   ) {
     final sinCoincidencias =
         _filtroActivo && visibles.isEmpty && _dispositivosCercanos.isNotEmpty;
+    final cercanos = _dispositivosCercanos.length;
+    // Primero la búsqueda (escáner, filtro y la lista con la potencia de
+    // cada dispositivo), que se pliega una vez ubicados los beacons; abajo de
+    // todo, la altura de los que ya están en el plano.
     return [
       _bloque([
         const SizedBox(height: EspaciadoApp.entreSecciones),
-        _filaEscaner(context, e),
-        const SizedBox(height: EspaciadoApp.margenLateral),
-        _filaFiltro(visibles.length),
-        const SizedBox(height: EspaciadoApp.margenLateral),
-      ]),
-      if (_beaconsEnElMapa.isNotEmpty)
-        _bloque([
-          ..._alturasBeacons(e),
+        _plegable(
+          titulo: 'Buscar beacons',
+          resumen: [
+            _escaneando ? 'Buscando' : 'Escáner detenido',
+            if (cercanos > 0)
+              '$cercanos ${cercanos == 1 ? 'dispositivo' : 'dispositivos'}',
+          ].join(' · '),
+          icono: Icons.bluetooth_searching_rounded,
+          abierto: _verBusqueda,
+          alCambiar: (v) => _verBusqueda = v,
+        ),
+        if (_verBusqueda) ...[
           const SizedBox(height: EspaciadoApp.entreSecciones),
-        ]),
-      if (sinCoincidencias)
+          _filaEscaner(context, e),
+          const SizedBox(height: EspaciadoApp.margenLateral),
+          _filaFiltro(visibles.length),
+          const SizedBox(height: EspaciadoApp.margenLateral),
+        ],
+      ]),
+      if (_verBusqueda && sinCoincidencias)
         SliverToBoxAdapter(
           child: EstadoPantalla(
             icono: Icons.filter_alt_off_rounded,
@@ -3075,20 +3110,58 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
             ),
           ),
         )
-      else
-        SliverPadding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: EspaciadoApp.margenLateral,
-          ),
-          sliver: SliverList.separated(
-            itemCount: visibles.length,
-            separatorBuilder: (_, _) =>
-                const SizedBox(height: EspaciadoApp.entreTarjetas),
-            itemBuilder: (context, i) => _tarjetaDispositivo(visibles[i]),
-          ),
-        ),
+      else if (_verBusqueda && visibles.isNotEmpty)
+        _bandejaDispositivos(e, visibles),
+      if (_beaconsEnElMapa.isNotEmpty)
+        _bloque([
+          const SizedBox(height: EspaciadoApp.entreSecciones),
+          ..._alturasBeacons(e),
+        ]),
     ];
   }
+
+  /// Los dispositivos encontrados, en una bandeja hundida con su título: los
+  /// controles de la búsqueda (la fila de la sección, el escáner, el filtro)
+  /// van levantados y la lista queda adentro de un hueco más oscuro, con las
+  /// tarjetas levantadas sobre él. Así no se confunden unos con otros.
+  Widget _bandejaDispositivos(EstiloApp e, List<ScanResult> visibles) {
+    final n = visibles.length;
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: EspaciadoApp.margenLateral,
+      ),
+      sliver: BandejaHundida(
+        titulo: n == 1
+            ? '1 dispositivo encontrado'
+            : '$n dispositivos encontrados',
+        icono: Icons.sensors_rounded,
+        cantidad: n,
+        constructor: (context, i) => _tarjetaDispositivo(visibles[i]),
+      ),
+    );
+  }
+
+  /// La fila que abre y cierra una sección del panel, sola en su tarjeta.
+  /// [resumen] dice lo que hay adentro sin abrirla.
+  Widget _plegable({
+    required String titulo,
+    required String resumen,
+    required IconData icono,
+    required bool abierto,
+    required ValueChanged<bool> alCambiar,
+  }) => GrupoFilas(
+    filas: [
+      FilaGrupo.plegable(
+        titulo: titulo,
+        subtitulo: resumen,
+        icono: icono,
+        abierto: abierto,
+        alCambiar: (v) {
+          if (mounted) setState(() => alCambiar(v));
+        },
+      ),
+    ],
+  );
 
   /// El estado del escáner (que TalkBack anuncia al cambiar) y el botón para
   /// prenderlo ("Escanear", el principal) o apagarlo.
@@ -3184,7 +3257,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     );
   }
 
-  /// Los beacons ya ubicados, con su altura. Tocar uno la cambia.
+  /// Los beacons ya ubicados, con su altura, en una sección plegable que en
+  /// su fila dice cuántos están sin altura. Tocar uno la cambia.
   ///
   /// La altura importa porque la señal viaja en 3D y el plano es 2D: ver
   /// "ALTURAS" en ProcesadorSenal. Sin indicar, se toma a la altura del
@@ -3196,9 +3270,25 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     String alturaHablada(BeaconMarcado b) => b.altura == null
         ? 'altura sin indicar'
         : 'altura ${_decimal(b.altura!)} metros';
+    final total = _beaconsEnElMapa.length;
+    final sinAltura = _beaconsEnElMapa.values
+        .where((b) => b.altura == null)
+        .length;
+    final plegable = _plegable(
+      titulo: 'Altura de los beacons',
+      resumen: sinAltura == 0
+          ? total == 1
+                ? 'El beacon tiene su altura'
+                : 'Los $total beacons tienen su altura'
+          : '$sinAltura de $total sin altura',
+      icono: Icons.height_rounded,
+      abierto: _verAlturas,
+      alCambiar: (v) => _verAlturas = v,
+    );
+    if (!_verAlturas) return [plegable];
     return [
-      const EncabezadoSeccion(titulo: 'Altura de los beacons'),
-      const SizedBox(height: EspaciadoApp.chico),
+      plegable,
+      const SizedBox(height: EspaciadoApp.medio),
       Text(
         'Desde el piso hasta el beacon. Toca uno para cambiarla. Sin '
         'indicar, se toma a la altura del teléfono '
@@ -3254,13 +3344,18 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   /// Un dispositivo de la lista, que se elige para ubicarlo en el mapa (uno
   /// solo: borde y tilde en acento). Los que ya están en el mapa, apagados.
+  /// En lugar de un ícono lleva las barras de su señal: así se distingue de
+  /// los controles de la búsqueda y se ve cuál se oye más fuerte.
   Widget _tarjetaDispositivo(ScanResult d) {
     final mac = d.device.remoteId.str;
     final yaUbicado = _beaconsEnElMapa.containsKey(mac);
     final potencia = _potenciaDe(d);
     return TarjetaDestino(
       key: ValueKey<String>(mac),
-      icono: yaUbicado ? Icons.check_circle_rounded : Icons.bluetooth_rounded,
+      inicio: IndicadorSenal(
+        barras: IndicadorSenal.barrasDe(potencia),
+        apagado: yaUbicado,
+      ),
       nombre: d.device.advName.isEmpty
           ? 'Dispositivo desconocido'
           : d.device.advName,
@@ -3352,38 +3447,28 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
 
   // ─── Calibración ──────────────────────────────────────────────────────────
 
+  /// El panel de la calibración. A la vista queda sólo lo que hace falta
+  /// para tomar una: la tarjeta con el punto marcado, la etiqueta y el punto
+  /// clave, y el botón. Lo que se consulta (las lecturas, los beacons para
+  /// pararse debajo y las calibraciones guardadas) va en secciones
+  /// plegables, cerradas al entrar, que dicen en su fila lo que tienen
+  /// adentro.
   List<Widget> _contenidoCalibracion(EstiloApp e) {
     final marcado = _puntoCal != null;
     final debajoDe = _beaconsEnElMapa[_beaconCal]?.nombre;
     return [
       if (marcado) ...[
         const SizedBox(height: EspaciadoApp.entreSecciones),
-        EncabezadoSeccion(
-          titulo: debajoDe != null ? 'Debajo de $debajoDe' : _nombrePuntoCal(),
-        ),
-        const SizedBox(height: EspaciadoApp.medio),
-        CampoTexto(
-          etiqueta: 'Etiqueta (opcional)',
-          ayuda: 'Por ejemplo, Entrada o Pasillo norte',
-          controlador: _etiquetaCalCtrl,
-          capitalizacion: TextCapitalization.sentences,
-          accionTeclado: TextInputAction.done,
-        ),
-        const SizedBox(height: EspaciadoApp.entreSecciones),
-        _lecturasActuales(e),
-        const SizedBox(height: EspaciadoApp.entreSecciones),
-        // ── PUNTO CLAVE (fingerprint) ──
-        // Vive dentro del propio modo calibracion: un punto clave ES una
-        // calibracion, solo que medida mas tiempo y marcada para que ademas
-        // se use como patron en vivo.
-        GrupoFilas(filas: [_filaPuntoClave()]),
+        _tarjetaToma(debajoDe),
         const SizedBox(height: EspaciadoApp.entreSecciones),
         // ── Toma multi-muestra ──
         if (_tomandoMuestras) ..._tomaEnCurso(e) else _botonToma(),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        ..._lecturasActuales(e),
       ],
       if (!_tomandoMuestras && _beaconsEnElMapa.isNotEmpty) ...[
         const SizedBox(height: EspaciadoApp.entreSecciones),
-        _debajoDeUnBeacon(),
+        ..._debajoDeUnBeacon(debajoDe),
       ],
       const SizedBox(height: EspaciadoApp.entreSecciones),
       ..._calibracionesGuardadas(e),
@@ -3394,8 +3479,24 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   /// posición del beacon, que ya está en el plano, sin depender de dónde se
   /// toque. Sirve en espacios abiertos sin puertas ni paredes de referencia,
   /// y un solo punto calibra a la vez la distancia a todos los demás beacons.
-  Widget _debajoDeUnBeacon() => GrupoFilas(
-    titulo: 'Justo debajo de un beacon',
+  /// [elegido]: el nombre del beacon elegido, si hay uno.
+  List<Widget> _debajoDeUnBeacon(String? elegido) => [
+    _plegable(
+      titulo: 'Justo debajo de un beacon',
+      resumen: elegido != null
+          ? 'Elegido: $elegido'
+          : 'Para calibrar sin referencias en el plano',
+      icono: Icons.person_pin_circle_rounded,
+      abierto: _verDebajoDeBeacon,
+      alCambiar: (v) => _verDebajoDeBeacon = v,
+    ),
+    if (_verDebajoDeBeacon) ...[
+      const SizedBox(height: EspaciadoApp.margenLateral),
+      _listaDebajoDeUnBeacon(),
+    ],
+  ];
+
+  Widget _listaDebajoDeUnBeacon() => GrupoFilas(
     pie: 'Párate debajo del beacon, con el teléfono en la mano, y tócalo '
         'acá. Sirve donde no hay puertas ni paredes que tomar de referencia.',
     filas: [
@@ -3416,55 +3517,113 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   );
 
   /// Lo que se oye ahora de cada beacon del piso: el nombre, la MAC y la
-  /// potencia filtrada. Sin señal, el ícono en gris.
-  Widget _lecturasActuales(EstiloApp e) {
+  /// potencia filtrada. Sin señal, el ícono en gris. Plegada, la fila dice
+  /// cuántos se oyen.
+  List<Widget> _lecturasActuales(EstiloApp e) {
     final beacons = _beaconsEnElMapa.values.toList();
-    final titulo = 'Lecturas actuales (${beacons.length} beacons)';
+    bool conSenal(BeaconMarcado b) =>
+        b.rssiFiltrado > -95 && b.rssiFiltrado < 0;
     if (beacons.isEmpty) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          EncabezadoSeccion(titulo: titulo),
-          const SizedBox(height: EspaciadoApp.chico),
-          Text(
-            'No hay beacons configurados en este piso.',
-            style: TipografiaApp.subtitulo.copyWith(color: e.textoSecundario),
-          ),
-        ],
-      );
+      return [
+        const EncabezadoSeccion(titulo: 'Lecturas actuales'),
+        const SizedBox(height: EspaciadoApp.chico),
+        Text(
+          'No hay beacons configurados en este piso.',
+          style: TipografiaApp.subtitulo.copyWith(color: e.textoSecundario),
+        ),
+      ];
     }
+    final oidos = beacons.where(conSenal).length;
+    return [
+      _plegable(
+        titulo: 'Lecturas actuales',
+        resumen: 'Se oyen $oidos de ${beacons.length} beacons',
+        icono: Icons.bluetooth_connected_rounded,
+        abierto: _verLecturas,
+        alCambiar: (v) => _verLecturas = v,
+      ),
+      if (_verLecturas) ...[
+        const SizedBox(height: EspaciadoApp.margenLateral),
+        GrupoFilas(
+          filas: [
+            for (final b in beacons)
+              FilaGrupo(
+                inicio: CuadroIcono(
+                  icono: conSenal(b)
+                      ? Icons.bluetooth_connected_rounded
+                      : Icons.bluetooth_disabled_rounded,
+                  color: conSenal(b) ? null : e.textoSecundario,
+                ),
+                titulo: b.nombre,
+                subtitulo: b.mac,
+                valor: '${b.rssiFiltrado.toStringAsFixed(0)} dBm',
+              ),
+          ],
+        ),
+      ],
+    ];
+  }
+
+  /// Lo que se va a guardar, en una sola tarjeta: dónde (el punto marcado o
+  /// el beacon de arriba, con los metros desde los bordes del plano y la
+  /// celda), la etiqueta y si es un punto clave. Debajo va el botón.
+  Widget _tarjetaToma(String? debajoDe) {
+    final p = _puntoCal!;
+    final c = _celdaCalSeleccionada!;
+    final x = _decimal(p.dx * _grilla.metrosX);
+    final y = _decimal(p.dy * _grilla.metrosY);
+    final donde = debajoDe != null ? 'Debajo de $debajoDe' : 'Punto marcado';
+    final etiqueta = _etiquetaCalCtrl.text.trim();
     return GrupoFilas(
-      titulo: titulo,
       filas: [
-        for (final b in beacons)
-          FilaGrupo(
-            inicio: CuadroIcono(
-              icono: b.rssiFiltrado > -95 && b.rssiFiltrado < 0
-                  ? Icons.bluetooth_connected_rounded
-                  : Icons.bluetooth_disabled_rounded,
-              color: b.rssiFiltrado > -95 && b.rssiFiltrado < 0
-                  ? null
-                  : e.textoSecundario,
-            ),
-            titulo: b.nombre,
-            subtitulo: b.mac,
-            valor: '${b.rssiFiltrado.toStringAsFixed(0)} dBm',
-          ),
+        FilaGrupo(
+          icono: debajoDe != null
+              ? Icons.person_pin_circle_rounded
+              : Icons.my_location_rounded,
+          titulo: donde,
+          subtitulo: '$x m · $y m · celda ${c.ix}, ${c.iy}',
+          etiquetaSemantica:
+              '$donde: $x metros, $y metros, celda ${c.ix}, ${c.iy}',
+        ),
+        FilaGrupo(
+          icono: Icons.sell_rounded,
+          titulo: 'Etiqueta',
+          subtitulo: etiqueta.isEmpty
+              ? 'Opcional, por ejemplo Entrada'
+              : etiqueta,
+          navega: true,
+          alTocar: _tomandoMuestras ? null : _pedirEtiquetaCal,
+        ),
+        // ── PUNTO CLAVE (fingerprint) ──
+        // Vive dentro del propio modo calibracion: un punto clave ES una
+        // calibracion, solo que medida mas tiempo y marcada para que ademas
+        // se use como patron en vivo.
+        _filaPuntoClave(),
       ],
     );
   }
 
+  /// La etiqueta de la toma, en una hoja. Queda puesta para las tomas
+  /// siguientes hasta que se cambie.
+  Future<void> _pedirEtiquetaCal() async {
+    final r = await mostrarHoja<String>(
+      context,
+      titulo: 'Etiqueta',
+      contenido: (context) => _HojaEtiqueta(inicial: _etiquetaCalCtrl.text),
+    );
+    if (r == null || !mounted) return;
+    setState(() => _etiquetaCalCtrl.text = r.trim());
+  }
+
   FilaGrupo _filaPuntoClave() => FilaGrupo.interruptor(
-    titulo: 'Punto clave (fingerprint)',
+    titulo: 'Punto clave',
     subtitulo: !_tomaEsFingerprint
-        ? 'Para esquinas donde se dobla, puertas o el pie de una escalera.'
+        ? 'Para esquinas, puertas o el pie de una escalera'
         : _headingEnVivo == null
-        ? 'Medición de ${_duracionFingerprint.inSeconds} s. Sin brújula: se '
-              'guarda sin rumbo y es menos preciso.'
-        : 'Medición de ${_duracionFingerprint.inSeconds} s. Mira hacia donde '
-              'se llega caminando (ahora: '
-              '${_headingEnVivo!.toStringAsFixed(0)}°). Si se llega desde dos '
-              'lados, toma uno por cada sentido.',
+        ? 'Sin brújula: se guarda sin rumbo y es menos preciso.'
+        : 'Mira hacia donde se llega (ahora: '
+              '${_headingEnVivo!.toStringAsFixed(0)}°). Uno por cada sentido '
+              'de llegada.',
     icono: Icons.push_pin_rounded,
     valor: _tomaEsFingerprint,
     alCambiar: _tomandoMuestras
@@ -3529,36 +3688,40 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
     ];
   }
 
-  /// Las calibraciones guardadas: plegadas al entrar. "Ver" las
-  /// muestra con "Quitar duplicados" y "Borrar todas" arriba, y cada una con
-  /// su tacho.
+  /// Las calibraciones guardadas, plegadas al entrar: la fila dice cuántas
+  /// calibraciones y puntos clave hay. Abiertas, "Quitar duplicados" y
+  /// "Borrar todas" arriba, y cada una con su tacho.
   List<Widget> _calibracionesGuardadas(EstiloApp e) {
     final n = _calibraciones.length;
-    return [
-      EncabezadoSeccion(
-        titulo: 'Calibraciones guardadas ($n)',
-        accion: n == 0
-            ? null
-            : BotonSecundario(
-                texto: _verCalibraciones ? 'Ocultar' : 'Ver',
-                icono: _verCalibraciones
-                    ? Icons.expand_less_rounded
-                    : Icons.expand_more_rounded,
-                compacto: true,
-                etiquetaSemantica: _verCalibraciones
-                    ? 'Ocultar las calibraciones guardadas'
-                    : 'Ver las calibraciones guardadas',
-                alPresionar: () =>
-                    setState(() => _verCalibraciones = !_verCalibraciones),
-              ),
-      ),
-      if (n == 0) ...[
-        const SizedBox(height: EspaciadoApp.chico),
-        Text(
-          'Todavía no hay calibraciones.',
-          style: TipografiaApp.subtitulo.copyWith(color: e.textoSecundario),
+    final claves = _calibraciones.where((c) => c.esFingerprint).length;
+    final comunes = n - claves;
+    if (n == 0) {
+      return const [
+        GrupoFilas(
+          filas: [
+            FilaGrupo(
+              icono: Icons.add_location_alt_rounded,
+              titulo: 'Calibraciones guardadas',
+              subtitulo: 'Todavía no hay calibraciones.',
+            ),
+          ],
         ),
-      ] else if (_verCalibraciones) ...[
+      ];
+    }
+    return [
+      _plegable(
+        titulo: 'Calibraciones guardadas',
+        resumen: [
+          if (comunes > 0)
+            '$comunes ${comunes == 1 ? 'calibración' : 'calibraciones'}',
+          if (claves > 0)
+            '$claves ${claves == 1 ? 'punto clave' : 'puntos clave'}',
+        ].join(' y '),
+        icono: Icons.add_location_alt_rounded,
+        abierto: _verCalibraciones,
+        alCambiar: (v) => _verCalibraciones = v,
+      ),
+      if (_verCalibraciones) ...[
         const SizedBox(height: EspaciadoApp.margenLateral),
         GrupoFilas(
           filas: [
@@ -3611,7 +3774,7 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
   //
   // El operador apunta el teléfono hacia lo que en el plano es "arriba" y
   // toca "Usar la dirección actual": se promedia el heading unos segundos y
-  // ese es el offset. El deslizador y los atajos quedan para ajustar a mano.
+  // ese es el offset. El deslizador queda para el ajuste fino a mano.
   // Todo se guarda solo. El valor guardado (rotacion_mapa, en grados) es el
   // offset que PantallaNavegacion resta al heading de FlutterCompass para
   // alinear la brújula con el plano.
@@ -3712,19 +3875,8 @@ class _PantallaConfiguracionState extends State<PantallaConfiguracion> {
         },
         alTerminar: _fijarRotacion,
       ),
-      const SizedBox(height: EspaciadoApp.entreSecciones),
-      // Atajos.
-      FilaBotones(children: [_atajo('Norte', 0), _atajo('Este', 90)]),
-      const SizedBox(height: EspaciadoApp.medio),
-      FilaBotones(children: [_atajo('Sur', 180), _atajo('Oeste', 270)]),
     ];
   }
-
-  Widget _atajo(String nombre, double grados) => BotonSecundario(
-    texto: '$nombre (${grados.round()}°)',
-    compacto: true,
-    alPresionar: () => _fijarRotacion(grados),
-  );
 
   /// Precisión del sensor de la brújula, con la indicación de calibrarlo
   /// cuando no es alta (ver [_precisionBrujula]): en un recuadro hundido, con
@@ -4236,6 +4388,66 @@ class _HojaAlturaState extends State<_HojaAltura> {
               alPresionar: () => Navigator.of(
                 context,
               ).pop((altura: _altura, todos: _todos)),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// La hoja de la etiqueta de una calibración: un campo de texto con
+/// "Cancelar" y "Guardar". Devuelve el texto (vacío para sacarla), o null si
+/// se cancela.
+class _HojaEtiqueta extends StatefulWidget {
+  const _HojaEtiqueta({required this.inicial});
+
+  final String inicial;
+
+  @override
+  State<_HojaEtiqueta> createState() => _HojaEtiquetaState();
+}
+
+class _HojaEtiquetaState extends State<_HojaEtiqueta> {
+  late final TextEditingController _texto = TextEditingController(
+    text: widget.inicial,
+  );
+
+  @override
+  void dispose() {
+    _texto.dispose();
+    super.dispose();
+  }
+
+  void _guardar() => Navigator.of(context).pop(_texto.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        CampoTexto(
+          etiqueta: 'Etiqueta (opcional)',
+          ayuda: 'Por ejemplo, Entrada o Pasillo norte. En un punto clave, la '
+              'navegación la dice al pasar por ahí.',
+          controlador: _texto,
+          capitalizacion: TextCapitalization.sentences,
+          accionTeclado: TextInputAction.done,
+          alEnviar: (_) => _guardar(),
+          autofocus: true,
+        ),
+        const SizedBox(height: EspaciadoApp.entreSecciones),
+        FilaBotones(
+          children: [
+            BotonSecundario(
+              texto: 'Cancelar',
+              alPresionar: () => Navigator.of(context).pop(),
+            ),
+            BotonPrincipal(
+              texto: 'Guardar',
+              icono: Icons.check_rounded,
+              expandido: false,
+              alPresionar: _guardar,
             ),
           ],
         ),
