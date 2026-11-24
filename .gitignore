@@ -76,6 +76,10 @@ devtools_options.yaml
 # Capturas de error de Flutter
 flutter_*.png
 
+# Documentos de trabajo que quedan sólo en la computadora
+docs/AJUSTES_EN_EL_EDIFICIO.md
+docs/RESUMEN_DE_CAMBIOS_NOVIEMBRE_2026.md
+
 # Logs
 *.log
 log.txt

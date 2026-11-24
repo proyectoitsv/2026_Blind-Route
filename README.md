@@ -181,15 +181,13 @@ La imagen del plano se elige con el selector del sistema y las vibraciones son l
 
 ## Estado del proyecto
 
-El proyecto se encuentra en desarrollo y en etapa de calibración en dispositivos reales. Varios parámetros de la navegación se eligieron con simulaciones y todavía se tienen que medir en un edificio real, y la forma de hacerlo se explica en [`docs/AJUSTES_EN_EL_EDIFICIO.md`](docs/AJUSTES_EN_EL_EDIFICIO.md).
-
-Los últimos cambios (la altura de los beacons, la calibración en el punto exacto, los parámetros nuevos del panel de ajustes y el firmware 2.1 del auricular) se resumen en [`docs/RESUMEN_DE_CAMBIOS_NOVIEMBRE_2026.md`](docs/RESUMEN_DE_CAMBIOS_NOVIEMBRE_2026.md).
+El proyecto se encuentra en desarrollo y en etapa de calibración en dispositivos reales. Varios parámetros de la navegación se eligieron con simulaciones y todavía se tienen que medir en un edificio real.
 
 El proceso del rediseño visual se documenta en [`docs/ESTETICA.md`](docs/ESTETICA.md).
 
 ### Problemas conocidos sin resolver
 
-Cada modelo de teléfono mide la señal de un mismo beacon con algunos dB de más o de menos según su antena, su carcasa y su chip Bluetooth. Como la calibración se hace con el teléfono del administrador, una persona con otro modelo calcula todas las distancias más largas o más cortas en la misma proporción, y en una simulación una diferencia de 3 a 5 dB llevó el error de la posición a entre 2,7 y 5 m. Este problema aún no se ha resuelto: la aplicación usa las calibraciones tal como las tomó el administrador, sin corregirlas según el teléfono. Se probó en simulación un aprendizaje automático de la diferencia, que quedó sin integrar porque antes hace falta medir con teléfonos reales si la diferencia es constante o cambia con la distancia. El detalle está en la sección 10 de [`docs/AJUSTES_EN_EL_EDIFICIO.md`](docs/AJUSTES_EN_EL_EDIFICIO.md).
+Cada modelo de teléfono mide la señal de un mismo beacon con algunos dB de más o de menos según su antena, su carcasa y su chip Bluetooth. Como la calibración se hace con el teléfono del administrador, una persona con otro modelo calcula todas las distancias más largas o más cortas en la misma proporción, y en una simulación una diferencia de 3 a 5 dB llevó el error de la posición a entre 2,7 y 5 m. Este problema aún no se ha resuelto: la aplicación usa las calibraciones tal como las tomó el administrador, sin corregirlas según el teléfono. Se probó en simulación un aprendizaje automático de la diferencia, que quedó sin integrar porque antes hace falta medir con teléfonos reales si la diferencia es constante o cambia con la distancia.
 
 El firmware 2.1 del auricular ESP32, que corrige la conexión con teléfonos distintos del primero emparejado y el sonido metálico, todavía no se compiló ni se probó en la placa.
 
@@ -293,8 +291,6 @@ Cada archivo de `lib/` empieza con un comentario que explica qué contiene y có
 | Archivo | Contenido |
 |---|---|
 | [`docs/ESTETICA.md`](docs/ESTETICA.md) | Diseño visual actual, su evolución y tareas pendientes |
-| [`docs/AJUSTES_EN_EL_EDIFICIO.md`](docs/AJUSTES_EN_EL_EDIFICIO.md) | Cómo probar en un edificio real y decidir el valor de cada parámetro de la navegación, y la diferencia de ganancia entre teléfonos, que aún no se ha resuelto |
-| [`docs/RESUMEN_DE_CAMBIOS_NOVIEMBRE_2026.md`](docs/RESUMEN_DE_CAMBIOS_NOVIEMBRE_2026.md) | Resumen de los cambios del 23 y 24 de noviembre de 2026 y de lo que quedó pendiente |
 | [`hardware/esp32_blindroute_audio/COMO_FUNCIONA.md`](hardware/esp32_blindroute_audio/COMO_FUNCIONA.md) | Funcionamiento del auricular ESP32 (firmware 2.1): conexión, sonido, pines y mensajes del puerto serie |
 | [`supabase/ajustes_navegacion.sql`](supabase/ajustes_navegacion.sql) | Tabla y permisos de los ajustes de navegación en la nube |
 
