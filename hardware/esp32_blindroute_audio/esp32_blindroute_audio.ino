@@ -93,7 +93,7 @@ struct Biquad {
 
 // Versión del firmware. La app la pide con el comando 'V' para comprobar que el
 // dispositivo es el correcto antes de usarlo.
-#define FW_VERSION  "2.1"
+#define FW_VERSION  "2.4"
 
 // El callback de Bluetooth corre en otra tarea del sistema. Solo marca el
 // cambio: el loop lo atiende y es el único que toca el buffer de audio.
@@ -169,6 +169,25 @@ void alCambiarConexion(esp_spp_cb_event_t event, esp_spp_cb_param_t* param) {
 //   MIC_SHIFT = 15 → valor actual, verificado escuchando el WAV
 //   MIC_SHIFT = 14 → si queda corto
 #define MIC_SHIFT      15
+
+// Ganancia extra del micrófono en el canal de voz (HFP: llamadas y el
+// reconocimiento de voz de BlindRoute), después del filtro de DC. Con
+// MIC_SHIFT 15, hablando a la distancia de uso, el pico de [sco-mic] daba
+// entre 500 y 1700 de 32768 (1,5 % a 5 %), y el reconocedor de voz no
+// entendía palabras cortas como "hola". Por 4 (+12 dB) quedarían entre el 6 %
+// y el 20 %. Probado el 24/11/2026: hablando, el pico dio entre 1650 y 4200
+// (5 % a 13 %), sin saturar. Si el pico de [sco-mic] pasa seguido de 32000
+// al hablar, bajarlo a 2.
+#define GANANCIA_MIC_SCO  4
+
+// Lo que se descarta del micrófono al abrirse el canal de voz: esas muestras
+// salen como silencio. Aun con el filtro de DC arrancando de la primera
+// muestra (ver dcPrimera), cada apertura del canal empieza con un pico de
+// 32768 en [sco-mic]: lo primero que lee el I2S después de cambiar su reloj
+// (i2s_set_clk) no es el micrófono ya estable, y la ganancia lo agranda. No
+// se pierde nada de lo que dice la persona: el reconocedor del teléfono
+// tarda más que esto en empezar a grabar. Elegido sin medir.
+#define DESCARTE_MIC_SCO_MS  150
 
 // ─── VOLUMEN DE REPRODUCCIÓN ─────────────────────────────────────────────────
 // Escala aplicada al audio que llega de la app, en porcentaje.
@@ -475,6 +494,19 @@ static size_t escribirAmpEstereo(const int16_t* mono, size_t muestras,
 // ═══════════════════════════════════════════════════════════════════════════
 
 float dcX1 = 0, dcY1 = 0;
+
+// El filtro de DC del canal de voz arranca desde la primera muestra que lee
+// (ver tareaMicroSco). Arrancando desde cero, la primera muestra salía con
+// todo el nivel de continua del micrófono y los primeros milisegundos de cada
+// llamada llegaban al teléfono saturados (el pico de [sco-mic] daba 32768
+// al abrirse el canal): un golpe justo cuando el reconocedor empieza a
+// escuchar. La primera muestra que cuenta es la que sigue al descarte (ver
+// DESCARTE_MIC_SCO_MS).
+volatile bool dcPrimera = true;
+
+// Cuántas muestras del micrófono faltan descartar en el canal de voz (ver
+// DESCARTE_MIC_SCO_MS). Lo carga iniciarAudioSco con la tasa del canal.
+volatile uint32_t micDescartar = 0;
 
 size_t convertirA16Bit(size_t bytesCrudos) {
   size_t muestras = bytesCrudos / 4;
@@ -940,7 +972,26 @@ static volatile bool microCorriendo = false;
 static esp_bd_addr_t bdaRecordado;
 static bool bdaValido = false;
 static bool hfpListo = false;
-static uint32_t ultimoIntentoSco  = 0;
+
+// Cuándo se pidió por última vez abrir el canal de voz, o cuándo empezó la
+// llamada. El canal lo abre y lo cierra el teléfono: en una llamada, y
+// también cuando una app (BlindRoute) usa el micrófono del auricular. El
+// auricular sólo lo pide si, empezada una llamada, pasan ESPERA_SCO_MS sin
+// que el teléfono lo abra. Sin esa espera, el auricular lo pedía en el mismo
+// instante en que el teléfono lo abría, y los dos pedidos chocaban: el canal
+// se abría y se cerraba varias veces seguidas y el teléfono quedaba unos
+// segundos sin mandar música.
+static volatile uint32_t ultimoIntentoSco = 0;
+#define ESPERA_SCO_MS 3000
+
+// Si el canal de voz ya se abrió en la llamada en curso. Si el teléfono lo
+// abrió y después lo cerró, fue a propósito (BlindRoute terminó de escuchar,
+// o la persona pasó la llamada al parlante del teléfono): el auricular no lo
+// vuelve a pedir hasta la próxima llamada. El teléfono a veces avisa que la
+// llamada terminó varios segundos después de cerrar el canal (3 s en la
+// prueba del 24/11/2026), y en ese rato el auricular veía una llamada sin
+// canal y lo reabría.
+static volatile bool scoAbiertoEnLlamada = false;
 
 static const uint32_t SCO_TASA_CVSD = 8000;
 static const uint32_t SCO_TASA_MSBC = 16000;
@@ -1176,15 +1227,17 @@ static void conectarHfp(const char *motivo) {
 
 static void abrirSco(const char *motivo) {
   if (!btSlcConectado || btScoActivo || !bdaValido) return;
-  if (millis() - ultimoIntentoSco < 3000) return;
+  if (millis() - ultimoIntentoSco < ESPERA_SCO_MS) return;
   ultimoIntentoSco = millis();
   Serial.printf("HFP: abriendo audio (%s)\n", motivo);
   const esp_err_t e = esp_hf_client_connect_audio(bdaRecordado);
   if (e != ESP_OK) Serial.printf("  esp_hf_client_connect_audio error %d\n", (int)e);
 }
 
-// Tarea del micrófono durante una llamada: lee el I2S, convierte a 16 bits con el
-// mismo filtro de DC que el SPP y deja las muestras para el teléfono.
+// Tarea del micrófono durante una llamada: lee el I2S, descarta lo primero (ver
+// DESCARTE_MIC_SCO_MS), convierte a 16 bits con el mismo filtro de DC que el SPP
+// (arrancando desde la primera muestra que cuenta, ver dcPrimera), le aplica
+// GANANCIA_MIC_SCO y deja las muestras para el teléfono.
 static void tareaMicroSco(void *) {
   static int32_t crudo[64];
   static int16_t pcm[64];
@@ -1195,12 +1248,23 @@ static void tareaMicroSco(void *) {
     }
     const size_t n = leidos / sizeof(int32_t);
     for (size_t i = 0; i < n; i++) {
-      int32_t m = crudo[i] >> MIC_SHIFT;
-      const float x = (float)m;
+      if (micDescartar > 0) {
+        // Sale silencio, y no cuenta para el pico del diagnóstico.
+        micDescartar--;
+        pcm[i] = 0;
+        continue;
+      }
+      const float x = (float)(crudo[i] >> MIC_SHIFT);
+      if (dcPrimera) {
+        // La primera muestra fija el nivel de continua: sale 0, sin golpe.
+        dcX1 = x;
+        dcY1 = 0;
+        dcPrimera = false;
+      }
       const float y = x - dcX1 + 0.995f * dcY1;
       dcX1 = x;
       dcY1 = y;
-      m = (int32_t)y;
+      int32_t m = (int32_t)(y * GANANCIA_MIC_SCO);
       if (m >  32767) m =  32767;
       if (m < -32768) m = -32768;
       pcm[i] = (int16_t)m;
@@ -1544,10 +1608,10 @@ static void iniciarAudioSco(bool msbc) {
   btScoMsbc = msbc;
   if (pcmSalida) xStreamBufferReset(pcmSalida);
   if (pcmMicro)  xStreamBufferReset(pcmMicro);
-  dcX1 = 0;
-  dcY1 = 0;
-
   const uint32_t tasa = msbc ? SCO_TASA_MSBC : SCO_TASA_CVSD;
+  micDescartar = tasa * DESCARTE_MIC_SCO_MS / 1000;
+  dcPrimera = true;  // el filtro de DC arranca de la primera muestra que cuenta
+
   i2s_set_clk(MIC_I2S_PORT, tasa, I2S_BITS_PER_SAMPLE_32BIT, I2S_CHANNEL_MONO);
 
   microCorriendo = true;
@@ -1581,6 +1645,7 @@ static void hfEventoBt(esp_hf_client_cb_event_t event, esp_hf_client_cb_param_t 
       if (param->conn_stat.state == ESP_HF_CLIENT_CONNECTION_STATE_DISCONNECTED) {
         btLlamada = false;
         btVoz = false;
+        scoAbiertoEnLlamada = false;
         if (btScoActivo) {
           btScoActivo = false;
           detenerAudioSco();
@@ -1609,9 +1674,14 @@ static void hfEventoBt(esp_hf_client_cb_event_t event, esp_hf_client_cb_param_t 
       const bool abierto = (st == ESP_HF_CLIENT_AUDIO_STATE_CONNECTED ||
                             st == ESP_HF_CLIENT_AUDIO_STATE_CONNECTED_MSBC);
       if (abierto) {
+        scoAbiertoEnLlamada = true;
         btScoActivo = true;
         iniciarAudioSco(st == ESP_HF_CLIENT_AUDIO_STATE_CONNECTED_MSBC);
       } else if (st == ESP_HF_CLIENT_AUDIO_STATE_DISCONNECTED) {
+        // Lo cerró el teléfono: en esta llamada no se lo vuelve a pedir
+        // (scoAbiertoEnLlamada quedó en true al abrirse). Fuera de una
+        // llamada no hay nada que recordar.
+        if (!btLlamada && !btVoz) scoAbiertoEnLlamada = false;
         if (btScoActivo) {
           btScoActivo = false;
           detenerAudioSco();
@@ -1620,17 +1690,40 @@ static void hfEventoBt(esp_hf_client_cb_event_t event, esp_hf_client_cb_param_t 
       break;
     }
 
-    case ESP_HF_CLIENT_CIND_CALL_EVT:
-      btLlamada = (param->call.status == ESP_HF_CALL_STATUS_CALL_IN_PROGRESS);
+    case ESP_HF_CLIENT_CIND_CALL_EVT: {
+      // El canal lo abre el teléfono; si no lo hizo pasada la espera (ver
+      // ESPERA_SCO_MS), lo pide atenderPerfilesBt. El loop corre en otra
+      // tarea y mira estas marcas en cualquier momento, así que el orden
+      // importa. Al empezar, la espera arranca ANTES de marcar la llamada:
+      // con la llamada ya marcada y la espera vieja vencida, pediría el canal
+      // en el mismo instante en que lo abre el teléfono. Al terminar, primero
+      // se baja la llamada y después scoAbiertoEnLlamada: al revés, vería una
+      // llamada sin canal y sin el canal abierto antes, y lo pediría.
+      const bool enCurso = (param->call.status == ESP_HF_CALL_STATUS_CALL_IN_PROGRESS);
+      if (enCurso) {
+        ultimoIntentoSco = millis();
+        btLlamada = true;
+      } else {
+        btLlamada = false;
+        if (!btVoz) scoAbiertoEnLlamada = false;
+      }
       Serial.printf("HFP llamada: %s\n", btLlamada ? "en curso" : "terminada");
-      if (btLlamada) abrirSco("llamada");
       break;
+    }
 
-    case ESP_HF_CLIENT_BVRA_EVT:
-      btVoz = (param->bvra.value == ESP_HF_VR_STATE_ENABLED);
+    case ESP_HF_CLIENT_BVRA_EVT: {
+      // Igual que la llamada, y en el mismo orden.
+      const bool activo = (param->bvra.value == ESP_HF_VR_STATE_ENABLED);
+      if (activo) {
+        ultimoIntentoSco = millis();
+        btVoz = true;
+      } else {
+        btVoz = false;
+        if (!btLlamada) scoAbiertoEnLlamada = false;
+      }
       Serial.printf("HFP asistente de voz: %s\n", btVoz ? "activo" : "apagado");
-      if (btVoz) abrirSco("asistente de voz");
       break;
+    }
 
     default:
       break;
@@ -1693,7 +1786,9 @@ static void conectarA2dp() {
 
 // Se llama en cada vuelta del loop. Todo está limitado por tiempo.
 static void atenderPerfilesBt() {
-  if (btSlcConectado && (btLlamada || btVoz) && !btScoActivo) {
+  // Sólo al empezar una llamada en la que el teléfono todavía no abrió el
+  // canal (ver scoAbiertoEnLlamada).
+  if (btSlcConectado && (btLlamada || btVoz) && !btScoActivo && !scoAbiertoEnLlamada) {
     abrirSco("reintento");
   }
 

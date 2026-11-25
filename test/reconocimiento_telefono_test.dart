@@ -64,12 +64,13 @@ void main() {
     expect(c.estado, EstadoIdioma.noDisponible);
   });
 
-  test('fuera de Android no hay a quién preguntar: no disponible, y se da '
-      'por hecho que hay conexión', () async {
+  test('fuera de Android no hay a quién preguntar: no disponible, se da por '
+      'hecho que hay conexión y se escucha sin auricular', () async {
     TestWidgetsFlutterBinding.ensureInitialized();
     final c = await ReconocimientoEnTelefono.consultar('es-AR');
     expect(c.estado, EstadoIdioma.noDisponible);
     expect(await ReconocimientoEnTelefono.hayConexion(), isTrue);
     expect(await ReconocimientoEnTelefono.pedirDescarga('es-AR'), isFalse);
+    expect(await ReconocimientoEnTelefono.usarMicrofonoAuricular(), isFalse);
   });
 }

@@ -53,6 +53,7 @@ const MethodChannel _canalSensores = MethodChannel(
 const MethodChannel _canalEscucha = MethodChannel(
   'plugin.csdcorp.com/speech_to_text',
 );
+const MethodChannel _canalApp = MethodChannel('blindroute/reconocimiento');
 const String _canalWakelock =
     'dev.flutter.pigeon.wakelock_plus_platform_interface.WakelockPlusApi.toggle';
 
@@ -75,6 +76,17 @@ void _simularPlataforma() {
   });
   _mensajero.setMockMethodCallHandler(_canalEscucha, (llamada) async {
     return llamada.method == 'initialize' ? false : null;
+  });
+  // El código de Android de la app (MainActivity.kt): un teléfono sin
+  // auricular. Lo demás, como si no estuviera.
+  _mensajero.setMockMethodCallHandler(_canalApp, (llamada) async {
+    switch (llamada.method) {
+      case 'usarMicrofonoAuricular':
+        return false;
+      case 'soltarMicrofonoAuricular':
+        return null;
+    }
+    throw MissingPluginException();
   });
   _mensajero.setMockMethodCallHandler(_canalSensores, (_) async => null);
   _mensajero.setMockStreamHandler(
@@ -1436,8 +1448,10 @@ void main() {
       await _desarmar(tester);
     });
 
-    testWidgets('la lista de destinos elige el lugar; «Cancelar» lo suelta y '
-        'lo dice', (tester) async {
+    testWidgets('la lista de destinos elige el lugar (sin posición, dice por '
+        'qué en lugar de «Calculando ruta»); «Cancelar» lo suelta y lo dice', (
+      tester,
+    ) async {
       await arrancar(tester);
       await tester.tap(find.byTooltip('Seleccionar destino desde lista'));
       await tester.pumpAndSettle(const Duration(milliseconds: 100));
@@ -1448,6 +1462,15 @@ void main() {
       VistaNavegacion vista() =>
           tester.widget<VistaNavegacion>(find.byType(VistaNavegacion));
       expect(vista().destino, 'Aula 12');
+      // En el test no hay Bluetooth: ningún beacon, ninguna posición.
+      expect(
+        _dichas,
+        contains(
+          'Aula 12. Todavía no sé dónde estás: hay pocos beacons cerca. Te '
+          'guío en cuanto te ubique.',
+        ),
+      );
+      expect(_dichas, isNot(contains('Aula 12. Calculando ruta.')));
       expect(find.text('Cancelar'), findsOneWidget);
       expect(find.byTooltip('Cambiar destino'), findsOneWidget);
       _dichas.clear();

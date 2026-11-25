@@ -23,6 +23,11 @@
          con el selector del sistema y las vibraciones son las del sistema
          (HapticFeedback); ninguno de los dos necesita permiso. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Para usar el micrófono de un auricular Bluetooth mientras se escucha
+         (MainActivity.kt, "MICRÓFONO DEL AURICULAR"): abrir su canal de voz y
+         poner el modo de comunicación. Es un permiso normal: Android lo da al
+         instalar, sin preguntar. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Saber si hay conexión antes de pedir el destino por voz, cuando el
          español no está descargado para reconocer sin internet. -->

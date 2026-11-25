@@ -174,6 +174,7 @@ Las capturas se generaron en la computadora con datos y planos de ejemplo.
 | Bluetooth | Detectar las balizas |
 | Ubicación precisa | Requerida por Android para detectar las balizas. La ubicación del teléfono debe estar encendida |
 | Micrófono | Indicar el destino por voz |
+| Ajustes de audio | Usar el micrófono de un auricular Bluetooth mientras se escucha el destino. Android lo concede al instalar, sin preguntar |
 | Internet | Descargar y publicar mapas, descargar el idioma de la voz y entender la voz mientras el idioma no esté descargado |
 | Estado de la red | Avisar cuando no hay conexión para entender la voz |
 
@@ -289,7 +290,7 @@ Cada archivo de `lib/` empieza con un comentario que explica qué contiene y có
 | Archivo | Contenido |
 |---|---|
 | [`docs/ESTETICA.md`](docs/ESTETICA.md) | Diseño visual actual, su evolución y tareas pendientes |
-| [`hardware/esp32_blindroute_audio/COMO_FUNCIONA.md`](hardware/esp32_blindroute_audio/COMO_FUNCIONA.md) | Funcionamiento del auricular ESP32 (firmware 2.1): conexión, sonido, pines y mensajes del puerto serie |
+| [`hardware/esp32_blindroute_audio/COMO_FUNCIONA.md`](hardware/esp32_blindroute_audio/COMO_FUNCIONA.md) | Funcionamiento del auricular ESP32 (firmware 2.4): conexión, sonido, pines y mensajes del puerto serie |
 | [`supabase/ajustes_navegacion.sql`](supabase/ajustes_navegacion.sql) | Tabla y permisos de los ajustes de navegación en la nube |
 
 ---

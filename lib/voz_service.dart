@@ -4,9 +4,14 @@
 // dice y cuándo: las indicaciones de guiado pasan por un filtro anti-rebote,
 // los giros urgentes cortan lo que suena y las frases secundarias ("Estás
 // en…") ceden ante cualquier otra. Para escuchar, cada pregunta es una sesión
-// que termina una sola vez, y el fin de lo dicho lo decide la app.
+// que termina una sola vez, y el fin de lo dicho lo decide la app. Con un
+// auricular Bluetooth conectado, la escucha usa su micrófono (ver
+// "MICRÓFONO DEL AURICULAR"). Una pregunta y su escucha van juntas, para que
+// el micrófono grabe desde que termina la pregunta (ver "PREGUNTAR Y
+// ESCUCHAR SIN HUECO").
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
@@ -31,7 +36,156 @@ class VozService {
   final stt.SpeechToText _stt = stt.SpeechToText();
   bool _sttDisponible = false;
   bool _escuchando = false;
- 
+
+  // ── MICRÓFONO DEL AURICULAR ───────────────────────────────────────────────
+  // Android graba con el micrófono del teléfono aunque haya un auricular
+  // Bluetooth conectado, salvo que la app pida el del auricular. El auricular
+  // recibe el audio por uno de dos canales que no andan a la vez: el de la
+  // música (sólo del teléfono al auricular, en buena calidad) y el de voz (de
+  // ida y vuelta, con calidad de llamada: el único por el que llega su
+  // micrófono). Pasar de uno a otro tarda: abrir el de voz, entre 0,25 y
+  // 0,7 s en la prueba del 24/11/2026.
+  //
+  // Al empezar cada escucha se pide el canal de voz
+  // (ReconocimientoEnTelefono.usarMicrofonoAuricular, que espera a que quede
+  // abierto) y al cerrarla se suelta, para que la música y la voz de la app
+  // vuelvan al canal de la música. La frase que sigue, también una
+  // indicación de la guía, espera a que el auricular vuelva
+  // ([_esperaVueltaMusica]). Sin auricular, o si no se abre, se escucha con
+  // el micrófono del teléfono y no hay esperas.
+  //
+  // El canal no se deja abierto para la respuesta ni para la pregunta
+  // siguiente, aunque eso ahorraría la espera: Android sólo deja que una app
+  // mantenga el modo llamada mientras ella misma reproduce o graba audio, y
+  // la voz de la app la reproduce el motor de voz del teléfono, que es otra
+  // app. En la prueba del 25/11/2026, 1,5 s después de que el reconocedor
+  // dejó de grabar Android dio a BlindRoute por inactiva, le sacó el modo
+  // llamada y a los 6 s cortó el canal; las escuchas siguientes, que creían
+  // tenerlo abierto, grabaron con el micrófono del teléfono.
+  // El plugin de voz tiene otra forma de usar el auricular, que se apaga al
+  // inicializarlo (androidNoBluetooth; ver MainActivity.kt).
+
+  /// Si el micrófono del auricular está abierto para la escucha en curso.
+  bool _microfonoAuricular = false;
+
+  /// Cuándo se soltó por última vez el micrófono del auricular.
+  DateTime? _auricularSoltadoEn;
+
+  /// Lo que se espera, después de soltar el micrófono del auricular, antes
+  /// de la frase siguiente: el auricular tiene que pasar del canal de voz al
+  /// de la música, y lo que se diga mientras tanto se pierde (en la prueba
+  /// del 24/11/2026 se escuchó "…lando ruta" en lugar de "Calculando
+  /// ruta"). Elegido sin medir: ajustarlo con lo que muestre el log ("[Voz]
+  /// Espera … ms").
+  static const Duration _esperaVueltaMusica = Duration(milliseconds: 1000);
+
+  /// Suelta el micrófono del auricular, si estaba abierto.
+  void _soltarMicrofonoAuricular() {
+    if (!_microfonoAuricular) return;
+    _microfonoAuricular = false;
+    _auricularSoltadoEn = DateTime.now();
+    unawaited(ReconocimientoEnTelefono.soltarMicrofonoAuricular());
+  }
+
+  /// Si el auricular todavía está volviendo al canal de la música (ver
+  /// [_esperaVueltaMusica]).
+  bool get _musicaVolviendo {
+    final soltado = _auricularSoltadoEn;
+    return soltado != null &&
+        DateTime.now().difference(soltado) < _esperaVueltaMusica;
+  }
+
+  /// Si el micrófono del auricular se soltó hace menos de
+  /// [_esperaVueltaMusica], espera lo que falta. Sin auricular, nada.
+  Future<void> _esperarVueltaDeLaMusica() async {
+    final soltado = _auricularSoltadoEn;
+    if (soltado == null) return;
+    final falta = _esperaVueltaMusica - DateTime.now().difference(soltado);
+    if (falta <= Duration.zero) return;
+    debugPrint('[Voz] Espera ${falta.inMilliseconds} ms a que el auricular '
+        'vuelva a la música.');
+    await Future<void>.delayed(falta);
+  }
+
+  // ── PREGUNTAR Y ESCUCHAR SIN HUECO ────────────────────────────────────────
+  // El reconocedor de Android empieza a grabar recién un rato después de
+  // pedírselo: en un Pixel 9 Pro XL, entre 1,06 y 1,24 s (24/11/2026). Si se
+  // lo pidiera al terminar la pregunta, lo que la persona contesta en ese
+  // segundo se perdería: un "hola" dicho enseguida no llegaba. Por eso
+  // [escuchar] con una pregunta:
+  //  1. Con auricular, abre su canal de voz ANTES de la pregunta, que se oye
+  //     por ese canal: abrirlo con la frase sonando la cortaría al cambiar de
+  //     canal, y abrirlo después sumaría ~0,7 s de hueco.
+  //  2. Pide el reconocedor mientras la pregunta todavía suena, para que
+  //     empiece a grabar poco después de que termina. Cuándo, sale de dos
+  //     medidas tomadas en el mismo teléfono: lo que duró esa pregunta (lo
+  //     más que duró las últimas veces que se dijo entera) y lo que tarda el
+  //     reconocedor en arrancar (lo menos que tardó las últimas veces), y
+  //     [_margenFinPregunta]. Así sirve en teléfonos que arrancan más rápido
+  //     o más lento, y con cualquier velocidad de la voz. Sin esas medidas
+  //     (la primera pregunta de cada ejecución), el reconocedor se pide al
+  //     terminar la pregunta.
+  // Las dos medidas se toman del lado que hace empezar más tarde, porque
+  // grabar el final de la pregunta es peor que perder un instante: con
+  // auricular, su micrófono está pegado al parlante y oye la pregunta, y en
+  // preguntas como "¿De hombres o de mujeres?" o "¿Vamos ahí?" lo último que
+  // se dice es una respuesta válida: la app se contestaría sola. Ningún
+  // filtro del texto puede distinguir ese eco de una respuesta de verdad.
+  // El log "[Voz] El micrófono empezó a grabar … ms después del fin de la
+  // pregunta" dice cómo salió.
+
+  /// Lo que duró cada pregunta las últimas veces que el motor la dijo
+  /// entera, desde que se le mandó hasta su aviso de fin. La clave lleva la
+  /// velocidad de la voz, que cambia la duración.
+  final Map<String, List<int>> _duracionPreguntas = {};
+
+  /// Lo que tardó el reconocedor en empezar a grabar (desde que se le pide
+  /// hasta el primer nivel de sonido) las últimas veces, en el teléfono
+  /// (true) y por internet (false), que arrancan distinto.
+  final Map<bool, List<int>> _arranquesReconocedor = {true: [], false: []};
+
+  /// Cuántas medidas se guardan, de cada pregunta y del arranque del
+  /// reconocedor.
+  static const int _medidasGuardadas = 5;
+
+  /// Lo mínimo que se quiere entre el fin de la pregunta y el momento en
+  /// que el reconocedor empieza a grabar. En la prueba del 24/11/2026 con
+  /// auricular (23:41), el micrófono grabó la propia pregunta las dos veces
+  /// que empezó a grabar 150 ms o menos después de su fin, y ninguna de las
+  /// cuatro en que fue 316 ms o más: por el Bluetooth, la pregunta se sigue
+  /// oyendo un rato después de que el motor avisa que terminó.
+  static const Duration _margenFinPregunta = Duration(milliseconds: 400);
+
+  /// Agrega [ms] a [lista], que guarda las últimas [_medidasGuardadas].
+  static void _anotar(List<int> lista, int ms) {
+    lista.add(ms);
+    if (lista.length > _medidasGuardadas) lista.removeAt(0);
+  }
+
+  /// Anota lo que tardó el reconocedor en arrancar.
+  void _anotarArranque(bool enTelefono, int ms) =>
+      _anotar(_arranquesReconocedor[enTelefono]!, ms);
+
+  /// Cuántos milisegundos después de mandar [pregunta] al motor hay que
+  /// pedir el reconocedor para que empiece a grabar [_margenFinPregunta]
+  /// después de que ella termina (o algo más, nunca menos, si esta vez la
+  /// pregunta dura menos o el reconocedor tarda más que otras veces). Null si
+  /// todavía no hay medidas: entonces se lo pide al terminar.
+  int? _pedirReconocedorA(String pregunta, bool enTelefono) {
+    final duraciones = _duracionPreguntas[_clavePregunta(pregunta)];
+    final arranques = _arranquesReconocedor[enTelefono]!;
+    if (duraciones == null || duraciones.isEmpty || arranques.isEmpty) {
+      return null;
+    }
+    final adelanto =
+        arranques.reduce(math.min) - _margenFinPregunta.inMilliseconds;
+    if (adelanto <= 0) return null;
+    return math.max(0, duraciones.reduce(math.max) - adelanto);
+  }
+
+  String _clavePregunta(String pregunta) =>
+      '${_ajustes.velocidad.valor}|$pregunta';
+
   // ── DUEÑO ACTUAL ──────────────────────────────────────────────────────────
   // VozService es un singleton, así que `limpiar()` de una pantalla detiene el
   // TTS de TODAS. Flutter destruye la pantalla saliente después de construir la
@@ -89,6 +243,10 @@ class VozService {
   Future<void> _inicializarSTT() async {
     try {
       _sttDisponible = await _stt.initialize(
+        // El micrófono del auricular lo abre la app (ver "MICRÓFONO DEL
+        // AURICULAR"); el plugin, por su lado, no. Así tampoco pide el
+        // permiso de dispositivos cercanos para eso.
+        options: [stt.SpeechToText.androidNoBluetooth],
         onError: (error) {
           _escuchando = false;
           debugPrint('[Voz] Error del reconocedor: ${error.errorMsg}');
@@ -179,8 +337,14 @@ class VozService {
   /// Usa un Completer conectado al callback onCompletionHandler del motor,
   /// con un timeout de seguridad basado en la longitud del texto.
   /// Si había otra frase sonando, la corta.
-  Future<void> hablar(String texto) async {
-    if (!_ttsInicializado || texto.trim().isEmpty) return;
+  Future<void> hablar(String texto) => _decir(texto);
+
+  /// [hablar], avisándole a [alEmpezar] en el instante en que la frase se
+  /// manda al motor. Devuelve true si el motor avisó que la terminó, y false
+  /// si no se dijo, se cortó, falló o venció el tope (ver "PREGUNTAR Y
+  /// ESCUCHAR SIN HUECO", que sólo mide las frases dichas enteras).
+  Future<bool> _decir(String texto, {void Function()? alEmpezar}) async {
+    if (!_ttsInicializado || texto.trim().isEmpty) return false;
     // Ya en este instante (antes de la espera del corte) la frase en curso
     // deja de ser secundaria: nadie más tiene que cortarla. Y mientras se
     // espera el corte no arranca ninguna secundaria (ver [hablarSecundaria]).
@@ -208,12 +372,23 @@ class VozService {
     }
 
     // Registrar el callback de finalización ANTES de llamar a speak()
-    _tts.setCompletionHandler(completar);
+    var entera = false;
+    _tts.setCompletionHandler(() {
+      if (identical(_finFraseActual, completer)) entera = true;
+      completar();
+    });
 
     // También capturar cancelación/error del motor
     _tts.setCancelHandler(completar);
     _tts.setErrorHandler((msg) => completar());
 
+    // Recién soltado el micrófono del auricular, se le da tiempo a volver a
+    // la música (ver "MICRÓFONO DEL AURICULAR"). Si mientras tanto otra
+    // frase reemplazó a ésta, ésta ya no se dice.
+    await _esperarVueltaDeLaMusica();
+    if (!identical(_finFraseActual, completer)) return false;
+
+    alEmpezar?.call();
     await _tts.speak(texto);
     _ultimaVezHablado = DateTime.now();
     _ultimaInstruccion = texto;
@@ -233,6 +408,7 @@ class VozService {
         (texto.length * msPorCaracter).round().clamp(1500, 40000) + 600;
     await completer.future
         .timeout(Duration(milliseconds: timeoutMs), onTimeout: completar);
+    return entera;
   }
  
   /// Habla sin esperar — para instrucciones de navegación que se actualizan
@@ -251,6 +427,10 @@ class VozService {
       // ésa nunca demora a otra (ver [hablarSecundaria]).
       if (!_sonandoSecundaria) return false;
       hablar(texto);
+    } else if (_musicaVolviendo) {
+      // Recién soltado el canal de voz: dicha ya, se perdería el comienzo.
+      // [hablar] espera lo que falta (ver "MICRÓFONO DEL AURICULAR").
+      unawaited(hablar(texto));
     } else {
       _decirSinEsperar(texto);
     }
@@ -295,7 +475,9 @@ class VozService {
   /// libre. Devuelve `true` si lo mandó al motor.
   bool hablarSecundaria(String texto) {
     if (!_ttsInicializado || texto.trim().isEmpty) return false;
-    if (_hablando || _arrancando > 0) return false;
+    // Recién soltado el canal de voz del auricular se perdería el comienzo:
+    // como con el motor ocupado, no se dice.
+    if (_hablando || _arrancando > 0 || _musicaVolviendo) return false;
     _decirSinEsperar(texto);
     _sonandoSecundaria = true;
     return true;
@@ -825,11 +1007,17 @@ class VozService {
   /// es la primera ("sí" sale "c", "no" sale "nos"). Si se pasa, se entrega
   /// la primera interpretación que [entiende] da por buena (recibe el texto
   /// en minúsculas); si ninguna, la más probable.
+  ///
+  /// [pregunta]: lo que se le pregunta a la persona antes de escucharla. La
+  /// dice esta misma función, que pide el reconocedor mientras todavía suena
+  /// (ver "PREGUNTAR Y ESCUCHAR SIN HUECO"). [onEscuchando] avisa recién
+  /// cuando se pide el reconocedor.
   Future<void> escuchar({
     required void Function(String texto) onResultado,
     void Function(String error)? onError,
     void Function(bool activo)? onEscuchando,
     bool Function(String texto)? entiende,
+    String? pregunta,
     Duration timeout = const Duration(seconds: 12),
   }) async {
     if (!await microfonoDisponible()) {
@@ -864,6 +1052,7 @@ class VozService {
         _escuchando = false;
         _cerrarSesion = null;
         _atenderErrorDelMotor = null;
+        _soltarMicrofonoAuricular();
       }
       onEscuchando?.call(false);
       final dicho = texto ?? (motivo == errorCancelado ? '' : parcial);
@@ -876,16 +1065,27 @@ class VozService {
 
     _cerrarSesion = (motivo) => cerrar(motivo: motivo);
 
-    // El micrófono se abre YA, sin pausa: quien pregunta esperó a que el
-    // motor de voz avisara que terminó la frase (ver [hablar]), y ese aviso
-    // llega con el audio ya reproducido. Una pausa de 200 ms "para que se
-    // apague el altavoz", sumada a lo que tarda el reconocedor en arrancar,
-    // haría que quien contesta enseguida hable con el micrófono todavía
-    // cerrado.
+    // Sin pausas: lo que tarda el reconocedor en arrancar ya alcanza para que
+    // quien contesta enseguida hable con el micrófono todavía cerrado (ver
+    // "PREGUNTAR Y ESCUCHAR SIN HUECO"). Sin pregunta, el que llama esperó a
+    // que terminara su frase, y el reconocedor se pide enseguida.
     _escuchando = true;
-    onEscuchando?.call(true);
+    if (pregunta == null) onEscuchando?.call(true);
     final reloj = Stopwatch()..start();
     bool microfonoAbierto = false;
+    // En ms del reloj: cuándo se pidió el reconocedor, cuándo empezó a
+    // grabar y cuándo terminó la pregunta (para el log del hueco).
+    var reconocedorPedido = 0;
+    int? grabandoDesde;
+    int? finPregunta;
+    var huecoInformado = false;
+    void informarHueco() {
+      final grabando = grabandoDesde, fin = finPregunta;
+      if (huecoInformado || grabando == null || fin == null) return;
+      huecoInformado = true;
+      debugPrint('[Voz] El micrófono empezó a grabar ${grabando - fin} ms '
+          'después del fin de la pregunta.');
+    }
 
     /// De las interpretaciones del motor, la primera que [entiende] da por
     /// buena; si ninguna, [texto] (la más probable).
@@ -923,6 +1123,7 @@ class VozService {
     Future<void> arrancar() async {
       _motorPedido = true;
       _escuchando = true;
+      reconocedorPedido = reloj.elapsedMilliseconds;
       await _stt.listen(
         listenOptions: stt.SpeechListenOptions(
           localeId: enTelefono ? localeTelefono : localeInternet,
@@ -939,11 +1140,16 @@ class VozService {
           // primero dice cuánto tardó en abrirse de verdad.
           if (!microfonoAbierto) {
             microfonoAbierto = true;
+            final ahora = reloj.elapsedMilliseconds;
+            final arranque = ahora - reconocedorPedido;
+            _anotarArranque(enTelefono, arranque);
+            grabandoDesde = ahora;
             debugPrint(
-              '[Voz] Micrófono abierto a los '
-              '${reloj.elapsedMilliseconds} ms de pedirlo '
+              '[Voz] Micrófono abierto a los $ahora ms: el reconocedor '
+              'tardó $arranque ms en arrancar '
               '(${enTelefono ? 'en el teléfono' : 'por internet'}).',
             );
+            informarHueco();
           }
           // Diagnóstico: cuándo se empieza a oír voz, para medir cuánto
           // tarda el primer texto parcial.
@@ -1035,6 +1241,67 @@ class VozService {
       pasarAInternet(error);
       return true;
     };
+
+    // Con un auricular Bluetooth, su micrófono (ver "MICRÓFONO DEL
+    // AURICULAR"). Se espera a que el canal quede abierto antes de arrancar
+    // el reconocedor (si no, lo primero que dice la persona se grabaría con
+    // el micrófono del teléfono) y antes de la pregunta (ver "PREGUNTAR Y
+    // ESCUCHAR SIN HUECO"). Sin auricular responde enseguida.
+    final conAuricular = await ReconocimientoEnTelefono.usarMicrofonoAuricular();
+    if (conAuricular) {
+      // La sesión se cerró mientras se abría el canal (la cortaron).
+      if (cerrada || sesion != _sesionEscucha) {
+        unawaited(ReconocimientoEnTelefono.soltarMicrofonoAuricular());
+        return;
+      }
+      _microfonoAuricular = true;
+      // Con el canal de voz abierto, la pregunta sale por él: no hay que
+      // esperar la vuelta a la música de una escucha anterior.
+      _auricularSoltadoEn = null;
+      debugPrint('[Voz] ${reloj.elapsedMilliseconds} ms: micrófono del '
+          'auricular abierto.');
+    } else {
+      debugPrint('[Voz] ${reloj.elapsedMilliseconds} ms: sin micrófono del '
+          'auricular, se escucha con el del teléfono.');
+    }
+    if (cerrada) return;
+
+    // La pregunta, con el reconocedor pedido mientras todavía suena (ver
+    // "PREGUNTAR Y ESCUCHAR SIN HUECO").
+    if (pregunta != null) {
+      final pedirA = _pedirReconocedorA(pregunta, enTelefono);
+      final clave = _clavePregunta(pregunta);
+      final dicha = Stopwatch();
+      final empezo = Completer<void>();
+      final frase = _decir(pregunta, alEmpezar: () {
+        dicha.start();
+        empezo.complete();
+      });
+      final termino = frase.then((entera) {
+        if (entera) {
+          _anotar(
+            _duracionPreguntas.putIfAbsent(clave, () => []),
+            dicha.elapsedMilliseconds,
+          );
+        }
+        finPregunta = reloj.elapsedMilliseconds;
+        informarHueco();
+      });
+      await Future.any([empezo.future, termino]);
+      if (pedirA != null && empezo.isCompleted) {
+        final falta = pedirA - dicha.elapsedMilliseconds;
+        debugPrint('[Voz] ${reloj.elapsedMilliseconds} ms: "$pregunta"; el '
+            'reconocedor se pide a los $pedirA ms de empezar a decirla.');
+        await Future.any([
+          termino,
+          Future<void>.delayed(Duration(milliseconds: math.max(0, falta))),
+        ]);
+      } else {
+        await termino;
+      }
+      if (cerrada || sesion != _sesionEscucha) return;
+      onEscuchando?.call(true);
+    }
 
     try {
       await arrancar();

@@ -888,6 +888,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     // antes de que se destruya esta), así que acá no se apaga.
     if (!_saltandoDePiso) WakelockPlus.disable();
     _orientacion.limpiar();
+    // La conversación en curso se retira antes de limpiar la voz: su escucha
+    // termina ahí como cancelada, y su aviso no tiene que hacer setState en
+    // esta pantalla, que se está destruyendo (mounted sigue en true hasta
+    // que termina dispose).
+    _turnoVoz++;
     // Guarda de dueño, misma razón que en BluetoothHelper: si esta pantalla se
     // destruye DESPUÉS de que la siguiente ya arrancó, limpiar el TTS acá
     // cortaría el anuncio de la pantalla nueva ("Buscando ubicación").
@@ -3112,10 +3117,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
   /// Sin conexión (y sin el español descargado en el teléfono), dice
   /// [VozService.avisoSinConexion] y devuelve null.
   ///
-  /// Sin espera entre la pregunta y la escucha: VozService.escuchar abre el
-  /// micrófono en cuanto termina la frase. Con una espera de 200 ms acá y
-  /// otra allá, un "sí" dicho enseguida caería antes de que el micrófono se
-  /// abra.
+  /// La pregunta la dice VozService.escuchar: pide el reconocedor mientras
+  /// la frase todavía suena, para que empiece a grabar cuando termina (ver
+  /// "PREGUNTAR Y ESCUCHAR SIN HUECO" en VozService). Si se la dijera acá y
+  /// después se escuchara, un "sí" dicho enseguida caería en el segundo que
+  /// tarda el reconocedor en arrancar.
   Future<String?> _preguntarYEscuchar(
     String frase, {
     bool Function(String norm)? entiende,
@@ -3137,14 +3143,12 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       return '';
     }
     if (!mounted || turno != _turnoVoz) return null;
-    await _voz.hablar(frase);
-    if (!mounted || turno != _turnoVoz) return null;
-    setState(() => _escuchando = true);
 
     final respuesta = Completer<String?>();
     bool cortada = false;
     bool sinConexion = false;
     await _voz.escuchar(
+      pregunta: frase,
       timeout: const Duration(seconds: 8),
       entiende: entiende == null ? null : (t) => entiende(_normalizar(t)),
       onEscuchando: (activo) {
@@ -3462,7 +3466,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       _ciclosEnLlegada = 0;
       _destinoRefinado = _posicionFinal != null;
       _rutaActual = null;
-      _estadoRuta = 'Calculando ruta...';
+      _estadoRuta = _posicionFinal == null
+          ? 'Buscando tu ubicación para calcular la ruta...'
+          : 'Calculando ruta...';
       _ultimoIntentoRuta = null;
       _anuncioRetomadoHecho = true;
     });
@@ -3501,6 +3507,11 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       final medio = _escaleraObjetivo;
       final destinoYPiso =
           '${destino.nombre}, ${PisoUtil.nombre(pisoDestino).toLowerCase()}.';
+      // Sin posición no se sabe por dónde se cambia de piso: se dice por qué.
+      if (_posicionFinal == null) {
+        await _voz.hablar('$destinoYPiso ${_fraseSinPosicion()}');
+        return;
+      }
       if (_avisoSinCaminoPendiente) {
         _avisoSinCaminoPendiente = false;
         await _voz.hablar('$destinoYPiso $_fraseSinCaminoDesdeAca');
@@ -3554,10 +3565,30 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       return;
     }
 
-    // Todavía no hay ruta (no hay posición, no hay brújula, o el cálculo se
-    // demoró): se confirma el destino y la indicación sale sola en cuanto
-    // haya ruta, porque sigue pendiente.
+    // Todavía no hay ruta. En los dos casos la indicación sale sola en
+    // cuanto haya ruta, porque sigue pendiente. Sin posición, se dice por qué
+    // ("Calculando ruta" daría a entender que la ruta está por salir, y sin
+    // posición puede no salir nunca). Con posición falta la brújula o el
+    // cálculo se demoró: eso sí se resuelve solo en un momento.
+    if (_posicionFinal == null) {
+      await _voz.hablar('${destino.nombre}. ${_fraseSinPosicion()}');
+      return;
+    }
     await _voz.hablar('${destino.nombre}. Calculando ruta.');
+  }
+
+  /// Por qué todavía no hay ruta cuando falta la posición: no se oyen los
+  /// beacons que hacen falta para ubicar ([_minBeaconsActivos]), o se oyen y
+  /// la primera posición todavía se está calculando.
+  String _fraseSinPosicion() {
+    final oidos = _beaconsEnElMapa.values
+        .where((b) => b.rssiFiltrado > _umbralRSSI)
+        .length;
+    if (oidos < _minBeaconsActivos) {
+      return 'Todavía no sé dónde estás: hay pocos beacons cerca. Te guío en '
+          'cuanto te ubique.';
+    }
+    return 'Todavía te estoy ubicando. Te guío en cuanto sepa dónde estás.';
   }
 
   /// Revisa, en cada ciclo de posición, si el usuario llegó a la escalera del
@@ -3886,9 +3917,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
     }
     if (!mounted) return;
 
-    // Primero hablar y esperar que termine el audio (hablar() espera el
-    // aviso del motor TTS). Sin otra espera acá: la deja VozService.escuchar
-    // (ver _preguntarYEscuchar).
+    // La pregunta la dice VozService.escuchar, que pide el reconocedor
+    // mientras todavía suena para que grabe desde que termina (ver
+    // _preguntarYEscuchar).
     // Pedido nuevo: cualquier conversación anterior que siga en curso se
     // retira (ver _turnoVoz).
     final turno = ++_turnoVoz;
@@ -3899,16 +3930,10 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       if (turno == _turnoVoz) _pedidoDesde = null;
     }
 
-    await _voz.hablar('¿A dónde vas?');
-
-    // Solo ahora activar el indicador visual de escucha
-    if (!mounted || turno != _turnoVoz) {
-      cerrarPedido();
-      return;
-    }
-    setState(() => _escuchando = true);
-
+    // El indicador visual de escucha lo prende onEscuchando, cuando se pide
+    // el reconocedor.
     await _voz.escuchar(
+      pregunta: '¿A dónde vas?',
       timeout: const Duration(seconds: 8),
       // La primera interpretación del reconocedor que nombra algún lugar
       // (ver VozService.escuchar).
@@ -4082,6 +4107,9 @@ class _PantallaNavegacionState extends State<PantallaNavegacion>
       _soltarDestino();
       _turnoVoz++; // si había un pedido a medio conversar, se retira
       _pedidoDesde = null;
+      // Y su escucha también, aunque todavía suene la pregunta: si no, el
+      // reconocedor se pediría igual al cortarse la pregunta.
+      _voz.detenerEscucha();
       _voz.hablar('Navegación cancelada.');
     }
   }

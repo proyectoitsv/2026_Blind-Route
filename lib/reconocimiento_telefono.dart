@@ -3,7 +3,10 @@
 //
 // Pregunta al código de Android si el español está descargado para reconocer
 // sin conexión, pide la descarga, dice si hay internet y si el micrófono está
-// desactivado en el teléfono.
+// desactivado en el teléfono, y abre y suelta el micrófono de un auricular
+// Bluetooth mientras se escucha.
+
+import 'dart:async';
 
 import 'package:flutter/foundation.dart' show debugPrint, immutable;
 import 'package:flutter/services.dart';
@@ -18,7 +21,9 @@ import 'package:flutter/services.dart';
 //
 // El mismo código de Android dice también si el micrófono está desactivado
 // en el teléfono (Android 12 o más) y hace que el sistema pregunte si se lo
-// activa (ver [ReconocimientoEnTelefono.microfonoBloqueado]).
+// activa (ver [ReconocimientoEnTelefono.microfonoBloqueado]). Y, con un
+// auricular Bluetooth conectado, abre su micrófono para la escucha y lo
+// suelta al terminar (ver [ReconocimientoEnTelefono.usarMicrofonoAuricular]).
 
 /// Cómo está el español para reconocer la voz en el teléfono.
 enum EstadoIdioma {
@@ -171,6 +176,47 @@ class ReconocimientoEnTelefono {
       return;
     } on PlatformException catch (e) {
       debugPrint('[Voz] No se pudo pedir activar el micrófono: $e');
+    }
+  }
+
+  /// Lo que se espera la respuesta de Android al pedir el micrófono del
+  /// auricular. Android espera hasta 3 s a que se abra el canal; esto es por
+  /// si no contesta nunca.
+  static const Duration esperaAuricular = Duration(seconds: 4);
+
+  /// Con un auricular Bluetooth conectado, le pide a Android su micrófono (el
+  /// canal de voz de manos libres, como en una llamada) y espera a que quede
+  /// abierto. true si quedó abierto: se escucha con el auricular y hay que
+  /// soltarlo con [soltarMicrofonoAuricular] al terminar. false si no hay
+  /// auricular, si no se abrió a tiempo o fuera de Android: se escucha con el
+  /// micrófono del teléfono, como siempre.
+  static Future<bool> usarMicrofonoAuricular() async {
+    try {
+      final abierto = await _canal
+          .invokeMethod<bool>('usarMicrofonoAuricular')
+          .timeout(esperaAuricular);
+      return abierto ?? false;
+    } on TimeoutException {
+      // Si se abre después, que no quede abierto sin que nadie lo sepa.
+      unawaited(soltarMicrofonoAuricular());
+      return false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException catch (e) {
+      debugPrint('[Voz] No se pudo pedir el micrófono del auricular: $e');
+      return false;
+    }
+  }
+
+  /// Suelta el micrófono del auricular y deja el audio como estaba (la
+  /// música vuelve al canal de siempre).
+  static Future<void> soltarMicrofonoAuricular() async {
+    try {
+      await _canal.invokeMethod<void>('soltarMicrofonoAuricular');
+    } on MissingPluginException {
+      return;
+    } on PlatformException catch (e) {
+      debugPrint('[Voz] No se pudo soltar el micrófono del auricular: $e');
     }
   }
 

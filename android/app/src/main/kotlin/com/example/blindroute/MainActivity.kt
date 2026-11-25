@@ -3,14 +3,21 @@ package com.example.blindroute
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AppOpsManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.speech.ModelDownloadListener
 import android.speech.RecognitionSupport
@@ -31,8 +38,10 @@ import io.flutter.plugin.common.MethodChannel
 // esperando el error. Acá se consulta sin abrirlo y se pide la descarga
 // (Android 13 o más: SpeechRecognizer.checkRecognitionSupport y
 // triggerModelDownload). También se mira si hay conexión, para avisar
-// cuando sin el idioma descargado no se puede entender la voz, y si el
-// micrófono está desactivado en el teléfono (ver "MICRÓFONO DESACTIVADO").
+// cuando sin el idioma descargado no se puede entender la voz, si el
+// micrófono está desactivado en el teléfono (ver "MICRÓFONO DESACTIVADO") y,
+// con un auricular Bluetooth, se le pide su micrófono mientras se escucha
+// (ver "MICRÓFONO DEL AURICULAR").
 class MainActivity : FlutterActivity() {
     private var canal: MethodChannel? = null
 
@@ -54,6 +63,11 @@ class MainActivity : FlutterActivity() {
                     pedirDesbloquearMicrofono()
                     resultado.success(null)
                 }
+                "usarMicrofonoAuricular" -> usarMicrofonoAuricular(resultado)
+                "soltarMicrofonoAuricular" -> {
+                    soltarMicrofonoAuricular()
+                    resultado.success(null)
+                }
                 else -> resultado.notImplemented()
             }
         }
@@ -62,6 +76,7 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         reconocedorDescarga?.destroy()
         reconocedorDescarga = null
+        soltarMicrofonoAuricular()
         super.onDestroy()
     }
 
@@ -230,8 +245,220 @@ class MainActivity : FlutterActivity() {
         }.start()
     }
 
+    // ═══ MICRÓFONO DEL AURICULAR ═══
+    // Android le pasa a una app el micrófono de un auricular Bluetooth sólo
+    // si la app lo pide: si no, se graba con el del teléfono aunque el
+    // auricular esté conectado. El micrófono del auricular viaja por el canal
+    // de voz de manos libres (HFP), que se abre aparte del de la música
+    // (A2DP), igual que en una llamada. Mientras está abierto, todo lo que se
+    // graba en el teléfono, también lo que graba el reconocedor de voz (que
+    // es otra app), sale del auricular.
+    //
+    // Se pide al empezar cada escucha y se suelta al terminarla. Con Android
+    // 12 o más, con setCommunicationDevice; con uno anterior, con
+    // startBluetoothSco, que es lo que la reemplazó. El canal tarda en abrirse
+    // (medio segundo a un par de segundos según el teléfono y el auricular),
+    // así que se espera el aviso de que quedó abierto antes de responder:
+    // si el reconocedor arrancara antes, lo primero que dice la persona se
+    // grabaría con el micrófono del teléfono o se perdería. Si no se abre en
+    // [ESPERA_CANAL_MS], se suelta y se escucha con el del teléfono.
+    //
+    // El modo de comunicación (el de las apps de llamadas) se pone sólo
+    // mientras dura la escucha: algunos teléfonos no mandan la grabación al
+    // auricular fuera de ese modo. Hace falta el permiso MODIFY_AUDIO_SETTINGS
+    // (normal: Android lo da al instalar, sin preguntar).
+    //
+    // El plugin de voz tiene su propia forma de usar el auricular (pide el
+    // "reconocimiento de voz" de manos libres), pero sólo con Android 12 o
+    // más, con el permiso de dispositivos cercanos dado y sin esperar a que el
+    // canal se abra. Se la apaga desde Dart (androidNoBluetooth) para que haya
+    // un solo camino.
+
+    private val audio by lazy { getSystemService(AudioManager::class.java) }
+    private val hiloPrincipal = Handler(Looper.getMainLooper())
+
+    /// Si el canal del auricular está pedido (abierto o abriéndose).
+    private var auricularPedido = false
+    private var modoAnterior = AudioManager.MODE_NORMAL
+    private var receptorCanal: BroadcastReceiver? = null
+    private var esperaCanal: Runnable? = null
+
+    /// Quién espera saber si el canal se abrió (Dart).
+    private var respuestaCanal: MethodChannel.Result? = null
+
+    /// El auricular Bluetooth con micrófono que está conectado, o null.
+    private fun auricularConectado(am: AudioManager): AudioDeviceInfo? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            am.availableCommunicationDevices.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+            }
+        } else if (am.isBluetoothScoAvailableOffCall) {
+            am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+            }
+        } else {
+            null
+        }
+
+    /// Si el canal pedido sigue abierto de verdad. La marca auricularPedido no
+    /// alcanza: Android puede cerrarlo por su cuenta. En la prueba del
+    /// 25/11/2026 le sacó el modo llamada a la app 1,5 s después de que el
+    /// reconocedor dejó de grabar (la app no reproducía ni grababa nada
+    /// propio) y a los 6 s cortó el canal.
+    private fun canalSigueAbierto(am: AudioManager): Boolean {
+        if (am.mode != AudioManager.MODE_IN_COMMUNICATION) return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            am.communicationDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+        } else {
+            @Suppress("DEPRECATION")
+            am.isBluetoothScoOn
+        }
+    }
+
+    /// Pide el micrófono del auricular y responde true cuando el canal quedó
+    /// abierto; false si no hay auricular o no se abrió a tiempo.
+    private fun usarMicrofonoAuricular(resultado: MethodChannel.Result) {
+        val am = audio
+        if (am == null) {
+            Log.w(ETIQUETA, "Micrófono del auricular: no hay servicio de audio.")
+            resultado.success(false)
+            return
+        }
+        if (respuestaCanal != null) {
+            Log.w(ETIQUETA, "Micrófono del auricular: ya hay un pedido esperando.")
+            resultado.success(false)
+            return
+        }
+        if (auricularPedido) {
+            if (canalSigueAbierto(am)) {
+                Log.d(ETIQUETA, "Micrófono del auricular: ya estaba abierto.")
+                resultado.success(true)
+                return
+            }
+            // Android lo cerró por su cuenta: se suelta lo que quedó y se
+            // pide de nuevo.
+            Log.w(ETIQUETA, "Micrófono del auricular: Android cerró el canal " +
+                "(modo ${am.mode}); se pide de nuevo.")
+            soltarMicrofonoAuricular()
+        }
+        val auricular = auricularConectado(am)
+        if (auricular == null) {
+            // Los dispositivos que Android ofrece para comunicación: si el
+            // auricular no está, no tiene conectado el perfil de llamadas.
+            val tipos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                am.availableCommunicationDevices.joinToString { "${it.type}" }
+            } else {
+                "(Android ${Build.VERSION.SDK_INT})"
+            }
+            Log.d(ETIQUETA, "Micrófono del auricular: no hay auricular con micrófono " +
+                "(dispositivos de comunicación: $tipos).")
+            resultado.success(false)
+            return
+        }
+        Log.d(ETIQUETA, "Micrófono del auricular: se pide el de ${auricular.productName}.")
+        auricularPedido = true
+        respuestaCanal = resultado
+        modoAnterior = am.mode
+
+        // Se escucha el estado del canal ANTES de pedirlo, y sólo cuenta un
+        // aviso nuevo. El aviso es "sticky": al registrarse llega enseguida
+        // el último que mandó Android, que puede ser viejo. En la prueba del
+        // 24/11/2026 llegó "abierto" de un canal que ya se había cerrado: la
+        // app creyó escuchar con el auricular y escuchó con el teléfono.
+        val receptor = object : BroadcastReceiver() {
+            override fun onReceive(contexto: Context?, aviso: Intent?) {
+                if (isInitialStickyBroadcast) return
+                val estado = aviso?.getIntExtra(
+                    AudioManager.EXTRA_SCO_AUDIO_STATE,
+                    AudioManager.SCO_AUDIO_STATE_ERROR,
+                )
+                if (estado == AudioManager.SCO_AUDIO_STATE_CONNECTED) responderCanal(true)
+            }
+        }
+        receptorCanal = receptor
+        val filtro = IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receptor, filtro, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(receptor, filtro)
+        }
+
+        am.mode = AudioManager.MODE_IN_COMMUNICATION
+        val pedido = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            am.setCommunicationDevice(auricular)
+        } else {
+            @Suppress("DEPRECATION")
+            am.startBluetoothSco()
+            @Suppress("DEPRECATION")
+            am.isBluetoothScoOn = true
+            true
+        }
+        if (!pedido) {
+            Log.w(ETIQUETA, "El teléfono no aceptó usar el micrófono del auricular.")
+            responderCanal(false)
+            return
+        }
+        val espera = Runnable {
+            // Sin el aviso de que se abrió, se escucha con el teléfono. Que
+            // Android tenga elegido el auricular como dispositivo de
+            // comunicación no alcanza: lo elige aunque el canal no se abra.
+            Log.w(ETIQUETA, "El canal del auricular no se abrió en $ESPERA_CANAL_MS ms: " +
+                "se escucha con el micrófono del teléfono.")
+            responderCanal(false)
+        }
+        esperaCanal = espera
+        hiloPrincipal.postDelayed(espera, ESPERA_CANAL_MS)
+    }
+
+    /// Le dice a Dart si el canal se abrió (una sola vez por pedido). Si no
+    /// se abrió, lo suelta.
+    private fun responderCanal(abierto: Boolean) {
+        val respuesta = respuestaCanal ?: return
+        respuestaCanal = null
+        esperaCanal?.let { hiloPrincipal.removeCallbacks(it) }
+        esperaCanal = null
+        if (abierto) {
+            Log.d(ETIQUETA, "Micrófono del auricular abierto.")
+        } else {
+            soltarMicrofonoAuricular()
+        }
+        respuesta.success(abierto)
+    }
+
+    /// Suelta el canal del auricular y deja el audio como estaba. Si alguien
+    /// esperaba que se abriera, recibe false.
+    private fun soltarMicrofonoAuricular() {
+        if (!auricularPedido) return
+        auricularPedido = false
+        receptorCanal?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (e: IllegalArgumentException) {
+                // Ya no estaba registrado.
+            }
+        }
+        receptorCanal = null
+        esperaCanal?.let { hiloPrincipal.removeCallbacks(it) }
+        esperaCanal = null
+        respuestaCanal?.success(false)
+        respuestaCanal = null
+        val am = audio ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            am.clearCommunicationDevice()
+        } else {
+            @Suppress("DEPRECATION")
+            am.isBluetoothScoOn = false
+            @Suppress("DEPRECATION")
+            am.stopBluetoothSco()
+        }
+        am.mode = modoAnterior
+    }
+
     companion object {
         private const val CANAL = "blindroute/reconocimiento"
         private const val ETIQUETA = "BlindRoute"
+
+        /// Lo que se espera a que se abra el canal del auricular.
+        private const val ESPERA_CANAL_MS = 3000L
     }
 }
